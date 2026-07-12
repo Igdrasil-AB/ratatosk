@@ -1,0 +1,10 @@
+{
+  "invoices": [
+    {
+      "id": "in_abc123",
+      "created": "2026-06-30T12:00:00Z",
+      "total": 2000,
+      "currency": "USD"
+    }
+  ]
+}

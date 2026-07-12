@@ -1,0 +1,15 @@
+[
+  {
+    "uuid": "org-api-0000",
+    "name": "API Org",
+    "capabilities": ["api"],
+    "billing_type": "api_evaluation",
+    "api_disabled_reason": "out_of_credits"
+  },
+  {
+    "uuid": "org-sub-0000",
+    "name": "Subscription Org",
+    "capabilities": ["claude_max", "chat"],
+    "billing_type": "stripe_subscription"
+  }
+]

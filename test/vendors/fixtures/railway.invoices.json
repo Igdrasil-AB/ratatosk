@@ -1,0 +1,24 @@
+{
+  "data": {
+    "workspace": {
+      "customer": {
+        "invoices": [
+          {
+            "hostedURL": "https://invoice.stripe.com/i/acct_TEST/live_TEST1?s=ap",
+            "status": "paid",
+            "invoiceId": "in_test1",
+            "total": 4762,
+            "periodEnd": "2026-06-14T09:27:24.000Z"
+          },
+          {
+            "hostedURL": "https://invoice.stripe.com/i/acct_TEST/live_TEST2?s=ap",
+            "status": "paid",
+            "invoiceId": "in_test2",
+            "total": 2000,
+            "periodEnd": "2026-05-14T09:27:24.000Z"
+          }
+        ]
+      }
+    }
+  }
+}

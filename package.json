@@ -1,0 +1,34 @@
+{
+  "name": "invoice-collector",
+  "version": "0.6.2",
+  "description": "Open-source browser extension that collects supplier invoices and receipts from vendor portals using the user's own session — no credential custody.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "npm run gen:icons && vite",
+    "build": "npm run gen:icons && vite build",
+    "gen:icons": "tsx scripts/build-icons.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "validate": "tsx scripts/validate-vendors.ts",
+    "export-recipes": "tsx scripts/export-recipes.ts",
+    "ci": "npm run gen:icons && npm run typecheck && npm run validate && npm run test"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^2.0.0-beta.28",
+    "@types/chrome": "^0.0.268",
+    "@types/node": "^20.19.43",
+    "simple-icons": "^16.26.0",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.0",
+    "vitest": "^2.0.5"
+  }
+}

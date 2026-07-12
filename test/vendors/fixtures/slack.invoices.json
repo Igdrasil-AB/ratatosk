@@ -1,0 +1,20 @@
+{
+  "ok": true,
+  "invoices": [
+    {
+      "id": "INV-2026-06",
+      "date_issued": "2026-06-30T00:00:00Z",
+      "amount": 4900,
+      "currency": "USD",
+      "pdf_url": "https://acme.slack.com/files/inv/INV-2026-06.pdf"
+    },
+    {
+      "id": "INV-2026-05",
+      "date_issued": "2026-05-31T00:00:00Z",
+      "amount": 4900,
+      "currency": "USD",
+      "pdf_url": "https://acme.slack.com/files/inv/INV-2026-05.pdf"
+    }
+  ],
+  "response_metadata": { "next_cursor": "" }
+}
