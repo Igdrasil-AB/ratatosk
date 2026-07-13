@@ -28,7 +28,7 @@ the extension never handles them. There is no credential vault to breach.
 | Vendor session cookies | Exfiltration via capture or replay | `cookie`/`set-cookie` are dropped from every captured request/response; the extension never reads cookies |
 | Vendor bearer tokens | Written into a shareable recipe/report | Used only to trace a request's source during inference; never written into recipes, reports, or fixtures; the "Copy for agent" report is redacted as a backstop |
 | The hot-loaded recipe catalog | A recipe smuggling executable behavior ("remote interpreter") | Recipes are frozen declarative data — closed transform enum, `.strict()` schema, bounded+compiled patterns, capped pipelines (`src/core/schema.ts`); a recipe can only select/parametrize in-package logic |
-| The accounting backend | A forged "connect" from a hostile page | `externally_connectable` is locked to `https://accounting.igdrasil.se/*`; the service worker re-validates `sender.origin` and only accepts a token for an `*.igdrasil.se` https backend |
+| The accounting backend | A forged "connect" from a hostile page | The connect bridge content script runs only on `https://accounting.igdrasil.se/*`; the service worker re-validates that each relayed request came from our own content script (`sender.id`) on that exact origin (`sender.origin`), and only accepts a token for an `*.igdrasil.se` https backend |
 | The recorder capture | A hostile page injecting fabricated entries | Capture is user-initiated; the relay forwards only same-window messages carrying a per-session nonce; the service worker drops entries from any tab that isn't the recording one; the debugger backend is the high-integrity path |
 
 ## Guarantees enforced in code (with tests)

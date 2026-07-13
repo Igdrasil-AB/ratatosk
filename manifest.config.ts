@@ -24,10 +24,19 @@ export default defineManifest({
   // into whatever tab you're on (any vendor) without a broad host permission.
   permissions: ["storage", "alarms", "notifications", "scripting", "tabs", "downloads", "debugger", "activeTab"],
   optional_host_permissions: allHosts(),
-  // Only the Igdrasil web app may message the extension (the one-click "Connect"
-  // handshake that hands over the session token + company id). Exact origin, never
-  // a wildcard TLD; the service worker re-validates sender.origin on every message.
-  externally_connectable: { matches: ["https://accounting.igdrasil.se/*"] },
+  // The one-click "Connect Igdrasil" bridge: a content script that runs ONLY on
+  // the Igdrasil web app's exact origin. It announces the extension to the page
+  // and relays the connect handshake to the service worker, which re-validates
+  // sender.origin before touching a token. Narrow, first-party, no extension id
+  // needed by the web app. (`debugger` already forces the all-hosts install
+  // warning, so this specific match adds nothing to the prompt.)
+  content_scripts: [
+    {
+      matches: ["https://accounting.igdrasil.se/*"],
+      js: ["src/platform/connect-bridge.ts"],
+      run_at: "document_idle",
+    },
+  ],
   // Explicit strict CSP: no remote scripts, no eval — all logic ships in the package.
   content_security_policy: {
     extension_pages: "script-src 'self'; object-src 'self'",

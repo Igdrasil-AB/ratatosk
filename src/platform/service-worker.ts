@@ -22,7 +22,7 @@ import {
   setSinkConfig,
   upsertConnection,
 } from "./storage";
-import { setHostToken } from "./auth";
+import { clearHostToken, getHostToken, setHostToken } from "./auth";
 import { isRecording, recordingProgress, startRecording, stopRecording } from "./recorder/orchestrator";
 import { appendEntry, clearAllRecorderState, getCurrentTab } from "./recorder/session-store";
 import type { CapturedEntry } from "../core/recorder/types";
@@ -55,14 +55,21 @@ chrome.notifications.onClicked.addListener((id) => {
 });
 
 chrome.runtime.onMessage.addListener(
-  (message: Message | RecorderEntryMessage, sender, sendResponse) => {
+  (message: Message | RecorderEntryMessage | AppRequest, sender, sendResponse) => {
     // Captured entries stream in from the page's content-script relay (not the popup).
     if (message?.type === "recorder:entry") {
-      void acceptRecorderEntry(sender, message.entry);
+      void acceptRecorderEntry(sender, (message as RecorderEntryMessage).entry);
       sendResponse({ ok: true });
       return false;
     }
-    handle(message)
+    // Connect handshake relayed by the bridge content script on the Igdrasil origin.
+    if (isAppRequest(message)) {
+      handleAppRequest(message, sender)
+        .then(sendResponse)
+        .catch((err) => sendResponse({ ok: false, error: String(err) }));
+      return true;
+    }
+    handle(message as Message)
       .then(sendResponse)
       .catch((err) => sendResponse({ ok: false, error: String(err) } satisfies Response));
     return true; // keep the channel open for the async response
@@ -87,38 +94,22 @@ async function acceptRecorderEntry(sender: chrome.runtime.MessageSender, entry: 
   await appendEntry(tabId, entry as CapturedEntry);
 }
 
-// --- External connect: the ONLY message path open to a web page --------------
-// `externally_connectable` already restricts senders to accounting.igdrasil.se;
-// we re-validate sender.origin here (defense in depth) before touching a token.
+// --- Connect handshake (relayed by the bridge content script) ----------------
+// The bridge (`connect-bridge.ts`) runs only on the Igdrasil origin; we STILL
+// re-validate here that the message came from OUR content script on an
+// allow-listed origin before touching a token — defense in depth.
 const ALLOWED_CONNECT_ORIGINS = new Set(["https://accounting.igdrasil.se"]);
 
-chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
-  if (!sender.origin || !ALLOWED_CONNECT_ORIGINS.has(sender.origin)) {
-    sendResponse({ ok: false, error: "origin not allowed" });
-    return false;
-  }
-  handleExternal(message)
-    .then(sendResponse)
-    .catch((err) => sendResponse({ ok: false, error: String(err) } satisfies Response));
-  return true;
-});
+type AppRequest =
+  | { type: "igdrasil:connect"; token: string; companyId: string; apiBaseUrl: string }
+  | { type: "igdrasil:status" }
+  | { type: "igdrasil:disconnect" };
 
-interface ConnectMessage {
-  type: "igdrasil:connect";
-  token: string;
-  companyId: string;
-  apiBaseUrl: string;
-}
+type AppResponse = { ok: true; connected?: boolean; companyId?: string } | { ok: false; error: string };
 
-function isConnectMessage(m: unknown): m is ConnectMessage {
-  const o = m as Partial<ConnectMessage> | null;
-  return (
-    !!o &&
-    o.type === "igdrasil:connect" &&
-    typeof o.token === "string" &&
-    typeof o.companyId === "string" &&
-    typeof o.apiBaseUrl === "string"
-  );
+function isAppRequest(m: unknown): m is AppRequest {
+  const t = (m as { type?: unknown } | null)?.type;
+  return t === "igdrasil:connect" || t === "igdrasil:status" || t === "igdrasil:disconnect";
 }
 
 /** True only for the Igdrasil backend itself — https and an `*.igdrasil.se` host. */
@@ -131,12 +122,33 @@ function isIgdrasilBackend(apiBaseUrl: string): boolean {
   }
 }
 
-async function handleExternal(message: unknown): Promise<Response> {
-  if (!isConnectMessage(message)) return { ok: false, error: "unsupported message" };
-  if (!isIgdrasilBackend(message.apiBaseUrl)) return { ok: false, error: "backend host not allowed" };
-  await setHostToken(message.token);
-  await setSinkConfig({ kind: "igdrasil", endpoint: message.apiBaseUrl, companyId: message.companyId });
-  return { ok: true };
+async function handleAppRequest(message: AppRequest, sender: chrome.runtime.MessageSender): Promise<AppResponse> {
+  // It must be OUR own content script, running on an allow-listed page origin.
+  if (sender.id !== chrome.runtime.id) return { ok: false, error: "bad sender" };
+  if (!sender.origin || !ALLOWED_CONNECT_ORIGINS.has(sender.origin)) return { ok: false, error: "origin not allowed" };
+
+  switch (message.type) {
+    case "igdrasil:connect": {
+      const { token, companyId, apiBaseUrl } = message;
+      if (typeof token !== "string" || typeof companyId !== "string" || typeof apiBaseUrl !== "string") {
+        return { ok: false, error: "invalid connect payload" };
+      }
+      if (!isIgdrasilBackend(apiBaseUrl)) return { ok: false, error: "backend host not allowed" };
+      await setHostToken(token);
+      await setSinkConfig({ kind: "igdrasil", endpoint: apiBaseUrl, companyId });
+      return { ok: true };
+    }
+    case "igdrasil:status": {
+      const cfg = await getSinkConfig();
+      const connected = cfg?.kind === "igdrasil" && !!(await getHostToken());
+      return { ok: true, connected, companyId: cfg?.kind === "igdrasil" ? cfg.companyId : undefined };
+    }
+    case "igdrasil:disconnect": {
+      await clearHostToken();
+      await setSinkConfig({ kind: "filesystem", rootFolder: "InvoiceCollector", dateMode: "extraction" });
+      return { ok: true };
+    }
+  }
 }
 
 async function activeTab(): Promise<chrome.tabs.Tab | undefined> {
