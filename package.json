@@ -23,12 +23,12 @@
   },
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.0.0-beta.28",
-    "@types/chrome": "^0.0.268",
-    "@types/node": "^20.19.43",
+    "@types/chrome": "^0.2.2",
+    "@types/node": "^26.1.1",
     "simple-icons": "^16.26.0",
-    "tsx": "^4.16.2",
-    "typescript": "^5.5.4",
-    "vite": "^5.4.0",
-    "vitest": "^2.0.5"
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.4",
+    "vitest": "^4.1.10"
   }
 }
