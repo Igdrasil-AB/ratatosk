@@ -16,6 +16,18 @@ import { render, renderHeaders } from "../core/template";
  * (e.g. a Stripe PDF capability URL) uses the worker fetch, which reads
  * cross-origin fine thanks to host permissions. The engine is unaware of any of
  * this — it just receives an `HttpResponse`.
+ *
+ * SECURITY. The injected code runs in the page's MAIN world, which the page can
+ * observe and tamper with. Two invariants keep that safe:
+ *   1. We only inject for the recipe's PRIMARY origin, and any auth header we
+ *      send (e.g. a bearer minted from the page's OWN session) already belongs to
+ *      that origin — so exposing it to that origin's MAIN world is not an
+ *      escalation. We never route another origin's request (or its token)
+ *      through the page.
+ *   2. The value returned across the executeScript boundary is UNTRUSTED input —
+ *      the engine parses it as ordinary data (validated by the recipe/schema),
+ *      never as code — and its size is capped so a hostile page can't return a
+ *      giant body.
  */
 
 type PageRequest = {
@@ -48,6 +60,10 @@ async function pageFetchInPage(req: PageRequest): Promise<PageFetchResult> {
       credentials: "include",
     });
     const bytes = new Uint8Array(await res.arrayBuffer());
+    // Invoices and JSON are small; cap a hostile/oversized body (32 MB).
+    if (bytes.length > 33_554_432) {
+      return { ok: false, status: res.status, contentType: null, base64: "", error: "response too large" };
+    }
     let binary = "";
     const CHUNK = 0x8000;
     for (let i = 0; i < bytes.length; i += CHUNK) {

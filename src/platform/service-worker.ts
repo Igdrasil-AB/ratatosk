@@ -24,7 +24,7 @@ import {
 } from "./storage";
 import { setHostToken } from "./auth";
 import { isRecording, recordingProgress, startRecording, stopRecording } from "./recorder/orchestrator";
-import { appendEntry, clearAllRecorderState } from "./recorder/session-store";
+import { appendEntry, clearAllRecorderState, getCurrentTab } from "./recorder/session-store";
 import type { CapturedEntry } from "../core/recorder/types";
 import type { Message, Response, SourceView } from "./messaging";
 
@@ -58,7 +58,7 @@ chrome.runtime.onMessage.addListener(
   (message: Message | RecorderEntryMessage, sender, sendResponse) => {
     // Captured entries stream in from the page's content-script relay (not the popup).
     if (message?.type === "recorder:entry") {
-      if (sender.tab?.id !== undefined) void appendEntry(sender.tab.id, message.entry);
+      void acceptRecorderEntry(sender, message.entry);
       sendResponse({ ok: true });
       return false;
     }
@@ -72,6 +72,71 @@ chrome.runtime.onMessage.addListener(
 interface RecorderEntryMessage {
   type: "recorder:entry";
   entry: CapturedEntry;
+}
+
+/**
+ * Accept a captured entry ONLY from the tab that is actively recording, and only
+ * if it is a well-formed object. The relay runs inside the page, so this gate
+ * stops a stray or hostile tab from injecting entries into a live capture.
+ */
+async function acceptRecorderEntry(sender: chrome.runtime.MessageSender, entry: unknown): Promise<void> {
+  const tabId = sender.tab?.id;
+  if (tabId === undefined) return;
+  if (tabId !== (await getCurrentTab())) return; // not the recording tab → drop
+  if (!entry || typeof entry !== "object") return;
+  await appendEntry(tabId, entry as CapturedEntry);
+}
+
+// --- External connect: the ONLY message path open to a web page --------------
+// `externally_connectable` already restricts senders to accounting.igdrasil.se;
+// we re-validate sender.origin here (defense in depth) before touching a token.
+const ALLOWED_CONNECT_ORIGINS = new Set(["https://accounting.igdrasil.se"]);
+
+chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+  if (!sender.origin || !ALLOWED_CONNECT_ORIGINS.has(sender.origin)) {
+    sendResponse({ ok: false, error: "origin not allowed" });
+    return false;
+  }
+  handleExternal(message)
+    .then(sendResponse)
+    .catch((err) => sendResponse({ ok: false, error: String(err) } satisfies Response));
+  return true;
+});
+
+interface ConnectMessage {
+  type: "igdrasil:connect";
+  token: string;
+  companyId: string;
+  apiBaseUrl: string;
+}
+
+function isConnectMessage(m: unknown): m is ConnectMessage {
+  const o = m as Partial<ConnectMessage> | null;
+  return (
+    !!o &&
+    o.type === "igdrasil:connect" &&
+    typeof o.token === "string" &&
+    typeof o.companyId === "string" &&
+    typeof o.apiBaseUrl === "string"
+  );
+}
+
+/** True only for the Igdrasil backend itself — https and an `*.igdrasil.se` host. */
+function isIgdrasilBackend(apiBaseUrl: string): boolean {
+  try {
+    const u = new URL(apiBaseUrl);
+    return u.protocol === "https:" && (u.hostname === "igdrasil.se" || u.hostname.endsWith(".igdrasil.se"));
+  } catch {
+    return false;
+  }
+}
+
+async function handleExternal(message: unknown): Promise<Response> {
+  if (!isConnectMessage(message)) return { ok: false, error: "unsupported message" };
+  if (!isIgdrasilBackend(message.apiBaseUrl)) return { ok: false, error: "backend host not allowed" };
+  await setHostToken(message.token);
+  await setSinkConfig({ kind: "igdrasil", endpoint: message.apiBaseUrl, companyId: message.companyId });
+  return { ok: true };
 }
 
 async function activeTab(): Promise<chrome.tabs.Tab | undefined> {

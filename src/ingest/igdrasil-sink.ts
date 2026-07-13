@@ -19,10 +19,19 @@ export interface IgdrasilSinkConfig {
  * tags the source. Any other host integrates the same way.
  */
 export function createIgdrasilSink(cfg: IgdrasilSinkConfig): IngestSink {
+  const endpoint = `${cfg.baseUrl.replace(/\/+$/, "")}/documents/ingest`;
+  let host: string;
+  try {
+    host = new URL(endpoint).hostname;
+  } catch {
+    throw new Error(`invalid Igdrasil baseUrl: ${cfg.baseUrl}`);
+  }
   return new HttpSink({
-    endpoint: `${cfg.baseUrl.replace(/\/+$/, "")}/documents/ingest`,
+    endpoint,
     companyId: cfg.companyId,
     token: cfg.getToken,
+    // The user's session token is only ever sent to the Igdrasil host itself.
+    allowTokenHosts: [host],
     // engine-api scopes the tenant from the X-Company-Id header (not the form field).
     headers: { "X-Collector": "invoice-collector-extension", "X-Company-Id": cfg.companyId },
   });

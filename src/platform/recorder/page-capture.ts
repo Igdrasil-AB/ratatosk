@@ -12,25 +12,35 @@
  * backend is the race-free fallback for the rare early-request tail.)
  */
 export async function startPageCapture(tabId: number): Promise<void> {
+  // A per-session token that ties the MAIN-world interceptor to its ISOLATED-world
+  // relay. MAIN and ISOLATED worlds can only talk over the shared (page-visible)
+  // DOM, so this doesn't make the channel secret — but it stops unrelated page or
+  // extension messages from being relayed as captured entries, and the service
+  // worker independently drops entries from any tab that isn't the recording one.
+  // The high-integrity path is the debugger backend; silent capture only observes
+  // the page's own traffic to DRAFT a recipe the user then reviews.
+  const nonce = crypto.randomUUID();
   await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
     injectImmediately: true,
     func: pageInterceptor,
+    args: [nonce],
   });
   await chrome.scripting.executeScript({
     target: { tabId },
     func: pageRelay, // default (ISOLATED) world — has chrome.runtime
+    args: [nonce],
   });
 }
 
 /** Runs in the page's MAIN world. Self-contained (serialized via toString). */
-function pageInterceptor(): void {
+function pageInterceptor(nonce: string): void {
   const w = window as unknown as { __invRecInstalled?: boolean };
   if (w.__invRecInstalled) return;
   w.__invRecInstalled = true;
 
-  const emit = (entry: unknown) => window.postMessage({ __invRec: true, entry }, "*");
+  const emit = (entry: unknown) => window.postMessage({ __invRec: nonce, entry }, "*");
   const cap = (s: string | undefined) => (s ? s.slice(0, 1500000) : undefined);
   const keep = (ct: string) => ct.includes("json") || ct.includes("html"); // invoices live in either
   // Lower-case header keys and drop the cookie (never templated; most sensitive).
@@ -107,14 +117,23 @@ function pageInterceptor(): void {
   };
 }
 
-/** Runs in the ISOLATED world; bridges the page's postMessages to the worker. */
-function pageRelay(): void {
+/** Runs in the ISOLATED world; bridges the page's postMessages to the worker.
+ * Forwards only same-window messages carrying this session's nonce and a
+ * well-formed entry — anything else is ignored. */
+function pageRelay(nonce: string): void {
   const w = window as unknown as { __invRelayInstalled?: boolean };
   if (w.__invRelayInstalled) return;
   w.__invRelayInstalled = true;
   window.addEventListener("message", (event: MessageEvent) => {
-    if (event.source === window && event.data && event.data.__invRec) {
-      chrome.runtime.sendMessage({ type: "recorder:entry", entry: event.data.entry });
+    const data = event.data as { __invRec?: unknown; entry?: unknown } | null;
+    if (
+      event.source === window &&
+      data &&
+      data.__invRec === nonce &&
+      data.entry &&
+      typeof data.entry === "object"
+    ) {
+      chrome.runtime.sendMessage({ type: "recorder:entry", entry: data.entry });
     }
   });
 }

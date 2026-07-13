@@ -8,8 +8,31 @@ export interface HttpSinkConfig {
   companyId?: string;
   /** Optional async bearer-token provider (e.g. a Clerk session JWT). */
   token?: () => Promise<string | undefined>;
+  /**
+   * Hostnames the bearer token may be sent to. When set, the token is attached
+   * ONLY if the endpoint's host is in this list — so a misconfigured or
+   * tampered endpoint can never exfiltrate the token to a foreign host. Omit to
+   * allow any (https) host (the generic, token-less default).
+   */
+  allowTokenHosts?: string[];
   /** Extra static headers. */
   headers?: Record<string, string>;
+}
+
+/** Reject non-https endpoints (localhost excepted for dev) — the token/JWT and
+ * invoice bytes must never travel in cleartext. */
+function assertSecureEndpoint(endpoint: string): URL {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    throw new Error(`invalid ingest endpoint: ${endpoint}`);
+  }
+  const isLocal = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+  if (url.protocol !== "https:" && !isLocal) {
+    throw new Error(`ingest endpoint must be https (got "${url.protocol}//${url.hostname}")`);
+  }
+  return url;
 }
 
 /**
@@ -22,6 +45,8 @@ export class HttpSink implements IngestSink {
   constructor(private readonly cfg: HttpSinkConfig) {}
 
   async send(doc: FetchedDocument): Promise<IngestResult> {
+    const url = assertSecureEndpoint(this.cfg.endpoint);
+
     const form = new FormData();
     form.append("file", new Blob([doc.bytes], { type: doc.contentType }), doc.filename);
     form.append("source", doc.source);
@@ -34,6 +59,10 @@ export class HttpSink implements IngestSink {
     if (this.cfg.companyId) form.append("company_id", this.cfg.companyId);
 
     const token = await this.cfg.token?.();
+    // Never send the token to a host that isn't explicitly allow-listed.
+    if (token && this.cfg.allowTokenHosts && !this.cfg.allowTokenHosts.includes(url.hostname)) {
+      throw new Error(`refusing to send auth token to "${url.hostname}" (not in allow-list)`);
+    }
     const res = await fetch(this.cfg.endpoint, {
       method: "POST",
       headers: {

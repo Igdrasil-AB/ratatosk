@@ -15,6 +15,26 @@ on a schedule, in the background, while your browser is running.
 
 ---
 
+## One purpose
+
+Invoice Collector does exactly one thing: **collect your own supplier invoices and
+receipts into your accounting backend.** Everything in the extension serves that
+single purpose.
+
+The **recorder** ("Studio") is an *authoring aid* for that same purpose — it watches a
+vendor's billing page while you're on it so it can write a reusable **recipe** that
+teaches the collector how to read that vendor. It is not a general-purpose
+network-debugging tool, and it runs only when you explicitly click **Record**.
+
+**Recipes are declarative data, never code.** A recipe is a frozen, validated shape —
+endpoint templates, JSONPath field maps, and a *closed, fixed* set of transforms that
+ship in the extension package. The schema (`src/core/schema.ts`) is `.strict()` and
+rejects anything else, so a recipe hot-loaded from a backend can only *select and
+parametrize* logic that already lives in the code — it can never carry behavior of its
+own. That keeps the catalog firmly on the allowed side of Chrome's remote-code policy.
+
+---
+
 ## How it works (30 seconds)
 
 ```
@@ -59,7 +79,7 @@ scripts/       validate-vendors, export-recipes
 
 Five decisions this structure encodes:
 
-1. **Recipes are pure data, not code** → serializable, hot-serveable, testable.
+1. **Recipes are pure data, not code** — a `.strict()`, closed-vocabulary schema freezes this → serializable, hot-serveable, testable, and safe to hot-load.
 2. **`chrome.*` is quarantined to `src/platform/`** → the core runs anywhere.
 3. **One engine, no per-vendor branches** → adding a vendor never edits engine code.
 4. **The ingest sink is an interface** → standalone or embedded is a config swap.

@@ -76,8 +76,20 @@ export function buildAgentReport(input: AgentReportInput): string {
     }
   }
 
-  const text = out.join("\n");
+  const text = redactSecrets(out.join("\n"));
   return text.length > MAX_REPORT_CHARS ? `${text.slice(0, MAX_REPORT_CHARS)}\n… [truncated]` : text;
+}
+
+/**
+ * Belt-and-suspenders: scrub anything token-shaped from the final, shareable
+ * report so a value that slipped through a captured body can never be pasted out.
+ * The `Bearer {token}` template the recipe uses is preserved (its `{` breaks the
+ * pattern); only concrete secrets are redacted.
+ */
+export function redactSecrets(text: string): string {
+  return text
+    .replace(/\b[Bb]earer\s+[A-Za-z0-9._~+/-]{8,}=*/g, "Bearer «redacted»")
+    .replace(/\beyJ[A-Za-z0-9._-]{20,}/g, "«redacted-jwt»");
 }
 
 /** A small, whitespace-collapsed slice of the most useful captured HTML. */

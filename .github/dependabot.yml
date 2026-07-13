@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # An extension holding a session token + host access + debugger has a large
+  # blast radius if a dependency is compromised — watch deps closely.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      dev-dependencies:
+        dependency-type: development
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
