@@ -16,8 +16,8 @@ import { defineVendor } from "./define";
  *   • First-party fetch. chatgpt.com is behind Cloudflare, so requests run inside
  *     a chatgpt.com tab (`fetchContext: "page"`).
  *
- * Invoice objects are Stripe-shaped: `invoice_pdf` is the direct PDF (pay.stripe.com,
- * which redirects to files.stripe.com / S3 — hence hosts). `limit` is 100 to pull
+ * Invoice objects are Stripe-shaped: `invoice_pdf` is the direct PDF
+ * (pay.stripe.com, which redirects through files.stripe.com). `limit` is 100 to pull
  * the whole history (no user has >100 ChatGPT invoices; no pagination wired).
  */
 const BEARER = { authorization: "Bearer {token}" };
@@ -33,7 +33,6 @@ export default defineVendor({
     "https://chatgpt.com/*",
     "https://pay.stripe.com/*", // invoice_pdf lives here…
     "https://files.stripe.com/*", // …and redirects here
-    "https://*.amazonaws.com/*", // …or to S3
   ],
   notes: "Recorder-authored, multi-tenant. Bearer token from /api/auth/session; account_id discovered per user from accounts/check.",
 

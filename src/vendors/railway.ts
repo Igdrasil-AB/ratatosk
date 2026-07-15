@@ -12,7 +12,7 @@ import { defineVendor } from "./define";
  *   • `content-type: application/json`, or backboard won't parse the query body.
  *   • documentUrl: `hostedURL` is the Stripe hosted invoice *page*; a `replace`
  *     rewrites it to the direct PDF (pay.stripe.com/…/pdf), which then redirects
- *     to S3 (hence the stripe/amazonaws hosts).
+ *     through Stripe's file host.
  *   • no `currency` field exists in the payload (Railway bills USD); the pipeline
  *     reads currency from the PDF.
  *
@@ -49,7 +49,6 @@ export default defineVendor({
     "https://invoice.stripe.com/*",
     "https://pay.stripe.com/*", // the actual PDF lives here
     "https://files.stripe.com/*",
-    "https://*.amazonaws.com/*", // Stripe PDFs redirect to S3
   ],
   notes: "Recorder-authored, multi-tenant. workspaceId discovered from `me`; billing via enrichCustomer GraphQL; PDF = Stripe hosted URL rewritten to /pdf.",
 

@@ -1,5 +1,6 @@
 node_modules/
 dist/
+artifacts/
 *.log
 .DS_Store
 .vite/
@@ -9,3 +10,6 @@ coverage/
 .claude/
 .agents/
 skills-lock.json
+
+# Local UX review captures; final Web Store artwork lives in store/assets/.
+store/ux-review/

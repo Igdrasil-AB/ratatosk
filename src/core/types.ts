@@ -249,7 +249,7 @@ export type HtmlInvoices = {
 /**
  * The full description of one vendor. This is the object a contributor writes
  * (via {@link defineVendor}) and the object the engine interprets. It is pure
- * data: JSON-serializable, hot-serveable, and unit-testable.
+ * data: JSON-serializable, reviewable, bundled, and unit-testable.
  */
 export interface VendorRecipe {
   /** Stable, lowercase, unique id, e.g. `"openai"`. Used in `source` and dedup keys. */

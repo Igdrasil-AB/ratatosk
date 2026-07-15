@@ -3,9 +3,9 @@ import { validateRecipe } from "../../src/core/schema";
 
 /**
  * The recipe freeze (see `src/core/schema.ts`): recipes are declarative DATA,
- * never code. These tests are the enforcement contract that keeps the hot-loaded
- * recipe catalog on the allowed side of Chrome's remote-code policy — a future
- * schema change that loosens the freeze must break one of these.
+ * never code. These tests are the enforcement contract that keeps the packaged
+ * recipe vocabulary narrow; a future schema change that loosens the freeze must
+ * break one of these.
  */
 
 // A minimal valid network recipe we mutate to probe each guardrail.

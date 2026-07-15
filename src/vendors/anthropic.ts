@@ -40,11 +40,6 @@ export default defineVendor({
     "https://pay.stripe.com/*",
     "https://invoice.stripe.com/*",
     "https://files.stripe.com/*",
-    // The pay.stripe.com PDF 302-redirects to a presigned Amazon S3 URL; the
-    // extension needs read permission for that host to follow it (S3 sends no
-    // CORS headers, but host permission bypasses CORS). Broad for now — can be
-    // tightened to the exact bucket once its region is confirmed stable.
-    "https://*.amazonaws.com/*",
   ],
   notes:
     "claude.ai subscription invoices; PDFs are Stripe capability URLs. claude.ai is behind Cloudflare, so requests run first-party via fetchContext: page.",

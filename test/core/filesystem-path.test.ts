@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildInvoicePath } from "../../src/platform/filesystem-sink";
+import { buildInvoicePath } from "../../collector/src/platform/filesystem-sink";
 
 /**
  * The folder scheme is <root>/<supplier>/<date>/<file>. `buildInvoicePath` is

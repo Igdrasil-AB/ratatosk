@@ -1,134 +1,137 @@
-# Invoice Collector
+<p align="center">
+  <img src="store/assets/ratatosk-small-promo-440x280.png" alt="Ratatosk squirrel among rustic ledger roots" width="440">
+</p>
 
-A browser extension that automatically collects **supplier invoices and receipts**
-from vendor portals — using your own logged-in browser session, so **your vendor
-passwords never leave your machine**.
+<h1 align="center">Ratatosk</h1>
 
-It replaces the tedium of logging into a dozen SaaS/cloud/ad portals every month
-to download PDFs. Instead, the extension calls each vendor's *own* billing API the
-same way their billing page does, grabs the PDF, and posts it to your backend —
-on a schedule, in the background, while your browser is running.
+<p align="center"><strong>Your supplier invoices, collected from the billing portals you already use.</strong></p>
 
-> **Why not a cloud service with your passwords?** Because it doesn't need them.
-> The extension rides the session you already have. No credential vault, no
-> stored 2FA, nothing to breach. That's the whole design.
+<p align="center">
+  An open-source project by <a href="https://igdrasil.se/">Igdrasil AB</a>
+  · <a href="LICENSE">MIT licensed</a>
+  · <a href="PRIVACY.md">Privacy</a>
+  · <a href="SECURITY.md">Security</a>
+</p>
 
----
+Ratatosk is an open-source Chrome extension project for collecting a user's own
+supplier invoices and receipts from vendor billing portals. It uses the browser
+session the user already has, so Ratatosk never asks for or stores vendor
+passwords or two-factor codes.
 
-## One purpose
+The repository deliberately produces two separate extensions:
 
-Invoice Collector does exactly one thing: **collect your own supplier invoices and
-receipts into your accounting backend.** Everything in the extension serves that
-single purpose.
+- **Collector** (`collector/`) is the consumer extension intended for Chrome Web
+  Store review. It collects documents only after the user chooses a destination
+  and connects a vendor. It does not include recording code or the `debugger`
+  permission.
+- **Studio** (`studio/`) is a development-only authoring extension. It records a
+  billing page after explicit, informed consent and creates a redacted draft for
+  a developer to review. Do not submit Studio as the consumer extension.
 
-The **recorder** ("Studio") is an *authoring aid* for that same purpose — it watches a
-vendor's billing page while you're on it so it can write a reusable **recipe** that
-teaches the collector how to read that vendor. It is not a general-purpose
-network-debugging tool, and it runs only when you explicitly click **Record**.
+Shared, browser-independent code lives in `src/` and is used by both builds.
 
-**Recipes are declarative data, never code.** A recipe is a frozen, validated shape —
-endpoint templates, JSONPath field maps, and a *closed, fixed* set of transforms that
-ship in the extension package. The schema (`src/core/schema.ts`) is `.strict()` and
-rejects anything else, so a recipe hot-loaded from a backend can only *select and
-parametrize* logic that already lives in the code — it can never carry behavior of its
-own. That keeps the catalog firmly on the allowed side of Chrome's remote-code policy.
+## Product preview
 
----
+The Web Store presentation uses the same squirrel and rustic ledger-root artwork
+as the extension itself.
 
-## How it works (30 seconds)
+<p align="center">
+  <img src="store/assets/screenshots/01-home-1280x800.png" alt="Ratatosk Collector home screen" width="100%">
+</p>
 
+<p align="center">
+  <img src="store/assets/screenshots/02-vendors-1280x800.png" alt="Ratatosk connected-vendor screen" width="100%">
+</p>
+
+## How Collector works
+
+```text
+chrome.alarms (user-controlled schedule)
+   -> service worker wakes
+   -> for each connected vendor
+      -> verify the existing session
+      -> call that vendor's billing endpoint
+      -> map and de-duplicate invoices
+      -> download the document
+      -> save it to the destination the user selected
 ```
-chrome.alarms (daily)
-   ▼
-service worker wakes
-   ▼
-for each connected vendor:
-   auth-probe ──✗──▶ "reconnect" notification
-       │✓
-   call the vendor's billing JSON API  (credentials: 'include' → your cookies)
-       ▼
-   map → dedup → download PDF → POST /documents/ingest
-```
 
-The robust part is **network replay**: rather than scraping HTML, a recipe
-declares the vendor's internal billing endpoint, and the worker replays it on the
-live session. It survives visual redesigns because it depends only on the API
-shape. See [`docs/architecture.md`](docs/architecture.md).
+Vendor access is requested per vendor at connection time. With Igdrasil selected,
+documents are uploaded to the user's Igdrasil company. With local downloads
+selected, documents remain on the user's machine. Collector does not run a vendor
+until a destination has been confirmed.
 
----
+Recipes are declarative data, never executable code. The recipe schema is strict,
+bounded, and interpreted only by logic packaged with the extension. Collector
+does not download remote recipes or remotely hosted code; adding or changing a
+vendor requires a reviewed extension release.
 
 ## Repository layout
 
-```
+```text
+collector/              public consumer extension
+  manifest.config.ts    Collector-only MV3 permissions and entries
+  src/platform/         Collector browser APIs, storage, scheduling, sinks
+  src/ui/                Collector popup
+  vite.config.ts         emits dist/collector
+
+studio/                 development-only authoring extension
+  manifest.config.ts    Studio-only MV3 permissions, including debugger
+  src/platform/         consented capture and session storage
+  src/ui/                Studio disclosure and recording UI
+  vite.config.ts         emits dist/studio
+
 src/
-  core/        Platform-free engine. No chrome.* — runs in Node, tests, CI.
-    types.ts       the whole recipe vocabulary
-    schema.ts      Zod validation (also the source of the JSON Schema)
-    engine.ts      auth → scopes → list → dedup → download (one code path)
-    strategies/    network replay (default) + dom fallback
-  vendors/     THE CONTRIBUTOR SURFACE — one file per vendor, pure data
-    _template.ts   copy me
-    anthropic.ts   real capture (claude.ai) — network replay + Stripe PDF
-    index.ts       the registry (one import + one array entry per vendor)
-  ingest/      IngestSink interface + HttpSink (default) + IgdrasilSink
-  platform/    the ONLY place chrome.* lives (service worker, storage, ...)
-  ui/popup/    the "Sources" screen
-test/          per-vendor fixture tests (CI-enforced) + core tests
-scripts/       validate-vendors, export-recipes
+  core/                 platform-free engine and recipe schema
+  ingest/               destination interfaces and implementations
+  vendors/              reviewed recipes; public and experimental registries
+
+test/                   core, platform, and vendor fixture tests
+scripts/                validation, icon generation, deterministic packaging
+store/                  Chrome Web Store copy and submission checklist
 ```
 
-Five decisions this structure encodes:
-
-1. **Recipes are pure data, not code** — a `.strict()`, closed-vocabulary schema freezes this → serializable, hot-serveable, testable, and safe to hot-load.
-2. **`chrome.*` is quarantined to `src/platform/`** → the core runs anywhere.
-3. **One engine, no per-vendor branches** → adding a vendor never edits engine code.
-4. **The ingest sink is an interface** → standalone or embedded is a config swap.
-5. **Every vendor ships a fixture test, enforced in CI** → the long tail can't rot.
-
----
+The dependency direction is `collector|studio -> shared src`; shared code never
+imports Chrome extension APIs.
 
 ## Quick start
 
 ```bash
 npm install
-npm run ci          # typecheck + validate recipes + tests
-npm run build       # emits a loadable extension into dist/
+npm run ci
+npm run build
 ```
 
-Then load it: `chrome://extensions` → enable Developer mode → **Load unpacked** →
-select `dist/`.
+Load Collector from `dist/collector` or Studio from `dist/studio` at
+`chrome://extensions` using **Load unpacked**. Never load both from the same
+directory.
 
-Add a vendor: see **[docs/adding-a-vendor.md](docs/adding-a-vendor.md)**.
+Release the exact Collector artifact intended for review with:
 
----
+```bash
+npm run release:collector
+```
 
-## Using it with a backend
+This writes a ZIP and SHA-256 checksum under `artifacts/`. The ZIP contains the
+Collector manifest at its root and excludes Studio.
 
-The extension POSTs a multipart document to a single endpoint. Point it anywhere:
+## Vendor status
 
-- **Standalone** — configure an `http` sink with your own URL. The wire format is
-  documented in [`src/ingest/http-sink.ts`](src/ingest/http-sink.ts).
-- **Igdrasil** — configure an `igdrasil` sink; it targets `/documents/ingest` and
-  authenticates with the user's session token. See
-  [`src/ingest/igdrasil-sink.ts`](src/ingest/igdrasil-sink.ts).
+Collector currently exposes Anthropic, ChatGPT, and Railway as pilot recipes.
+Their parsing behavior is fixture-tested, but live vendor endpoints and auth flows
+must be re-verified in Chrome before a public claim or rollout. GitHub, Slack, and
+Vercel remain contributor examples and are not shipped by Collector.
 
-Recipes can also be **served from your backend** as JSON (`npm run export-recipes`)
-and hot-loaded, so you add vendors without shipping a new extension build.
+See [testing a vendor](docs/testing.md), [adding a vendor](docs/adding-a-vendor.md),
+[the architecture](docs/architecture.md), and the
+[Chrome Web Store submission process](store/submission-process.md).
 
----
+## Privacy and security
 
-## Status
-
-Early foundation. The `network` strategy is complete; the `dom` fallback defines
-its contract but needs an offscreen driver wired in `src/platform`.
-
-`anthropic` is built from a **real claude.ai capture** — its mapping *and* org
-discovery are tested, and it uses the **page fetch transport** (`fetchContext:
-"page"`) to run first-party behind Cloudflare. The other three recipes (github,
-slack, vercel) are **illustrative** and must be verified against the live
-dashboards before use.
-
-To test a vendor live (dry-run, no backend needed): **[docs/testing.md](docs/testing.md)**.
+Collector includes no analytics or advertising SDK. Its actual data handling,
+destinations, local retention, and permissions are documented in
+[PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md), and the
+[store listing draft](store/listing.md).
 
 ## License
 

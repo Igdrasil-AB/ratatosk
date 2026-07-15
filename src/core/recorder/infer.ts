@@ -159,7 +159,7 @@ function inferStructured(session: CaptureSession): DraftRecipe | null {
     (o): o is string => Boolean(o) && o !== session.origin,
   );
   const hosts = [...new Set([`${session.origin}/*`, ...extraOrigins.map((o) => `${o}/*`)])];
-  notes.push("If this site is behind Cloudflare, add `fetchContext: \"page\"`. Verify PDF redirect hosts (e.g. *.amazonaws.com) if downloads fail.");
+  notes.push("If this site is behind Cloudflare, add `fetchContext: \"page\"`. Verify every PDF redirect and add only the exact required host pattern.");
 
   const recipe: Obj = {
     id,

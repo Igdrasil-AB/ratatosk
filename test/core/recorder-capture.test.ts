@@ -1,15 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { buildEntry, sanitizeHeaders } from "../../src/core/recorder/cdp";
+import { buildEntry, sanitizeBody, sanitizeHeaders, sanitizeUrl } from "../../src/core/recorder/cdp";
 
 /**
- * Capture-layer guarantees: request headers are kept for inference (so token/key
- * auth can wire itself), but the session cookie is never hoarded, and header keys
- * are normalized to lower case so lookups (`authorization`) are reliable.
+ * Capture-layer guarantees: authentication material never reaches session
+ * storage. Non-sensitive structure remains available for recipe inference.
  */
 describe("request-header capture", () => {
-  it("keeps auth headers, lower-cases keys, and drops the cookie", () => {
+  it("drops auth headers and lower-cases safe keys", () => {
     const clean = sanitizeHeaders({ Authorization: "Bearer abc", "Content-Type": "application/json", Cookie: "session=secret" });
-    expect(clean).toEqual({ authorization: "Bearer abc", "content-type": "application/json" });
+    expect(clean).toEqual({ "content-type": "application/json" });
     expect(JSON.stringify(clean)).not.toContain("secret");
   });
 
@@ -27,6 +26,23 @@ describe("request-header capture", () => {
       body: "{}",
       requestHeaders: { Authorization: "Bearer t", Cookie: "c=1" },
     });
-    expect(entry.requestHeaders).toEqual({ authorization: "Bearer t" });
+    expect(entry.requestHeaders).toBeUndefined();
+  });
+
+  it("redacts URL values and secret-bearing JSON fields", () => {
+    expect(sanitizeUrl("https://api.example/invoices?account=123&sig=secret#row")).toBe(
+      "https://api.example/invoices?account=REDACTED&sig=REDACTED",
+    );
+    const body = sanitizeBody('{"invoice":{"id":"inv_1"},"accessToken":"secret-value"}', "application/json");
+    expect(JSON.parse(body)).toEqual({ invoice: { id: "inv_1" }, accessToken: "REDACTED" });
+  });
+
+  it("redacts high-entropy path capabilities and UUIDs", () => {
+    const clean = sanitizeUrl(
+      "https://files.example/invoice/in_1234567890abcdefghijklmnop/550e8400-e29b-41d4-a716-446655440000/pdf",
+    );
+    expect(clean).toBe("https://files.example/invoice/REDACTED/REDACTED/pdf");
+    expect(clean).not.toContain("in_1234567890");
+    expect(clean).not.toContain("550e8400");
   });
 });

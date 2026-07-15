@@ -16,7 +16,20 @@ import railway from "./railway";
 import slack from "./slack";
 import vercel from "./vercel";
 
-export const VENDORS: readonly VendorRecipe[] = [anthropic, chatgpt, github, railway, slack, vercel];
+/**
+ * Recipes exposed by the public Collector.
+ *
+ * Only recipes authored from real captures and suitable for pilot verification
+ * belong here. Illustrative recipes stay available to contributors, but cannot
+ * appear as working integrations in the consumer extension.
+ */
+export const VENDORS: readonly VendorRecipe[] = [anthropic, chatgpt, railway];
+
+/** Recipes retained as authoring examples; never shipped by Collector. */
+export const EXPERIMENTAL_VENDORS: readonly VendorRecipe[] = [github, slack, vercel];
+
+/** CI validates both production and experimental recipes. */
+export const ALL_VENDORS: readonly VendorRecipe[] = [...VENDORS, ...EXPERIMENTAL_VENDORS];
 
 /** Look up a recipe by its id. */
 export function getVendor(id: string): VendorRecipe | undefined {

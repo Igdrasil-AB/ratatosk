@@ -6,8 +6,12 @@ describe *where* the invoices are, and the engine does the rest. Most recipes ar
 
 ## 1. Find the endpoints (DevTools)
 
-Open the vendor's billing/invoices page while signed in. Open DevTools →
-**Network** → filter to `Fetch/XHR`, then reload.
+Use a dedicated vendor test account with synthetic invoices. Either inspect the
+page with Chrome DevTools or load the separate `dist/studio` development extension
+and accept its capture disclosure. Never capture a customer or personal account.
+
+In DevTools, open the vendor's billing/invoices page while signed in, choose
+**Network**, filter to `Fetch/XHR`, then reload.
 
 You're hunting for three things:
 
@@ -19,9 +23,9 @@ You're hunting for three things:
 
 > **Cookie vs. token.** Network replay works when the vendor authenticates with
 > **cookies** (most portals). If the billing calls send an `Authorization: Bearer`
-> header that lives only in the page's JS memory, cookie replay alone won't
-> authenticate — note it in the recipe and prefer the `dom` strategy, or capture
-> the token via a content script. Checking this is part of verifying a vendor.
+> header that lives only in the page's JS memory, do not persist or embed that
+> token. Treat support as blocked until there is a reviewed, least-privilege auth
+> design. Checking this is part of verifying a vendor.
 
 ## 2. Copy the template
 
@@ -57,19 +61,25 @@ npm test
 
 ## 4. Register it
 
-Add one import and one array entry in `src/vendors/index.ts` (keep it
-alphabetical). That's the entire wiring — permissions, scheduling, and the UI
-listing all derive from that array.
+Add the recipe to `EXPERIMENTAL_VENDORS` in `src/vendors/index.ts` first. The
+validator and tests cover experimental recipes, but Collector does not display or
+package them as supported integrations.
+
+Promotion into public `VENDORS` requires a current live test, reviewed fixture,
+least-privilege host list, and explicit release decision. Keep both arrays
+alphabetical.
 
 ## 5. Verify end to end
 
 ```bash
 npm run ci      # typecheck + schema validation + tests
-npm run build   # load dist/ unpacked, click "Connect Acme"
+npm run build:collector
 ```
 
-Connecting requests host permission for your `hosts`, opens the vendor if the
-session is cold, and runs a first sync. Watch the popup for the collected count.
+Load `dist/collector`, choose a destination, and connect Acme. Connecting requests
+host permission for `hosts`, opens the vendor if the session is cold, and runs a
+first sync. Watch the popup for the collected count. Follow `docs/testing.md` and
+record non-sensitive pass/fail evidence.
 
 ## Checklist
 
@@ -79,3 +89,6 @@ session is cold, and runs a first sync. Watch the popup for the collected count.
 - [ ] `vendorInvoiceId` is stable across time (it's the dedup key)
 - [ ] a fixture + passing test exist
 - [ ] the `notes` field records when/where you captured the endpoints
+- [ ] Studio output and fixtures contain no token, cookie, real invoice, personal
+      identifier, or unnecessary HTML
+- [ ] public promotion was an explicit reviewed decision, not a registry default

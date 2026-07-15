@@ -1,7 +1,7 @@
 version: 2
 updates:
-  # An extension holding a session token + host access + debugger has a large
-  # blast radius if a dependency is compromised — watch deps closely.
+  # Collector holds a session token and optional host access; Studio separately
+  # holds debugger access. Both packages therefore need close dependency review.
   - package-ecosystem: npm
     directory: /
     schedule:

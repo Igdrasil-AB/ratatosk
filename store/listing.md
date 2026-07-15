@@ -1,144 +1,169 @@
-# Chrome Web Store listing — Invoice Collector
+# Chrome Web Store listing — Ratatosk Invoice Collector
 
-> **DRAFT.** Fill the `‹…›` placeholders (developer/legal entity, contact email,
-> the published privacy-policy URL) before submitting. Copy each section into the
-> matching field of the Developer Dashboard. Per-permission justifications go in
-> the **Privacy practices** tab.
+This copy describes only the artifact produced by `npm run package:collector`.
+Do not upload `dist/studio`, a repository archive, or the combined build output.
 
----
+## Product details
 
-## Product name
-Invoice Collector
+**Product name:** Ratatosk — Invoice Collector
 
-## Summary (short description — max 132 characters)
-Automatically collect your own supplier invoices and receipts from vendor billing pages — using your existing session, no passwords.
+**Summary (132 characters or fewer):**
 
-## Category
-Workflow & Planning
+Collect your own supplier invoices from supported billing portals using your existing browser session—no passwords stored.
 
-## Language
-English (add localized listings later)
+**Category:** Workflow & Planning
 
----
+**Language:** English
 
 ## Detailed description
 
-**Stop logging into a dozen portals every month to download PDFs.**
+Ratatosk collects your own supplier invoices and receipts from supported vendor
+billing portals and saves them to the destination you choose.
 
-Invoice Collector gathers your supplier invoices and receipts for you — from the
-vendors you already use — and drops them into your accounting backend or a
-Downloads folder, on a schedule, in the background.
+Choose Igdrasil or a local Downloads folder, connect a supported vendor, and
+select your schedule. Ratatosk then uses the session already open in Chrome to
+request that vendor's billing data, download new documents, and de-duplicate them.
 
-**It uses the session you already have.** When you connect a vendor, the
-extension calls that vendor's *own* billing page the same way your browser does,
-using the login you're already signed in with. That means:
+Your vendor passwords and two-factor codes are never requested or stored.
+Ratatosk asks Chrome to use your existing vendor session; it does not read cookie
+values. If a vendor's own billing page supplies a temporary session token,
+Ratatosk holds it only for that collection run, uses it only with that vendor, and
+does not persist or log it. If the session expires, Ratatosk asks you to sign in
+again.
 
-- **Your passwords never leave your machine.** The extension never sees, stores,
-  or transmits vendor passwords or 2FA codes. There's no credential vault to
-  breach — it simply rides your existing session.
-- **It survives redesigns.** Instead of scraping fragile page layouts, it reads
-  each vendor's structured billing data, so it keeps working when a vendor
-  restyles their dashboard.
+You stay in control:
 
-**Teach it a new vendor in one click.** The built-in recorder watches a vendor's
-billing page while *you* are on it and writes a reusable "recipe" so the
-collector can fetch from that vendor going forward. The recorder only runs when
-you explicitly click **Record**.
+- No vendor is connected until you select a destination and approve that
+  vendor's host access.
+- Vendor access is requested separately and can be revoked by disconnecting.
+- The schedule can be set to every 6, 12, or 24 hours, or turned off.
+- Igdrasil uploads use HTTPS. Local-download mode does not upload documents to
+  Igdrasil.
+- There is no analytics, advertising, browsing-history tracking, or sale of data.
 
-> **A note on the recorder:** while recording, Chrome shows a banner reading
-> *"Invoice Collector started debugging this browser."* That's Chrome's standard
-> notice for the API the recorder uses to read the billing page you're viewing.
-> It appears only during a recording you start, and the extension detaches as
-> soon as capture ends. Nothing is captured unless you press Record.
+The initial pilot includes Anthropic, ChatGPT, and Railway. Vendor sites can
+change, so support is provided on a pilot basis while each integration is live
+verified.
 
-**Open source.** The full code is public — every recipe is plain, reviewable
-data, and there's no hidden logic. ‹repo URL›
+Ratatosk is open source: https://github.com/Igdrasil-AB/ratatosk
 
-### What it does
-- Fetches invoices/receipts from connected vendors on a schedule you control
-- Saves them to your accounting backend or a local Downloads folder
-- De-duplicates so each invoice is collected once
-- Notifies you when a vendor needs you to sign in again
+### What Ratatosk does
 
-### What it does NOT do
-- It does not store your vendor passwords or 2FA
-- It does not read your cookies
-- It does not sell or share your data, or send anything to the extension's authors
-- It does not track your browsing
+- Fetches invoice and receipt documents from vendors you connect
+- Saves new documents to Igdrasil or your local Downloads folder
+- Keeps a bounded local history to avoid collecting the same invoice twice
+- Notifies you when a vendor session needs attention
 
----
+### What Ratatosk does not do
 
-## Single purpose (Privacy practices tab)
+- Does not ask for or store vendor passwords or 2FA codes
+- Does not read cookie values
+- Does not record network traffic or include developer recording tools
+- Does not request all-sites access
+- Does not download remote code or remote vendor recipes
+- Does not track general browsing activity
 
-Invoice Collector has one purpose: **to collect a user's own supplier invoices
-and receipts from vendor billing pages and deliver them to the user's chosen
-accounting backend or local folder.** The recorder is an authoring aid for that
-same purpose — it lets the user teach the collector how to read a new vendor — and
-is not a general-purpose debugging tool.
+## Single purpose declaration
 
----
+Ratatosk has one purpose: to collect a user's own supplier invoices and receipts
+from vendor billing portals the user connects and deliver them to the Igdrasil
+company or local Downloads folder the user selects.
 
-## Per-permission justifications (Privacy practices tab)
+## Permission justifications
 
-**debugger** — Used only during a user-initiated "Record" action to read the
-invoice/receipt data from the billing page the user is viewing, so the extension
-can author a reusable recipe for that vendor. It attaches on an explicit click and
-detaches immediately when recording ends. No code is injected or executed on the
-page, and captured data never leaves the user's session except the recipe draft
-the user chooses to share.
+**storage** — Stores the selected destination and schedule, connected-vendor
+state, recent collection status, a bounded invoice ledger, and bounded
+de-duplication keys. A company-scoped, upload-only Igdrasil token is stored in
+extension-local storage so user-enabled background sync survives a Chrome
+restart. It expires after 90 days and is revoked and removed on disconnect.
 
-**scripting** — Runs a small first-party fetch in the vendor's own page context to
-retrieve the user's invoices, matching how the vendor's billing page loads them
-(required for vendors behind bot protection). Injected only on vendor origins the
-user has connected.
+**alarms** — Wakes the Manifest V3 service worker at the interval the user selects
+to check connected vendors for new invoices. The user can disable the schedule.
 
-**downloads** — Saves the user's fetched invoice and receipt PDFs.
+**notifications** — Notifies the user when a connected vendor session has expired
+and requires the user to sign in again.
 
-**activeTab** — Lets the recorder capture on the tab the user is actively
-recording, without broad host access.
+**downloads** — Saves invoice and receipt files to the user's chosen folder under
+Chrome Downloads when local-download mode is selected.
 
-**tabs** — Used to identify and manage the vendor tab during a recording or a
-first-party fetch.
+**scripting** — Runs a bounded first-party billing request in a connected vendor's
+own tab when that vendor rejects an extension service-worker request. It is used
+only for the invoice-collection feature and only after the user grants that
+vendor's optional host access.
 
-**storage** — Stores the user's settings, connected-vendor list, and a small local
-history of what has been collected.
+**Optional host permissions** — Requested separately when the user connects a
+vendor. They cover only that recipe's billing and document hosts and are revoked
+on disconnect. Ratatosk does not request `<all_urls>`.
 
-**alarms** — Runs the scheduled background sync at the interval the user chooses.
+**Content script on `https://accounting.igdrasil.se/*`** — Enables the user to
+connect, check, or disconnect Ratatosk from the Igdrasil web application. The
+service worker re-validates the exact sender origin and accepts only HTTPS
+Igdrasil backend URLs. The same exact-host permission lets the service worker
+upload collected invoices; no broader Igdrasil or all-sites pattern is used.
 
-**notifications** — Tells the user when a vendor session has expired and needs a
-re-login.
+Ratatosk Collector does not request `debugger`, `tabs`, `activeTab`, or `cookies`.
 
-**Host permissions (optional, per vendor)** — Each vendor host is requested only
-when the user connects that vendor, and maps to that vendor's billing endpoint.
-The extension requests no broad or all-sites host access.
+## Data-use disclosures
 
----
+Data handled by the extension can include:
 
-## Data usage disclosures (Privacy practices tab)
+- **Financial and payment information:** invoice and receipt documents and fields
+  such as vendor, invoice id, date, amount, and currency.
+- **Authentication information:** an Igdrasil upload token, if Igdrasil is chosen,
+  and an ephemeral vendor session token for vendors whose own billing page uses
+  one. The Igdrasil token is company-scoped, upload-only, and held in
+  extension-local storage; vendor session tokens remain only in memory for one
+  collection run. Neither is a vendor password or general Igdrasil login token.
+- **Website content:** billing API responses and invoice documents from vendors
+  the user explicitly connects.
+- **User activity:** connected-vendor status, schedule, and collection history
+  needed to provide the feature. Ratatosk does not collect general browsing
+  history or analytics.
 
-**Data handled:** the user's invoice/receipt documents and their metadata
-(vendor, amount, date, invoice id); the user's backend session token (used only to
-authenticate uploads to the user's own backend); and, during a user-initiated
-recording, the billing page's own network traffic (with cookies and credentials
-stripped).
+All data is used solely to collect, de-duplicate, and deliver the user's invoices
+to the destination the user selected. Data is not sold, used for advertising,
+used for creditworthiness or lending, or transferred for an unrelated purpose.
 
-**Certifications (all true for this extension):**
-- ☑ I do not sell or transfer user data to third parties, outside of the approved use cases
-- ☑ I do not use or transfer user data for purposes unrelated to the item's single purpose
-- ☑ I do not use or transfer user data to determine creditworthiness or for lending purposes
+**Privacy policy URL:**
+`https://github.com/Igdrasil-AB/ratatosk/blob/main/PRIVACY.md` (confirm the
+merged public page contains this exact policy before submission).
 
-**Limited Use.** All data the extension handles is used solely to collect and
-deliver the user's own invoices to the destination the user configured. See the
-privacy policy.
+## Submission checklist
 
-**Privacy policy URL:** ‹published URL of PRIVACY.md›
+### Code and package
 
----
+- [ ] Run `npm run release:collector` from a clean, reviewed commit.
+- [ ] Confirm `npm audit --audit-level=high` reports no vulnerabilities.
+- [ ] Verify the ZIP checksum and archive contents.
+- [ ] Inspect the ZIP-root `manifest.json`: no Studio entries, `debugger`, `tabs`,
+      `activeTab`, `<all_urls>`, source maps, or remote scripts.
+- [ ] Load the unpacked `dist/collector` in stable Chrome and complete the manual
+      smoke test in `store/release-checklist.md`.
+- [ ] Live-test every vendor named in the description with a dedicated pilot
+      account containing non-sensitive test invoices.
 
-## Assets checklist (before submission)
-- [ ] Icon 128×128 (have: `public/icons/128.png`)
-- [ ] At least 1 screenshot 1280×800 or 640×400 (popup: home, connect, record)
-- [ ] Small promo tile 440×280 (optional)
-- [ ] Privacy policy hosted at a public URL
-- [ ] Developer account: $5 paid, DSA trader details verified
-- [ ] Submit as **Unlisted** first for a pilot, then flip to Public
+### Legal and developer account
+
+- [ ] Publish this policy at the stable HTTPS URL entered above.
+- [ ] Make support@igdrasil.se and legal@igdrasil.se operational and monitored.
+- [ ] Register the Chrome Web Store developer account and pay its one-time fee.
+- [ ] Complete account contact, identity, and any applicable trader verification.
+- [ ] Verify `igdrasil.se` in Search Console and select it as the official URL.
+- [ ] Complete Privacy practices, Distribution, and reviewer Test instructions.
+
+### Listing assets
+
+- [x] 128x128 squirrel extension/store icon: `public/icons/128.png`.
+- [ ] At least one 1280x800 screenshot; use real Collector UI and pilot data only.
+- [x] 440x280 small promotional tile: `store/assets/ratatosk-small-promo-440x280.png`.
+- [ ] Optional 1400x560 marquee promotional tile.
+- [ ] Optional YouTube product video.
+- [ ] Homepage and support URLs.
+
+### Rollout
+
+- [ ] Submit **Unlisted** first and invite only named pilot testers.
+- [ ] Monitor auth failures, vendor endpoint changes, duplicate behavior, and user
+      deletion/disconnect requests during the pilot.
+- [ ] Remove any vendor claim that has not passed current live verification.
+- [ ] Move to Public only after review feedback and the pilot exit criteria are met.

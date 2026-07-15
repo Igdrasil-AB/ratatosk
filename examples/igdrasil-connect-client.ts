@@ -10,26 +10,27 @@
  *
  *   const { present } = await pingInvoiceCollector();
  *   if (present) {
- *     await connectInvoiceCollector({
- *       token: await getSessionToken(),   // the user's Igdrasil JWT
- *       companyId,
- *       apiBaseUrl: "https://api.igdrasil.se",
- *     });
+ *     const prepared = await prepareInvoiceCollectorConnect();
+ *     if (!prepared.ok || !prepared.state) throw new Error("No connection intent");
+ *     const token = await mintScopedCollectorToken(); // done by the Igdrasil backend
+ *     await connectInvoiceCollector({ token, companyId, apiBaseUrl, state: prepared.state });
  *   }
  */
 const TAG = "invoice-collector";
 
 export interface ConnectParams {
-  /** The user's Igdrasil session token (JWT) — used only to authenticate uploads. */
+  /** An Igdrasil-issued, upload-only Collector token. Never pass a session JWT. */
   token: string;
   /** The company the collected invoices belong to. */
   companyId: string;
   /** The Igdrasil API base URL, e.g. "https://api.igdrasil.se". Must be an `*.igdrasil.se` https host. */
   apiBaseUrl: string;
+  /** One-use state created by an explicit connection action. */
+  state: string;
 }
 
 export type ConnectResult =
-  | { ok: true; present?: boolean; version?: string; connected?: boolean; companyId?: string }
+  | { ok: true; present?: boolean; version?: string; connected?: boolean; companyId?: string; state?: string }
   | { ok: false; error: string };
 
 let seq = 0;
@@ -61,7 +62,17 @@ export async function pingInvoiceCollector(): Promise<{ present: boolean; versio
   return res.ok ? { present: !!res.present, version: res.version } : { present: false };
 }
 
-/** Hand the extension the session token + company so it can collect invoices into Igdrasil. */
+/** Create a one-use intent when connection begins inside the accounting app. */
+export function prepareInvoiceCollectorConnect(): Promise<ConnectResult> {
+  return request({ type: "igdrasil:prepare" });
+}
+
+/** Check a Ratatosk-created intent before minting a scoped token. */
+export function validateInvoiceCollectorIntent(state: string): Promise<ConnectResult> {
+  return request({ type: "igdrasil:validate", state });
+}
+
+/** Hand the extension an upload-only token + company. */
 export function connectInvoiceCollector(params: ConnectParams): Promise<ConnectResult> {
   return request({ type: "igdrasil:connect", ...params });
 }

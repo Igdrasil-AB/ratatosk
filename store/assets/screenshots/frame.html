@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ratatosk Chrome Web Store screenshot</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { width: 1280px; height: 800px; margin: 0; overflow: hidden; }
+      body {
+        position: relative;
+        display: grid;
+        grid-template-columns: 350px minmax(0, 1fr);
+        align-items: center;
+        gap: 56px;
+        padding: 72px 62px;
+        overflow: hidden;
+        background: #f4eee4;
+        color: #2b2722;
+        font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      body::before {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background:
+          linear-gradient(90deg, rgba(244, 238, 228, 0.98) 0%, rgba(244, 238, 228, 0.9) 42%, rgba(244, 238, 228, 0.72) 100%),
+          url("../../../public/brand/roots-header.png") top right / 100% 256px no-repeat;
+        content: "";
+      }
+      body::after {
+        position: absolute;
+        right: -90px;
+        bottom: -170px;
+        width: 540px;
+        height: 540px;
+        border: 1px solid rgba(163, 78, 45, 0.14);
+        border-radius: 50%;
+        content: "";
+      }
+      .copy, .capture { position: relative; z-index: 1; }
+      .eyebrow {
+        margin: 0 0 22px;
+        color: #a34e2d;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 15px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      h1 {
+        max-width: 9ch;
+        margin: 0;
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 60px;
+        font-weight: 400;
+        letter-spacing: -0.035em;
+        line-height: 0.98;
+        text-wrap: balance;
+      }
+      p {
+        max-width: 28ch;
+        margin: 26px 0 0;
+        color: #6e665d;
+        font-size: 21px;
+        line-height: 1.45;
+        text-wrap: pretty;
+      }
+      .capture {
+        min-width: 0;
+        padding: 14px;
+        border-radius: 26px;
+        background: rgba(255, 253, 249, 0.78);
+        box-shadow:
+          0 28px 70px rgba(69, 49, 36, 0.18),
+          0 4px 14px rgba(69, 49, 36, 0.1),
+          inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+      }
+      img {
+        display: block;
+        width: 100%;
+        height: auto;
+        border-radius: 14px;
+        outline: 1px solid rgba(0, 0, 0, 0.1);
+      }
+    </style>
+  </head>
+  <body>
+    <section class="copy">
+      <div class="eyebrow">Ratatosk · Invoice Collector</div>
+      <h1 id="title"></h1>
+      <p id="description"></p>
+    </section>
+    <section class="capture"><img id="capture" alt="" /></section>
+    <script>
+      const variants = {
+        home: {
+          title: "Invoices, gathered.",
+          description: "Check connected vendors and keep every invoice headed to the destination you chose.",
+          image: "01-home-source.png",
+        },
+        vendors: {
+          title: "Your vendors, in view.",
+          description: "Connect, sync, and manage supported billing portals from one calm workspace.",
+          image: "02-vendors-source.png",
+        },
+      };
+      const variant = variants[new URLSearchParams(location.search).get("variant")] || variants.home;
+      document.getElementById("title").textContent = variant.title;
+      document.getElementById("description").textContent = variant.description;
+      document.getElementById("capture").src = variant.image;
+    </script>
+  </body>
+</html>
