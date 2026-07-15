@@ -28,7 +28,7 @@ jobs:
       - name: Package public Collector
         run: npm run package:collector
       - name: Upload reviewed Collector artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ratatosk-collector-${{ github.sha }}
           path: |
