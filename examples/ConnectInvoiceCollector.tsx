@@ -11,6 +11,7 @@ import {
   disconnectInvoiceCollector,
   getInvoiceCollectorStatus,
   pingInvoiceCollector,
+  prepareInvoiceCollectorConnect,
 } from "./igdrasil-connect-client";
 
 const API_BASE_URL = "https://api.igdrasil.se"; // your engine-api base
@@ -45,7 +46,28 @@ export function ConnectInvoiceCollector() {
   const connect = async () => {
     setState("working");
     setError(null);
-    const res = await connectInvoiceCollector({ token: await getToken(), companyId, apiBaseUrl: API_BASE_URL });
+    const prepared = await prepareInvoiceCollectorConnect();
+    if (!prepared.ok || !prepared.state) {
+      setState("disconnected");
+      setError(prepared.ok ? "The extension did not create a connection request." : prepared.error);
+      return;
+    }
+    const response = await fetch(`${API_BASE_URL}/integrations/invoice-collector/token`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${await getToken()}`, "X-Company-Id": companyId },
+    });
+    if (!response.ok) {
+      setState("disconnected");
+      setError("Could not create a secure Collector connection.");
+      return;
+    }
+    const { token } = (await response.json()) as { token: string };
+    const res = await connectInvoiceCollector({
+      token,
+      companyId,
+      apiBaseUrl: API_BASE_URL,
+      state: prepared.state,
+    });
     if (res.ok) setState("connected");
     else {
       setState("disconnected");

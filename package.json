@@ -1,6 +1,6 @@
 {
-  "name": "invoice-collector",
-  "version": "0.6.2",
+  "name": "ratatosk",
+  "version": "0.6.8",
   "description": "Open-source browser extension that collects supplier invoices and receipts from vendor portals using the user's own session — no credential custody.",
   "license": "MIT",
   "type": "module",
@@ -8,14 +8,21 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "npm run gen:icons && vite",
-    "build": "npm run gen:icons && vite build",
-    "gen:icons": "tsx scripts/build-icons.ts",
+    "dev": "npm run dev:collector",
+    "dev:collector": "npm run gen:icons && vite --config collector/vite.config.ts",
+    "dev:studio": "vite --config studio/vite.config.ts",
+    "build": "npm run build:collector && npm run build:studio",
+    "build:collector": "npm run gen:icons && vite build --config collector/vite.config.ts",
+    "build:studio": "vite build --config studio/vite.config.ts",
+    "package:collector": "tsx scripts/package-extension.ts collector",
+    "package:studio": "tsx scripts/package-extension.ts studio",
+    "release:collector": "npm run ci && npm run audit:security && npm run build:collector && npm run package:collector",
+    "gen:icons": "tsx scripts/build-icons.ts && tsx scripts/build-extension-icons.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "validate": "tsx scripts/validate-vendors.ts",
-    "export-recipes": "tsx scripts/export-recipes.ts",
+    "audit:security": "npm audit --audit-level=high",
     "ci": "npm run gen:icons && npm run typecheck && npm run validate && npm run test"
   },
   "dependencies": {
@@ -25,10 +32,11 @@
     "@crxjs/vite-plugin": "^2.0.0-beta.28",
     "@types/chrome": "^0.0.268",
     "@types/node": "^20.19.43",
+    "fflate": "^0.8.2",
     "simple-icons": "^16.26.0",
     "tsx": "^4.16.2",
     "typescript": "^5.5.4",
-    "vite": "^5.4.0",
-    "vitest": "^2.0.5"
+    "vite": "^8.1.4",
+    "vitest": "^4.1.10"
   }
 }

@@ -8,13 +8,14 @@ attaches that vendor's existing cookies. To the vendor it is indistinguishable
 from their own billing page calling their own API. **No password ever changes
 hands.** Everything else is plumbing around that fact.
 
-## Layers
+## Build boundaries and layers
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ platform/   MV3 glue — the ONLY place chrome.* appears       │
-│   service-worker · scheduler · storage · permissions · popup │
-└───────────────┬─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│ collector/   consumer MV3 glue, destination and popup        │
+│ studio/      development-only capture and authoring popup    │
+│ (each builds an independent manifest and extension package)  │
+└───────────────┬──────────────────────────────────────────────┘
                 │ builds a RunContext + StrategyMap, calls…
 ┌───────────────▼─────────────────────────────────────────────┐
 │ core/       platform-free engine (runs in Node too)          │
@@ -30,9 +31,16 @@ hands.** Everything else is plumbing around that fact.
 └───────────────────────────┘   └──────────────────────────────┘
 ```
 
-The dependency rule is one-directional: **platform → core → (vendors, ingest)**.
-Core never imports platform. That's what lets the engine, strategies, and every
-recipe run under Vitest with no browser.
+The dependency rule is one-directional:
+**collector|studio → shared core/vendors/ingest**. Shared code never imports a
+platform directory. That's what lets the engine, strategies, and every recipe run
+under Vitest with no browser, and it makes it impossible for Studio's entry points
+to leak into the Collector package accidentally.
+
+`collector/manifest.config.ts` and `studio/manifest.config.ts` are separate
+permission boundaries. Collector emits to `dist/collector`; Studio emits to
+`dist/studio`. Release packaging accepts one of those directories and puts only
+that extension's manifest at the ZIP root.
 
 ## Data flow (one sync)
 
@@ -52,16 +60,13 @@ alarm → service-worker → collector.runAllConnected()
 
 A recipe is a plain object validated by `core/schema.ts`. Consequences:
 
-- **Serializable** — the same object compiled into the extension can be emitted as
-  JSON (`scripts/export-recipes.ts`) and **hot-served from a backend**, so a new
-  vendor doesn't require a Web Store release. The engine treats compiled-in and
-  fetched recipes identically.
-- **Safe** — no arbitrary code is shipped or fetched; the engine is a fixed
-  interpreter over a closed set of primitives.
+- **Reviewable** — each recipe is bundled in the signed extension package. A new
+  vendor or recipe change requires tests, review, and a new Web Store release.
+- **Safe** — no arbitrary or remote code is fetched; the engine is a fixed
+  interpreter over a closed set of packaged primitives.
 - **Testable** — `mapListResponse` is pure, so a fixture in → refs out.
-- **Portable** — the JSON Schema (derived from the Zod schema) means a Rust or Go
-  backend can validate and even execute the same recipes server-side (e.g. for a
-  hybrid "capture session token, replay in the cloud" model).
+- **Portable** — the shape can be validated or executed by other trusted project
+  components, but the Chrome extension never downloads it from a backend.
 
 ## Fetch transports (worker vs page)
 
@@ -81,25 +86,42 @@ Even in page mode, only the recipe's **primary origin** is routed through the
 tab; requests to other origins (e.g. a Stripe PDF capability URL) still use the
 worker. Response bytes cross the executeScript boundary base64-encoded. Tabs the
 transport opens are closed on dispose; pre-existing tabs are reused and left
-alone. See `src/platform/page-fetch.ts`.
+alone. See `collector/src/platform/page-fetch.ts`.
 
 ## The ingest seam
 
 `IngestSink` is the single boundary for where collected documents go, selected by
 config:
 
-- **`FilesystemSink`** (OSS default) — saves to `Downloads/<root>/<supplier>/<date>/<file>`
+- **`FilesystemSink`** — saves to `Downloads/<root>/<supplier>/<date>/<file>`
   via `chrome.downloads`. Runs in the background service worker; bytes go out as a
   `data:` URL (SWs can't make Blob URLs). `dateMode` folders by collection date
   (default) or invoice date (deterministic path → overwrite-safe).
 - **`HttpSink`** — multipart POST + normalized metadata + idempotency key to any
   URL; a `409` means "already have it" and is treated as success.
 - **`IgdrasilSink`** — an `HttpSink` pointed at engine-api's `/documents/ingest`
-  with the user's session token.
+  with a revocable, company-scoped, upload-only Collector token. The user's
+  general accounting session token never enters the extension.
 
 Duplicates are prevented upstream by the engine's persisted seen-store (keyed on
 supplier + invoice id), so every sink saves each invoice once regardless of
 destination.
+
+There is no implicit default destination. The user must confirm local Downloads
+or connect Igdrasil before a vendor can be connected or run.
+
+## Studio authoring boundary
+
+Studio is not part of Collector's runtime or release. A developer checks a
+prominent disclosure before recording an active HTTP(S) tab. Studio can observe
+network metadata, supported response bodies, child-frame traffic, and a DOM
+snapshot. Before session storage, it removes auth and cookie headers, sanitizes
+URLs and secret-looking body fields, and caps bodies. On stop it creates a
+redacted, manually copied report; captured HTML bodies are not exported.
+
+Studio output is always a draft. A human must remove unnecessary data, verify the
+vendor contract in a dedicated test account, add a fixture test, and explicitly
+promote the recipe into the public `VENDORS` registry before a Collector release.
 
 ## Unattended, honestly
 
@@ -107,11 +129,11 @@ destination.
   as the browser process is alive and the vendor session is valid.
 - **No:** it cannot run while the machine is off — that's the domain of the
   server-side cloud-vault model, which this project deliberately avoids because it
-  requires holding the user's credentials.
+  requires a different product and security model.
 
 ## What's intentionally minimal
 
 - The **DOM strategy** defines its driver contract (`DomDriver`) but ships
   unavailable; wire an offscreen-document driver in `platform/` when a vendor
-  genuinely needs it. Network replay covers the current set.
+  genuinely needs it. Network replay covers the current pilot set.
 - The **popup** is framework-free by design — a thin view over the message bus.

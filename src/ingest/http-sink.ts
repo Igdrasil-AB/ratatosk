@@ -6,7 +6,7 @@ export interface HttpSinkConfig {
   endpoint: string;
   /** Optional tenant id, sent as `company_id`. */
   companyId?: string;
-  /** Optional async bearer-token provider (e.g. a Clerk session JWT). */
+  /** Optional async bearer-token provider (prefer a narrowly scoped credential). */
   token?: () => Promise<string | undefined>;
   /**
    * Hostnames the bearer token may be sent to. When set, the token is attached

@@ -4,12 +4,11 @@
  * copying 300 KB of DOM by hand.
  *
  * It is deliberately BOUNDED and pure: the draft recipe + notes, a filtered list
- * of captured requests, the document links found, and — only when inference
- * wasn't confident — a small HTML excerpt centered on the invoice rows so the
- * agent can see the exact markup to target. Size is capped so it always pastes.
+ * of sanitized captured requests, and sanitized document links. HTML bodies are
+ * deliberately excluded. Size is capped so it always pastes.
  */
 import type { CaptureSession, CapturedEntry, DraftRecipe } from "./types";
-import { extractEmbeddedJson } from "../strategies/html";
+import { sanitizeUrl } from "./cdp";
 
 export interface AgentReportInput {
   version: string;
@@ -48,7 +47,7 @@ export function buildAgentReport(input: AgentReportInput): string {
   const samples = entries
     .filter((e) => !NOISE.test(`${e.contentType} ${e.url}`))
     .slice(0, 25)
-    .map((e) => `${e.status} ${e.contentType || "?"} ${e.method} ${e.url}`);
+    .map((e) => `${e.status} ${e.contentType || "?"} ${e.method} ${sanitizeUrl(e.url)}`);
   if (samples.length) {
     out.push("## Captured requests (noise filtered)");
     out.push("```");
@@ -60,20 +59,9 @@ export function buildAgentReport(input: AgentReportInput): string {
   if (docLinks.length) {
     out.push("## Invoice/receipt links found in the page HTML");
     out.push("```");
-    out.push(docLinks.join("\n"));
+    out.push(docLinks.map(sanitizeUrl).join("\n"));
     out.push("```");
     out.push("");
-  }
-
-  // The expensive part — only when the recipe isn't trustworthy on its own.
-  if (!draft || draft.confidence === "low") {
-    const excerpt = htmlDiagnostic(entries, docLinks);
-    if (excerpt) {
-      out.push("## HTML diagnostic (excerpt around the invoice rows / data)");
-      out.push("```html");
-      out.push(excerpt);
-      out.push("```");
-    }
   }
 
   const text = redactSecrets(out.join("\n"));
@@ -89,45 +77,8 @@ export function buildAgentReport(input: AgentReportInput): string {
 export function redactSecrets(text: string): string {
   return text
     .replace(/\b[Bb]earer\s+[A-Za-z0-9._~+/-]{8,}=*/g, "Bearer «redacted»")
-    .replace(/\beyJ[A-Za-z0-9._-]{20,}/g, "«redacted-jwt»");
-}
-
-/** A small, whitespace-collapsed slice of the most useful captured HTML. */
-function htmlDiagnostic(entries: CapturedEntry[], docLinks: string[]): string | undefined {
-  const htmlEntries = entries.filter((e) => e.responseBody && e.contentType.includes("html"));
-  if (!htmlEntries.length) return undefined;
-  // Prefer the rendered DOM snapshot (post-JS markup), then the largest body.
-  htmlEntries.sort(
-    (a, b) =>
-      (b.method === "DOM" ? 1 : 0) - (a.method === "DOM" ? 1 : 0) ||
-      (b.responseBody?.length ?? 0) - (a.responseBody?.length ?? 0),
-  );
-  const html = htmlEntries[0].responseBody as string;
-
-  // Windows centered on the first few document links show the exact row markup.
-  const windows: string[] = [];
-  for (const href of docLinks.slice(0, 3)) {
-    const idx = html.indexOf(href);
-    if (idx < 0) continue;
-    windows.push(collapse(html.slice(Math.max(0, idx - 400), idx + href.length + 200)));
-  }
-  if (windows.length) return windows.join("\n--- next row ---\n");
-
-  // No doc-links: surface embedded-JSON blob shapes (helps locate an array), else a head slice.
-  const blobs = extractEmbeddedJson(html);
-  if (blobs.length) {
-    return blobs
-      .slice(0, 6)
-      .map((b, i) => `embedded blob[${i}] top-level keys: ${topKeys(b).join(", ") || "(not an object)"}`)
-      .join("\n");
-  }
-  return collapse(html.slice(0, 1500));
-}
-
-function collapse(s: string): string {
-  return s.replace(/\s+/g, " ").trim();
-}
-
-function topKeys(value: unknown): string[] {
-  return value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value).slice(0, 30) : [];
+    .replace(/\beyJ[A-Za-z0-9._-]{20,}/g, "«redacted-jwt»")
+    .replace(/\b(?:sk|pk|rk|api)[_-](?:live|test|prod)?[_-]?[A-Za-z0-9_-]{12,}\b/gi, "«redacted-key»")
+    .replace(/([?&](?:token|key|secret|signature|sig|auth|code)=)[^&#\s"']+/gi, "$1«redacted»")
+    .replace(/[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+/g, "user@example.com");
 }

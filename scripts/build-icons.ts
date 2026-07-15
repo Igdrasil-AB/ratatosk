@@ -16,7 +16,7 @@
  *   npm run gen:icons
  */
 import { writeFileSync } from "node:fs";
-import { VENDORS } from "../src/vendors";
+import { ALL_VENDORS, VENDORS } from "../src/vendors";
 import { OVERRIDES } from "../src/vendors/icon-overrides";
 import * as simpleIcons from "simple-icons";
 
@@ -39,7 +39,7 @@ for (const key of Object.keys(simpleIcons)) {
 }
 
 const wanted = new Set<string>();
-for (const v of VENDORS) if (v.icon) wanted.add(v.icon);
+for (const v of ALL_VENDORS) if (v.icon) wanted.add(v.icon);
 for (const slug of CATALOG) wanted.add(slug);
 
 const out: Record<string, { path: string; hex: string; title: string }> = {};

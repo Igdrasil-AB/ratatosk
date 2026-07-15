@@ -5,8 +5,7 @@ import type { CaptureSession } from "../../src/core/recorder/types";
 
 /**
  * The "Copy for agent" payload is the hand-off from browser to coding agent, so
- * it must (a) carry a confident recipe verbatim and (b) degrade to a useful HTML
- * excerpt — bounded — when inference can't produce one.
+ * it must carry a useful bounded diagnosis without exporting captured page HTML.
  */
 describe("agent report — confident draft", () => {
   const session: CaptureSession = {
@@ -37,7 +36,7 @@ describe("agent report — confident draft", () => {
   });
 });
 
-describe("agent report — no draft, falls back to bounded HTML excerpt", () => {
+describe("agent report — no draft stays bounded and omits HTML", () => {
   const big = "x".repeat(50_000);
   const session: CaptureSession = {
     origin: "https://weird.example",
@@ -60,7 +59,8 @@ describe("agent report — no draft, falls back to bounded HTML excerpt", () => 
 
   it("states no recipe and stays under the paste cap", () => {
     expect(report).toContain("No recipe could be inferred");
-    expect(report).toContain("HTML diagnostic");
+    expect(report).not.toContain("no invoices here");
+    expect(report).not.toContain(big.slice(0, 100));
     expect(report.length).toBeLessThanOrEqual(14_100); // MAX_REPORT_CHARS + truncation marker
   });
 });

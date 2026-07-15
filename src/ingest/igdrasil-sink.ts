@@ -6,7 +6,7 @@ export interface IgdrasilSinkConfig {
   baseUrl: string;
   /** The company the documents belong to. */
   companyId: string;
-  /** Returns the user's Clerk session JWT for authenticating to engine-api. */
+  /** Returns an Igdrasil-issued, upload-only Collector token. */
   getToken: () => Promise<string | undefined>;
 }
 
@@ -15,7 +15,7 @@ export interface IgdrasilSinkConfig {
  *
  * It is intentionally a thin configuration of {@link HttpSink} rather than a new
  * class — the wire format is identical, Igdrasil just points at its own
- * `/documents/ingest` endpoint, authenticates with the user's Clerk session, and
+ * `/documents/ingest` endpoint, authenticates with a scoped Collector token, and
  * tags the source. Any other host integrates the same way.
  */
 export function createIgdrasilSink(cfg: IgdrasilSinkConfig): IngestSink {
@@ -30,7 +30,7 @@ export function createIgdrasilSink(cfg: IgdrasilSinkConfig): IngestSink {
     endpoint,
     companyId: cfg.companyId,
     token: cfg.getToken,
-    // The user's session token is only ever sent to the Igdrasil host itself.
+    // The Collector token is only ever sent to the Igdrasil host itself.
     allowTokenHosts: [host],
     // engine-api scopes the tenant from the X-Company-Id header (not the form field).
     headers: { "X-Collector": "invoice-collector-extension", "X-Company-Id": cfg.companyId },

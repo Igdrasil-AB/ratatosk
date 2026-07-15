@@ -2,11 +2,9 @@
  * Runtime validation for vendor recipes — and the FREEZE that keeps recipes on
  * the allowed side of Chrome's remote-code policy.
  *
- * Recipes are plain data that can be hot-served as JSON from a backend. Chrome
- * Web Store policy bans "building an interpreter to run complex commands fetched
- * from a remote source, even if those commands are fetched as data." To stay
- * firmly clear of that line — and to make a hostile recipe un-authorable — this
- * schema FREEZES the recipe vocabulary:
+ * Recipes are plain data bundled with the reviewed extension package. Collector
+ * never fetches recipes from a backend. To keep the interpreter small and make a
+ * hostile recipe un-authorable, this schema FREEZES the recipe vocabulary:
  *
  *   1. Transforms are a CLOSED enum of simple, non-Turing-complete operations
  *      (divide/date/regex/template/replace/trim/upper/lower). New behavior can
@@ -19,11 +17,9 @@
  *      industry-standard simple template processor, limited by design", not an
  *      interpreter.
  *
- * Every recipe passes {@link validateRecipe} at registration time, whether it is
- * compiled in or hot-loaded, so a malformed or over-reaching recipe fails
- * immediately with a precise message rather than misbehaving at 3am in a service
- * worker. The Zod schema is also the single source of truth for the published
- * JSON Schema.
+ * Every packaged recipe passes {@link validateRecipe} at registration time, so a
+ * malformed or over-reaching recipe fails immediately with a precise message
+ * rather than misbehaving in a service worker.
  */
 import { z } from "zod";
 import type { VendorRecipe } from "./types";
@@ -53,7 +49,7 @@ const boundedRegex = (max: number) =>
 const RegexPattern = boundedRegex(MAX_PATTERN);
 
 // The closed, frozen transform vocabulary. Adding a kind is a CODE change (it
-// ships in the package); a fetched recipe can only select and parametrize these.
+// ships in the package); a recipe can only select and parametrize these.
 const Transform = z.union([
   z.object({ kind: z.literal("divide"), by: z.number().positive() }).strict(),
   z.object({ kind: z.literal("date"), epoch: z.enum(["s", "ms"]).optional() }).strict(),

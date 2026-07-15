@@ -12,16 +12,26 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - run: npm ci
-      - name: Audit dependencies (advisory)
-        run: npm audit --audit-level=high || true
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
       - name: Typecheck
         run: npm run typecheck
       - name: Validate recipes (schema + test coverage)
         run: npm run validate
       - name: Test
         run: npm test
-      - name: Build extension
+      - name: Build Collector and Studio independently
         run: npm run build
+      - name: Package public Collector
+        run: npm run package:collector
+      - name: Upload reviewed Collector artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ratatosk-collector-${{ github.sha }}
+          path: |
+            artifacts/ratatosk-collector-*.zip
+            artifacts/ratatosk-collector-*.sha256
+          if-no-files-found: error

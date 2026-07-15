@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodePageResult, isPrimaryOrigin } from "../../src/platform/page-fetch";
+import { decodePageResult, isPrimaryOrigin } from "../../collector/src/platform/page-fetch";
 
 /**
  * The tab/executeScript machinery needs a real Chrome, but the routing and the

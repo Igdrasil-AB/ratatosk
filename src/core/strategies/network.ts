@@ -68,17 +68,17 @@ export const networkStrategy: Strategy = {
     } else if (ref.documentUrl) {
       res = await ctx.fetch({ url: ref.documentUrl }, docVars);
     } else {
-      throw new DocumentNotFound(`no document request and no documentUrl for ${ref.vendorInvoiceId}`, recipe.id);
+      throw new DocumentNotFound("document URL unavailable", recipe.id);
     }
 
-    if (res.status === 404) throw new DocumentNotFound(ref.vendorInvoiceId, recipe.id);
+    if (res.status === 404) throw new DocumentNotFound("document unavailable", recipe.id);
     if (!res.ok) throw new UnexpectedResponse(res.status, "document fetch failed", recipe.id);
 
     const bytes = await res.arrayBuffer();
     const head = new Uint8Array(bytes.slice(0, 4));
     const looksPdf = head[0] === 0x25 && head[1] === 0x50 && head[2] === 0x44 && head[3] === 0x46; // "%PDF"
     console.info(
-      `[collector] document ${ref.vendorInvoiceId}: ${bytes.byteLength}b type=${res.headers.get("content-type") ?? "?"} pdf=${looksPdf}`,
+      `[collector] ${recipe.id} document: ${bytes.byteLength}b type=${res.headers.get("content-type") ?? "?"} pdf=${looksPdf}`,
     );
     // Trust the server's content-type when it disagrees with the recipe, so an
     // HTML error page isn't silently saved as a .pdf.

@@ -27,7 +27,7 @@ export function createHttpFetch(): (
       redirect: "follow",
     });
 
-    console.info(`[collector] worker ${spec.method ?? "GET"} ${url} -> ${res.status}`);
+    console.info(`[collector] worker ${spec.method ?? "GET"} ${safeOrigin(url)} -> ${res.status}`);
 
     if (res.status === 429) {
       const retryAfter = Number(res.headers.get("retry-after") ?? "");
@@ -42,4 +42,12 @@ export function createHttpFetch(): (
       headers: { get: (name: string) => res.headers.get(name) },
     };
   };
+}
+
+function safeOrigin(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "unknown-origin";
+  }
 }

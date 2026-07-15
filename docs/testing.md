@@ -1,63 +1,71 @@
 # Testing a vendor live
 
-Unit tests cover the pure logic (mapping, routing, decoding, the engine run with
-a mocked fetch). The one thing they can't cover is whether a real fetch survives
-a vendor's live auth + bot protection. Here's how to test that end to end — no
-backend required.
+Fixture tests prove mapping and engine behavior. They cannot prove that a current
+vendor endpoint, browser auth flow, or bot-protection rule still works. Complete
+this test before naming a vendor as supported in a release.
 
-## 1. Build and load
+Use a dedicated vendor test account with synthetic, non-sensitive invoices. Do
+not use a personal account, customer account, production token, or real financial
+document in screenshots, logs, fixtures, or issue reports.
+
+## 1. Build and load Collector
 
 ```bash
-npm run build
+npm run ci
+npm run build:collector
 ```
 
-`chrome://extensions` → enable **Developer mode** → **Load unpacked** → select
-`dist/`.
+Open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and
+select `dist/collector`.
 
-## 2. Dry-run mode (no backend)
+Confirm the loaded manifest has no `debugger`, `tabs`, `activeTab`, `cookies`, or
+`<all_urls>` permission. Do not load `dist/studio` for the consumer test.
 
-If no sink is configured, the collector performs a **dry run**: it fetches and
-counts documents but sends nothing and marks nothing seen. That is exactly what
-you want to confirm a vendor's fetch works. So you can skip straight to connecting.
+## 2. Choose a destination
 
-## 3. Connect the vendor
+Collector intentionally has no default destination and will reject a vendor
+connection until one is confirmed.
 
-Open the extension popup → click **Connect** next to the vendor (e.g. Anthropic).
+- For a local test, choose the Downloads destination and a dedicated Ratatosk test
+  folder. The documents will be written to disk.
+- For an Igdrasil test, use the connect flow on
+  `https://accounting.igdrasil.se` and a dedicated test company.
 
-- You'll be prompted to grant host permissions for that vendor's domains — accept.
-- Make sure you're **logged into the vendor** in this browser (for Anthropic,
-  claude.ai). The extension rides that session; it never sees your password.
-- The extension reuses an open vendor tab, or briefly opens a background one.
+There is no dry-run fallback: a successful run delivers documents to the selected
+destination.
 
-The popup pill then shows the outcome:
+## 3. Connect and exercise the vendor
 
-| Pill | Meaning |
-|---|---|
-| `N · just now` | ✅ fetched N invoices (dry run — not sent anywhere) |
-| `Reconnect` | session wasn't valid — sign into the vendor and retry |
-| `Error` | something failed — see the service worker logs (below) |
+Open the popup and connect the vendor.
 
-## 4. Watch the logs
+1. Review and grant only the vendor host prompt.
+2. Sign in to the dedicated test account in the same Chrome profile.
+3. Run collection and confirm exactly the expected synthetic documents arrive.
+4. Run again and confirm those documents are not duplicated.
+5. Sign out of the vendor and run again; confirm `Reconnect` and the notification.
+6. Disconnect the vendor and confirm Chrome revoked its optional host permission.
 
-`chrome://extensions` → the extension's **service worker** link → **Console**.
-You'll see the run, and for a `page`-mode vendor, the tab it drove. Errors carry
-the typed reason (`AuthExpired`, `SelectorMiss`, an HTTP status, …).
+## 4. Inspect extension logs safely
 
-## 5. What "works" looks like for Anthropic
+Open the Collector service-worker console from `chrome://extensions`. Confirm the
+typed outcome and HTTP status without copying response bodies or tokens. Redact
+account ids, invoice ids, URLs, and financial fields before attaching logs to an
+issue.
 
-- A `claude.ai` tab is used/opened.
-- The `/api/organizations` probe returns 200 (session alive).
-- Both orgs are enumerated; the one without billing is skipped, not fatal.
-- The subscription org's invoices are listed and their Stripe PDFs downloaded.
-- The pill shows the invoice count.
+## 5. Verify persistence and failure behavior
 
-If it shows `Reconnect`, the claude.ai session wasn't live in this browser. If it
-errors on the list call specifically, that's the Cloudflare signal — verify the
-tab actually loaded claude.ai and you're logged in.
+- Turn the schedule off, restart Chrome, and confirm it remains off.
+- Deny a host prompt and confirm the vendor remains disconnected.
+- Disconnect Igdrasil and confirm the destination clears; another vendor must not
+  run until a destination is selected again.
+- Simulate a destination failure and confirm the invoice is retried rather than
+  marked collected.
 
-## 6. With a backend
+## 6. Record the verification
 
-To test the full path (documents actually landing somewhere), configure a sink
-first via the popup/options, then connect. `http` sink → any URL that accepts the
-multipart POST (see `src/ingest/http-sink.ts`); `igdrasil` sink → engine-api's
-`/documents/ingest`.
+Record the Chrome version, Ratatosk commit and package checksum, vendor name,
+test date, destination mode, and pass/fail for fetch, download, de-duplication,
+expired-session handling, and disconnect. Do not record secrets or actual invoice
+content.
+
+The full pre-release flow is in `store/release-checklist.md`.

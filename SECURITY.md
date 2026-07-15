@@ -1,59 +1,83 @@
 # Security
 
-Invoice Collector reads authenticated billing pages and holds a backend session
-token, so it is designed defensively. This document is the threat model, the
-guarantees the code makes, and how to report a vulnerability.
+Ratatosk handles authenticated billing requests and invoice documents, so the
+public Collector is deliberately isolated from the development-only Studio.
 
 ## Reporting a vulnerability
 
-Please report privately via a [GitHub security advisory](../../security/advisories/new)
-rather than a public issue. We aim to acknowledge within 72 hours.
+Please report privately through a
+[GitHub security advisory](https://github.com/Igdrasil-AB/ratatosk/security/advisories/new)
+instead of opening a public issue. We aim to acknowledge reports within 72 hours.
 
-## What the extension can and cannot do
+Do not include live credentials, invoice documents, or unredacted Studio output
+in a report unless a maintainer has provided a secure transfer method.
 
-**Single purpose.** Collect a user's own supplier invoices and receipts into
-their accounting backend. The recorder ("Studio") is an authoring aid for that
-same purpose; it is not a general-purpose network-debugging tool.
+## Release boundaries
 
-**Zero credential custody.** The extension never sees, stores, or transmits
-vendor passwords or 2FA. It rides the session the user already has: requests use
-`credentials: "include"`, so the browser attaches the user's existing cookies and
-the extension never handles them. There is no credential vault to breach.
+- `collector/` builds the consumer extension. It has no recorder code and does
+  not request `debugger`, `tabs`, `activeTab`, or all-sites access.
+- `studio/` builds a development tool with `debugger`. It must not be submitted
+  or distributed as the consumer Collector.
+- `src/` contains shared, platform-independent logic. It cannot call Chrome APIs.
 
-## Assets and threat model
+CI packages Collector from `dist/collector` only. Reviewers should inspect the
+manifest inside the release ZIP, not infer permissions from the repository.
 
-| Asset | Threat | Mitigation |
+## Threat model
+
+| Asset or boundary | Threat | Mitigation |
 |---|---|---|
-| Backend session token (JWT) | Read from disk; read by a content script or a compromised dependency; sent to a foreign host | Stored in `chrome.storage.session` (in-memory, trusted-contexts only), never `.local`; only ever sent to an allow-listed backend host over https (`http-sink.ts`); never logged or written into a recipe/report |
-| Vendor session cookies | Exfiltration via capture or replay | `cookie`/`set-cookie` are dropped from every captured request/response; the extension never reads cookies |
-| Vendor bearer tokens | Written into a shareable recipe/report | Used only to trace a request's source during inference; never written into recipes, reports, or fixtures; the "Copy for agent" report is redacted as a backstop |
-| The hot-loaded recipe catalog | A recipe smuggling executable behavior ("remote interpreter") | Recipes are frozen declarative data — closed transform enum, `.strict()` schema, bounded+compiled patterns, capped pipelines (`src/core/schema.ts`); a recipe can only select/parametrize in-package logic |
-| The accounting backend | A forged "connect" from a hostile page | The connect bridge content script runs only on `https://accounting.igdrasil.se/*`; the service worker re-validates that each relayed request came from our own content script (`sender.id`) on that exact origin (`sender.origin`), and only accepts a token for an `*.igdrasil.se` https backend |
-| The recorder capture | A hostile page injecting fabricated entries | Capture is user-initiated; the relay forwards only same-window messages carrying a per-session nonce; the service worker drops entries from any tab that isn't the recording one; the debugger backend is the high-integrity path |
+| Igdrasil token | A broad account credential is persisted, read by a content script, logged, or sent to another host | The extension accepts only an Igdrasil-issued `rat_…` upload credential scoped to one company; it never receives a Clerk session JWT. The token is stored in extension-only local storage for scheduled sync, never logged, attached only to the configured HTTPS Igdrasil host, rotated on reconnect, and revoked on disconnect |
+| Vendor sessions | Cookie or password exfiltration | Collector uses `credentials: "include"` and lets Chrome attach cookies; it never reads cookie values and requests no cookies permission; it never asks for passwords or 2FA |
+| Temporary vendor bearer token | Persisted, logged, or sent to another vendor | Derived only when a packaged recipe requires it; held in one run's variables; used only in that recipe's bounded requests; never written to storage or logs |
+| Invoice documents | Silent transmission to an unexpected destination | No vendor can connect until the user confirms a destination; destinations are validated; local and Igdrasil modes are explicit in the popup |
+| Recipe behavior | Remote code or remotely changed logic | Recipes and transforms are bundled, strict declarative data; Collector fetches neither remote code nor remote recipes; changes require a new reviewed package |
+| Connect bridge | A hostile page installing a token or destination | Content script is limited to `https://accounting.igdrasil.se/*`; worker verifies extension id and exact sender origin; backend URL must be HTTPS on `igdrasil.se` or a subdomain; connect requires a short-lived, one-use state created by an explicit Ratatosk or in-app action |
+| Extension message bus | Web content issuing privileged commands | Consumer/control messages are accepted only when Chrome reports this extension's id and exact `chrome-extension://<this-id>/` sender URL; content-script senders retain their web URL and are rejected |
+| Download paths | Path traversal or unintended overwrite | Folder and filename segments are normalized and tested; local root configuration is validated and bounded |
+| Studio capture | A page leaking secrets through headers, URLs, or bodies | Explicit disclosure checkbox; recording limited to the active HTTP(S) tab; auth/cookie/API-key headers dropped; URL credentials/query values and secret-like body fields redacted; state stays in session storage and is cleared on startup |
+| Studio relay | A page fabricating entries for another recording | Per-session nonce, same-window relay checks, active recording-tab check, and worker-side entry rebuilding |
 
-## Guarantees enforced in code (with tests)
+## Security invariants enforced by tests
 
-- **Recipes are data, never code** — `src/core/schema.ts`, locked by `test/core/recipe-freeze.test.ts`.
-- **The token never reaches a non-allow-listed host** — `src/ingest/http-sink.ts`, locked by `test/core/http-sink-security.test.ts`.
-- **The agent report carries no secrets** — `src/core/recorder/report.ts`, locked by `test/core/report-redact.test.ts`.
-- **Download paths can't traverse out of the folder** — `src/platform/filesystem-sink.ts`, locked by `test/core/filesystem-traversal.test.ts`.
+- Recipe shapes reject unknown behavior: `src/core/schema.ts` and
+  `test/core/recipe-freeze.test.ts`.
+- Tokens cannot follow an arbitrary HTTP sink:
+  `src/ingest/http-sink.ts` and `test/core/http-sink-security.test.ts`.
+- Studio reports redact secrets and omit captured HTML bodies:
+  `src/core/recorder/report.ts` and `test/core/report-redact.test.ts`.
+- Download paths cannot escape the configured folder:
+  `collector/src/platform/filesystem-sink.ts` and
+  `test/core/filesystem-traversal.test.ts`.
+- Captured headers, URLs, and bodies are sanitized before Studio persists them:
+  `src/core/recorder/cdp.ts` and `test/core/recorder-capture.test.ts`.
 
-## Hardening posture
+## Platform hardening
 
-- **CSP.** Strict MV3 policy (`script-src 'self'; object-src 'self'`) — no remote
-  scripts, no `eval`/`new Function`; all logic ships in the package.
-- **MAIN-world injection** is scoped to a connected vendor's primary origin, sends
-  only that origin's own auth, treats returned data as untrusted, and caps
-  response size.
-- **Supply chain.** Runtime dependencies are kept minimal (currently `zod`);
-  Dependabot and an advisory `npm audit` run in CI; the lockfile is committed.
-- **Least privilege.** Vendor hosts are optional permissions requested at
-  connect-time, not broad `<all_urls>` access.
+- Strict MV3 CSP: `script-src 'self'; object-src 'self'`.
+- No `eval`, `new Function`, remote scripts, remotely hosted WebAssembly, or
+  remote recipe catalog.
+- Optional vendor origins requested at connect time and revoked on disconnect.
+- First-party page-context fetching is constrained to the recipe's primary
+  origin; response sizes are capped and treated as untrusted input.
+- Local and HTTP destination configuration is schema-checked at the message
+  boundary; non-local HTTP destinations must use HTTPS.
+- Runtime dependencies are minimal; lockfile, Dependabot, tests, validation,
+  build, and audit checks are part of release preparation.
 
-## Permissions, briefly
+## Permissions
 
-`debugger` (recorder capture, user-initiated, detaches immediately), `scripting`
-(first-party fetch on the vendor's own page), `downloads` (save invoice PDFs),
-`storage`/`alarms`/`notifications` (settings, sync schedule, reconnect nudges),
-`activeTab`/`tabs` (act on the tab being recorded). Vendor origins are optional
-and requested per vendor.
+Collector requests `storage`, `alarms`, `notifications`, `scripting`, and
+`downloads`, plus optional per-vendor host origins. It declares one narrow content
+script on the Igdrasil accounting application for the user-controlled connection
+handshake.
+
+Studio requests `storage`, `scripting`, `debugger`, and `activeTab`. Those broad
+authoring capabilities are the reason it is a separate development build.
+
+## Known operational limits
+
+The browser and vendor remain part of the trust boundary. A compromised vendor
+page can return malicious data, so all vendor response data must remain bounded
+and validated. Vendor API changes can also break a recipe; live pilot verification
+is required before claiming support.

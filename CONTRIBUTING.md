@@ -15,8 +15,12 @@ fixture test, register it in `src/vendors/index.ts`.
   the schema is missing a primitive — extend `core/schema.ts` (+ `core/types.ts`
   + the engine) rather than special-casing a vendor. The engine has no per-vendor
   branches and should stay that way.
-- **Keep `chrome.*` in `src/platform/`.** Nothing in `core/`, `vendors/`, or
-  `ingest/` may import a browser extension API.
+- **Keep `chrome.*` in `collector/` or `studio/`.** Nothing in shared `src/core/`,
+  `src/vendors/`, or `src/ingest/` may import a browser extension API.
+- **Respect the product boundary.** Collector cannot import Studio, recorder, or
+  `debugger` functionality. Studio is never a consumer release artifact.
+- **No remotely loaded recipes or code.** Vendor changes ship only through a
+  reviewed Collector build and versioned Web Store update.
 - **Every vendor needs a fixture test.** CI enforces it (`npm run validate`).
 - **Mark unverified endpoints.** Use the `notes` field to say when/where you
   captured them. Don't claim a recipe is production-verified if it isn't.
@@ -25,6 +29,7 @@ fixture test, register it in `src/vendors/index.ts`.
 
 ```bash
 npm run ci      # typecheck + validate recipes + tests
+npm run build   # independently builds Collector and Studio
 ```
 
 ## Scope of a good vendor PR
