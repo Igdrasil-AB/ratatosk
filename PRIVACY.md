@@ -1,101 +1,142 @@
-# Privacy Policy — Invoice Collector
+# Privacy Policy — Ratatosk Invoice Collector
 
-> **DRAFT for owner review.** Fill the `‹…›` placeholders (legal entity, contact
-> email, effective date) and publish this at a stable public URL (e.g. GitHub
-> Pages), then put that URL in the Chrome Web Store listing.
+**Effective date:** 2026-07-15
 
-**Effective date:** ‹YYYY-MM-DD›
-**Provided by:** ‹legal entity / maintainer name›
-**Contact:** ‹privacy contact email›
+**Provided by:** Igdrasil AB
 
-Invoice Collector ("the extension") is a browser extension that collects a user's
-own supplier invoices and receipts from vendor billing pages and delivers them to
-a destination the user chooses. This policy explains exactly what the extension
-does and does not do with data. It is written to match the extension's actual
-behavior, which is open source and independently verifiable at ‹repo URL›.
+**Privacy contact:** legal@igdrasil.se
 
-## The short version
+**Address:** Kornhamnstorg 61, 111 27 Stockholm, Sweden
 
-- The extension **rides the user's existing browser session**. It **never sees,
-  stores, or transmits vendor passwords or 2FA**, and it **never reads cookies**.
-- It sends the user's collected invoices **only to the destination the user
-  configures** — their own accounting backend or a local Downloads folder.
-- It sends **nothing to the extension's authors**. There is **no analytics, no
-  telemetry, and no tracking**.
-- Data is **not sold, not shared** with third parties, and **not used for any
-  purpose other than collecting the user's invoices**.
+This policy applies to the public **Ratatosk — Invoice Collector** Chrome
+extension ("Collector"). It does not apply to the separately built, unpublished
+Ratatosk Studio developer tool. Collector's source code is available at
+https://github.com/Igdrasil-AB/ratatosk.
 
-## What data the extension handles
+## Purpose
 
-1. **Invoice and receipt documents and their metadata** — the PDF files and fields
-   such as vendor, amount, date, and invoice id. These are fetched from the
-   vendors the user connects and delivered to the user's configured destination.
-2. **A backend session token** — when the user connects the extension to a backend
-   (e.g. Igdrasil), a session token authenticates the upload of the user's
-   documents. It is stored in memory (`chrome.storage.session`, cleared when the
-   browser closes), is only ever sent to the user's configured backend host, and
-   is never logged or written into any recipe or report.
-3. **Recording captures (only when the user starts a recording)** — to teach the
-   collector a new vendor, the recorder observes the billing page's own network
-   traffic. **Cookies and credentials are stripped** from these captures, they are
-   held only in memory for the duration of the recording, and they never leave the
-   browser except in the recipe draft the user explicitly chooses to share.
+Collector has one purpose: to collect a user's own supplier invoices and receipts
+from vendor billing portals and deliver them to a destination the user explicitly
+selects. Collector does not fetch a vendor until the user has selected either
+Igdrasil or a local Downloads folder and connected that vendor.
 
-The extension **does not** collect browsing history, personal identifiers,
-location, or any data unrelated to invoice collection.
+## Data Collector handles
+
+Collector handles only the data required for that purpose:
+
+1. **Invoice and receipt documents and metadata.** This can include PDF content,
+   vendor name, invoice identifier, issue date, amount, currency, and collection
+   time. Collector obtains these from vendors the user chooses to connect.
+2. **Existing vendor-session requests.** Collector asks Chrome to make requests
+   to a connected vendor using the session already present in the browser. Chrome
+   may attach that vendor's cookies to the request, but Collector does not read,
+   copy, store, or transmit the cookie values. Some vendors expose a temporary
+   bearer token to their own billing page; when required, Collector holds that
+   value only in run memory and sends it only back to that same vendor. It is not
+   persisted or logged.
+3. **Igdrasil upload token and company identifier.** If the user connects
+   Igdrasil, Collector receives a company-scoped, upload-only token and company
+   id from the Igdrasil web application. It never receives the user's general
+   Igdrasil login token. The upload token is stored in extension-local storage
+   so scheduled collection can continue after Chrome restarts. It expires after
+   90 days, is rotated on reconnect, and is revoked and removed on disconnect.
+4. **Extension settings and operational history.** Collector stores the selected
+   destination, schedule, connected vendors, last-run status, a bounded set of up
+   to 5,000 de-duplication keys, and a bounded recent ledger of up to 100 collected
+   documents in `chrome.storage.local`.
+
+Collector does not collect analytics, advertising identifiers, precise location,
+or general browsing history. It does not ask for vendor passwords or two-factor
+codes. It does not include the Studio recorder or record browser traffic.
 
 ## Where data goes
 
-- **To the user's chosen destination only.** With a backend configured, collected
-  documents are POSTed to that backend over HTTPS; the session token is sent only
-  to that allow-listed host. With no backend, documents are saved to a local
-  Downloads folder and nothing is transmitted.
-- **Never to the authors or any third party.** The extension contains no analytics
-  or third-party SDKs and makes no requests to the authors' servers.
+The user chooses one of these destinations before collection:
+
+- **Igdrasil:** invoice documents and metadata are transmitted over HTTPS to the
+  Igdrasil API for the company selected by the user. The Igdrasil token is
+  restricted in code to HTTPS hosts at `igdrasil.se` or its subdomains. Data
+  received by Igdrasil is then governed by the user's agreement with Igdrasil and
+  the Igdrasil privacy notice at https://igdrasil.se/privacy/.
+- **Local Downloads:** invoice documents are saved to the user-selected folder
+  beneath Chrome's Downloads directory. They are not uploaded to Igdrasil.
+
+Collector also communicates directly with each vendor the user connects to fetch
+the user's invoices. Those vendors process requests under their own terms and
+privacy policies. Collector contains no analytics or advertising SDK and makes no
+telemetry request to the extension authors.
+
+We do not sell extension data. We do not use or transfer it for advertising,
+creditworthiness, lending, or any purpose unrelated to invoice collection and
+delivery.
+
+## Chrome Web Store Limited Use
+
+Collector's use of information received from Google APIs complies with the
+[Chrome Web Store User Data Policy](https://developer.chrome.com/docs/webstore/program-policies/user-data-faq),
+including its Limited Use requirements. Collector does not sell or transfer user
+data outside approved use cases, use or transfer it for purposes unrelated to
+invoice collection and delivery, or use or transfer it to determine
+creditworthiness or for lending.
 
 ## Storage and retention
 
-- Settings, the connected-vendor list, and a small local history of collected
-  invoices are stored in the browser via `chrome.storage.local`.
-- The backend session token and any in-progress recording are stored in
-  `chrome.storage.session` (in-memory) and cleared when the browser closes.
-- **Uninstalling the extension deletes all of its locally stored data.** Documents
-  already delivered to the user's backend or saved to disk are governed by that
-  destination, not by the extension.
-
-## Vendor sessions
-
-The extension operates within the vendor sessions the user is already logged into,
-using standard browser requests. It does not create, store, or manage vendor
-credentials. When a vendor session expires, the extension simply notifies the user
-to sign in again.
+- The company-scoped Igdrasil upload token remains in extension-local storage
+  until it expires, is rotated, the user disconnects Igdrasil, or the extension
+  is uninstalled. Disconnect also revokes the server-side credential.
+- Settings, schedule, connections, recent history, and de-duplication keys remain
+  in local extension storage until changed, cleared through extension actions, or
+  the extension is uninstalled. Chrome removes extension storage on uninstall,
+  subject to Chrome's own sync, backup, and device behavior.
+- Locally downloaded files remain until the user deletes them.
+- Documents delivered to Igdrasil are retained under the user's Igdrasil
+  agreement and Igdrasil's applicable retention rules.
 
 ## Permissions
 
-The extension requests only the permissions needed for its single purpose;
-each is justified in the store listing. Vendor host access is optional and
-requested per vendor at the moment the user connects it — never broad or
-all-sites access.
+Collector uses `storage` for settings and history, `alarms` for the schedule,
+`notifications` for expired-session notices, `downloads` for local files, and
+`scripting` for a first-party request on vendors that require their billing page
+context. Vendor host access is optional and requested separately when the user
+connects a vendor. The only always-on page integration is the content script on
+`https://accounting.igdrasil.se/*`, used for the Igdrasil connect/disconnect
+handshake and the service worker's HTTPS invoice uploads.
 
-## Limited Use compliance
+Collector does not request `debugger`, `tabs`, `activeTab`, or `<all_urls>`.
 
-The extension's use of any data obtained through it complies with the Chrome Web
-Store User Data Policy, including the Limited Use requirements. All handled data is
-used **solely** to collect and deliver the user's own invoices to the destination
-the user configured. The extension does not sell user data, does not use or
-transfer it for unrelated purposes, and does not use it to determine
-creditworthiness or for lending.
+## Security
+
+Collector validates destination URLs, requires HTTPS except for an explicitly
+configured localhost development destination, restricts the Igdrasil token to
+Igdrasil hosts, uses a strict extension content-security policy, and packages all
+executable logic with the extension. See [SECURITY.md](SECURITY.md) for the threat
+model and vulnerability-reporting process.
+
+## User choices and rights
+
+Users can disconnect a vendor to revoke its optional host access and clear that
+vendor's collection history. Users can disconnect Igdrasil to revoke and remove
+its upload token and destination configuration, select local Downloads instead,
+disable the schedule, or uninstall Collector to remove its local extension data.
+
+For access, deletion, objection, or other privacy questions concerning data sent
+to Igdrasil, contact legal@igdrasil.se. Users may also have the right to lodge a
+complaint with the Swedish Authority for Privacy Protection (IMY).
 
 ## Children
 
-The extension is a business/productivity tool and is not directed to children.
+Collector is a business productivity tool and is not directed to children.
 
-## Changes to this policy
+## Changes
 
-Material changes will be reflected here with an updated effective date and, where
-appropriate, noted in the extension's release notes.
+Material changes will be published here with a new effective date and, where
+appropriate, described in extension release notes.
 
 ## Contact
 
-Questions or requests: ‹privacy contact email›. Security issues: see
-[SECURITY.md](SECURITY.md).
+Privacy questions: legal@igdrasil.se
+
+General support: support@igdrasil.se
+
+Security reports: use a private
+[GitHub security advisory](https://github.com/Igdrasil-AB/ratatosk/security/advisories/new).
