@@ -10,8 +10,8 @@
 
 This policy applies to the public **Ratatosk — Invoice Collector** Chrome
 extension ("Collector"). It does not apply to the separately built, unpublished
-Ratatosk Studio developer tool. Collector's source code is available at
-https://github.com/Igdrasil-AB/ratatosk.
+Ratatosk Studio developer tool. A public copy of this policy is available at
+https://igdrasil.se/en/privacy/ratatosk/.
 
 ## Purpose
 
@@ -109,8 +109,7 @@ Collector does not request `debugger`, `tabs`, `activeTab`, or `<all_urls>`.
 Collector validates destination URLs, requires HTTPS except for an explicitly
 configured localhost development destination, restricts the Igdrasil token to
 Igdrasil hosts, uses a strict extension content-security policy, and packages all
-executable logic with the extension. See [SECURITY.md](SECURITY.md) for the threat
-model and vulnerability-reporting process.
+executable logic with the extension.
 
 ## User choices and rights
 
@@ -138,5 +137,4 @@ Privacy questions: legal@igdrasil.se
 
 General support: support@igdrasil.se
 
-Security reports: use a private
-[GitHub security advisory](https://github.com/Igdrasil-AB/ratatosk/security/advisories/new).
+Security reports: security@igdrasil.se
