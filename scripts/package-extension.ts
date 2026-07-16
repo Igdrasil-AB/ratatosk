@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { zipSync, type Zippable } from "fflate";
 import pkg from "../package.json";
+import { zipDeterministically } from "./deterministic-zip";
 
 const target = process.argv[2];
 if (target !== "collector" && target !== "studio") {
@@ -45,10 +45,7 @@ if (!files["manifest.json"]) throw new Error("manifest.json must be at the ZIP r
 if (target === "studio") assertStudioBundle(files);
 if (target === "collector") assertCollectorBundle(files);
 
-const deterministicFiles: Zippable = Object.fromEntries(
-  Object.entries(files).map(([name, contents]) => [name, [contents, { mtime: "1980-01-01T00:00:00.000Z" }]]),
-);
-const bytes = zipSync(deterministicFiles, { level: 9 });
+const bytes = zipDeterministically(files);
 const artifacts = "artifacts";
 mkdirSync(artifacts, { recursive: true });
 const filename = `ratatosk-${target}-v${pkg.version}.zip`;
