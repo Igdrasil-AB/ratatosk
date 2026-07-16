@@ -14,4 +14,12 @@ describe("Studio popup outbox recovery", () => {
     expect(popupSource).toContain('type="password"');
     expect(popupSource).not.toMatch(/fingerprintApprove[\s\S]{0,1000}fingerprintDeliver/);
   });
+
+  it("offers the richer redacted report as a separate explicit download", () => {
+    expect(popupSource).toContain('id="download-report"');
+    expect(popupSource).toContain('addEventListener("click", () => downloadAgentReport(');
+    expect(popupSource).toMatch(/downloadAgentReport\(\s*result\.report/);
+    expect(popupSource).toContain("not the structural-only fingerprint");
+    expect(popupSource).not.toContain("showResult(response);\n  downloadAgentReport");
+  });
 });

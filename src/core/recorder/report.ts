@@ -33,7 +33,7 @@ export function buildAgentReport(input: AgentReportInput): string {
   if (draft) {
     out.push(`## Draft recipe (confidence: ${draft.confidence})`);
     out.push("```json");
-    out.push(JSON.stringify(draft.recipe, null, 2));
+    out.push(JSON.stringify(redactRecipeForReport(draft.recipe), null, 2));
     out.push("```");
     if (draft.notes.length) {
       out.push("Notes to resolve:");
@@ -47,7 +47,7 @@ export function buildAgentReport(input: AgentReportInput): string {
   const samples = entries
     .filter((e) => !NOISE.test(`${e.contentType} ${e.url}`))
     .slice(0, 25)
-    .map((e) => `${e.status} ${e.contentType || "?"} ${e.method} ${sanitizeUrl(e.url)}`);
+    .map((e) => `${e.status} ${e.contentType || "?"} ${e.method} ${sanitizeReportUrl(e.url)}`);
   if (samples.length) {
     out.push("## Captured requests (noise filtered)");
     out.push("```");
@@ -59,7 +59,7 @@ export function buildAgentReport(input: AgentReportInput): string {
   if (docLinks.length) {
     out.push("## Invoice/receipt links found in the page HTML");
     out.push("```");
-    out.push(docLinks.map(sanitizeUrl).join("\n"));
+    out.push(docLinks.map(sanitizeReportUrl).join("\n"));
     out.push("```");
     out.push("");
   }
@@ -81,4 +81,66 @@ export function redactSecrets(text: string): string {
     .replace(/\b(?:sk|pk|rk|api)[_-](?:live|test|prod)?[_-]?[A-Za-z0-9_-]{12,}\b/gi, "«redacted-key»")
     .replace(/([?&](?:token|key|secret|signature|sig|auth|code)=)[^&#\s"']+/gi, "$1«redacted»")
     .replace(/[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+/g, "user@example.com");
+}
+
+function redactRecipeForReport(value: unknown, key?: string): unknown {
+  if (Array.isArray(value)) return value.map((item) => redactRecipeForReport(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([childKey, child]) => [
+      childKey,
+      redactRecipeForReport(child, childKey),
+    ]));
+  }
+  if (typeof value !== "string") return value;
+  if (key === "body") return redactRequestBody(value);
+  if (key === "url" || key === "loginUrl" || key === "homepage") return sanitizeReportUrl(value);
+  return redactSecrets(value);
+}
+
+function redactRequestBody(value: string): string {
+  try {
+    return JSON.stringify(redactRequestPayload(JSON.parse(value)));
+  } catch {
+    return redactSecrets(value);
+  }
+}
+
+function redactRequestPayload(value: unknown, key?: string): unknown {
+  if (Array.isArray(value)) return value.map((item) => redactRequestPayload(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([childKey, child]) => [
+      childKey,
+      redactRequestPayload(child, childKey),
+    ]));
+  }
+  if (typeof value === "string") {
+    if (key === "query" || key === "operationName" || /^\{[A-Za-z][A-Za-z0-9_-]*\}$/.test(value)) {
+      return redactSecrets(value);
+    }
+    return "REDACTED";
+  }
+  if (typeof value === "number") return 0;
+  return value;
+}
+
+function sanitizeReportUrl(value: string): string {
+  const sanitized = sanitizeUrl(value);
+  try {
+    const absolute = sanitized.startsWith("http://") || sanitized.startsWith("https://");
+    const url = new URL(sanitized, "https://invalid.local");
+    url.pathname = url.pathname
+      .split("/")
+      .map((segment) => isReportIdentifierSegment(segment) ? "REDACTED_ID" : segment)
+      .join("/");
+    return absolute ? url.toString() : `${url.pathname}${url.search}`;
+  } catch {
+    return redactSecrets(sanitized);
+  }
+}
+
+function isReportIdentifierSegment(segment: string): boolean {
+  if (/^\d{4,}$/.test(segment)) return true;
+  if (/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(segment)) return true;
+  if (/^(?:acct|ch|cus|in|inv|org|sub|team|user|ws)_[A-Za-z0-9_-]{3,}$/i.test(segment)) return true;
+  return segment.length >= 16 && /^[A-Za-z0-9._~+=-]+$/.test(segment) && /[A-Za-z]/.test(segment) && /[0-9]/.test(segment);
 }

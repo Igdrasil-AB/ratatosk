@@ -31,8 +31,42 @@ describe("agent report — confident draft", () => {
   it("includes the recipe JSON, the origin, and the found links", () => {
     expect(report).toContain("origin: https://github.com");
     expect(report).toContain('"strategy": "html"');
-    expect(report).toContain("/account/receipt/ch_AAA");
+    expect(report).toContain("/account/receipt/REDACTED_ID");
+    expect(report).not.toContain("ch_AAA");
     expect(report).toContain("Draft recipe (confidence:");
+  });
+});
+
+describe("agent report — request payloads preserve shape but not captured values", () => {
+  const session: CaptureSession = {
+    origin: "https://vendor.example",
+    entries: [
+      {
+        url: "https://vendor.example/api/invoices",
+        method: "POST",
+        status: 200,
+        contentType: "application/json",
+        requestBody: JSON.stringify({
+          operationName: "BillingInvoices",
+          query: "query BillingInvoices($workspaceId: ID!) { invoices(workspaceId: $workspaceId) { id } }",
+          variables: { workspaceId: "workspace-private-123", limit: 100 },
+        }),
+        responseBody: JSON.stringify({ invoices: [{ id: "inv_private", amount: 1200, date: "2026-07-01" }] }),
+      },
+    ],
+  };
+  const report = buildAgentReport({
+    version: "0.7.0",
+    session,
+    draft: inferRecipe(session),
+    docLinks: [],
+  });
+
+  it("retains the GraphQL operation while replacing variable values", () => {
+    expect(report).toContain("BillingInvoices");
+    expect(report).toContain('\\\"workspaceId\\\":\\\"REDACTED\\\"');
+    expect(report).toContain('\\\"limit\\\":0');
+    expect(report).not.toContain("workspace-private-123");
   });
 });
 

@@ -103,6 +103,44 @@ describe("shareable supplier fingerprint", () => {
     });
   });
 
+  it("keeps inferred invoice and document requests when noisy apps exceed the request cap", () => {
+    const entries = Array.from({ length: 45 }, (_, index) => buildEntry({
+      url: `https://api.example.com/telemetry/event-${index}`,
+      method: "GET",
+      status: 200 + index,
+      contentType: "application/json",
+      body: '{"ok":true}',
+    }));
+    entries.push(buildEntry({
+      url: "https://api.example.com/billing/invoices",
+      method: "GET",
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ invoices: [{ id: "invoice-1", date: "2026-07-01", amount: 1000 }] }),
+    }));
+    entries.push(buildEntry({
+      url: "https://api.example.com/billing/invoices/invoice-1/pdf",
+      method: "GET",
+      status: 200,
+      contentType: "application/pdf",
+    }));
+
+    const session: CaptureSession = { origin: "https://app.example.com", entries };
+    const fingerprint = buildSupplierFingerprint({
+      fingerprintId: "fp_0123456789abcdef0123456789abcdef",
+      capturedAt: "2026-07-16T10:00:00.000Z",
+      studioVersion: "0.7.0",
+      session,
+      draft: inferRecipe(session),
+    });
+
+    expect(fingerprint.evidence.requests).toHaveLength(40);
+    expect(fingerprint.evidence.requests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "invoice_list", pathPattern: "/billing/invoices" }),
+      expect.objectContaining({ role: "document", pathPattern: "/billing/invoices/{id}/pdf" }),
+    ]));
+  });
+
   it("requires affirmative authority and share approval before creating a Svala outbox item", () => {
     const session = capturedSession();
     const fingerprint = buildSupplierFingerprint({
