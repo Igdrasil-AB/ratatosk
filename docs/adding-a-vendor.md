@@ -6,7 +6,7 @@ describe *where* the invoices are, and the engine does the rest. Most recipes ar
 
 ## 1. Install the development build
 
-Download [Ratatosk Studio v0.7.0](https://github.com/Igdrasil-AB/ratatosk/releases/download/v0.7.0/ratatosk-studio-v0.7.0.zip),
+Download [Ratatosk Studio v0.7.1](https://github.com/Igdrasil-AB/ratatosk/releases/download/v0.7.1/ratatosk-studio-v0.7.1.zip),
 unzip it, then open `chrome://extensions`, turn on **Developer mode**, select
 **Load unpacked**, and choose the unzipped folder containing `manifest.json`.
 
