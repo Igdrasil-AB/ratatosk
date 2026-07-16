@@ -4,11 +4,23 @@ A vendor is a single declarative recipe. You don't touch the engine — you
 describe *where* the invoices are, and the engine does the rest. Most recipes are
 ~40 lines and take an afternoon.
 
-## 1. Find the endpoints (DevTools)
+## 1. Install the development build
+
+Download [Ratatosk Studio v0.6.8](https://github.com/Igdrasil-AB/ratatosk/releases/download/v0.6.8/ratatosk-studio-v0.6.8.zip),
+unzip it, then open `chrome://extensions`, turn on **Developer mode**, select
+**Load unpacked**, and choose the unzipped folder containing `manifest.json`.
+
+> **Developer build warning:** Studio requests Chrome's broad `debugger` and
+> `activeTab` permissions. Install it only in a dedicated developer profile, use
+> only authorized synthetic supplier accounts, and remove it when the supplier
+> investigation is complete. It is not the consumer Collector extension.
+
+## 2. Find the endpoints (DevTools)
 
 Use a dedicated vendor test account with synthetic invoices. Either inspect the
-page with Chrome DevTools or load the separate `dist/studio` development extension
-and accept its capture disclosure. Never capture a customer or personal account.
+page with Chrome DevTools or use the separately installed Studio development
+extension and accept its capture disclosure. Never capture a customer or
+personal account.
 
 In DevTools, open the vendor's billing/invoices page while signed in, choose
 **Network**, filter to `Fetch/XHR`, then reload.
@@ -27,7 +39,7 @@ You're hunting for three things:
 > token. Treat support as blocked until there is a reviewed, least-privilege auth
 > design. Checking this is part of verifying a vendor.
 
-## 2. Copy the template
+## 3. Copy the template
 
 ```bash
 cp src/vendors/_template.ts src/vendors/acme.ts
@@ -44,7 +56,7 @@ commented line-by-line. Key ideas:
   id, map `documentRef` and template it in `document.request.url` as `{documentRef}`.
 - **Multi-workspace vendors** use `config` to discover scopes (see `slack.ts`).
 
-## 3. Record a fixture + write the test
+## 4. Record a fixture + write the test
 
 Save one real list response:
 
@@ -59,7 +71,7 @@ mapping. This is **required** — CI fails a vendor with no test.
 npm test
 ```
 
-## 4. Register it
+## 5. Register it
 
 Add the recipe to `EXPERIMENTAL_VENDORS` in `src/vendors/index.ts` first. The
 validator and tests cover experimental recipes, but Collector does not display or
@@ -69,7 +81,7 @@ Promotion into public `VENDORS` requires a current live test, reviewed fixture,
 least-privilege host list, and explicit release decision. Keep both arrays
 alphabetical.
 
-## 5. Verify end to end
+## 6. Verify end to end
 
 ```bash
 npm run ci      # typecheck + schema validation + tests
