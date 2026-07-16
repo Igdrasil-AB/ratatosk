@@ -22,4 +22,10 @@ describe("Studio popup outbox recovery", () => {
     expect(popupSource).toContain("not the structural-only fingerprint");
     expect(popupSource).not.toContain("showResult(response);\n  downloadAgentReport");
   });
+
+  it("does not expose a capture-code workflow", () => {
+    expect(popupSource).not.toContain("mission-code");
+    expect(popupSource).not.toContain("missionLoad");
+    expect(popupSource).not.toContain("Load mission");
+  });
 });

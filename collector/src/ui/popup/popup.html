@@ -321,6 +321,53 @@
       .guidance-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
       .guidance-note { font-size: 10.5px; }
 
+      .supplier-request {
+        margin: 4px 12px 12px;
+        padding: 8px;
+        display: grid;
+        grid-template-columns: 32px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 9px;
+        border-radius: 16px;
+        background: linear-gradient(135deg, var(--primary-soft), var(--surface-raised) 72%);
+        box-shadow: var(--shadow-border);
+      }
+      .supplier-request-mark {
+        width: 32px;
+        height: 32px;
+        display: grid;
+        place-items: center;
+        border-radius: 8px;
+        background: var(--surface-raised);
+        color: var(--primary);
+        box-shadow: 0 1px 3px rgb(42 24 16 / 0.09);
+      }
+      .supplier-request-mark svg { width: 17px; height: 17px; }
+      .supplier-request-copy { min-width: 0; }
+      .supplier-request-copy strong, .supplier-request-copy small { display: block; text-wrap: pretty; }
+      .supplier-request-copy strong { font-size: 12px; font-weight: 680; }
+      .supplier-request-copy small { margin-top: 1px; color: var(--muted); font-size: 10.5px; }
+      .supplier-request-link {
+        min-height: 40px;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 0 10px 0 12px;
+        border: 0;
+        border-radius: 8px;
+        background: var(--fg);
+        color: var(--bg);
+        cursor: pointer;
+        font: 650 11px/1 inherit;
+        box-shadow: 0 1px 2px rgb(42 24 16 / 0.16);
+        transition-property: background-color, box-shadow, scale;
+        transition-duration: 140ms;
+        transition-timing-function: ease-out;
+      }
+      .supplier-request-link:hover { background: var(--primary); box-shadow: 0 2px 5px rgb(42 24 16 / 0.2); }
+      .supplier-request-link:active { scale: 0.96; }
+      .supplier-request-link svg { width: 13px; height: 13px; flex: none; }
+
       .settings-form { display: block; }
       .grp { min-width: 0; padding: 12px 14px 14px; border: 0; }
       .grp legend { padding: 0 2px; color: var(--muted); font-size: 12px; }

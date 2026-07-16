@@ -21,7 +21,7 @@ public repository.
 | [006](006-run-unlisted-collector-pilot.md) | A controlled unlisted pilot produces reviewable, non-sensitive evidence | P1 | M | 001, 003, 004, 005 | BLOCKED — the exact candidate is built, but authorized synthetic live attestations are still required for Anthropic, ChatGPT, and Railway |
 | [007](007-deliver-fingerprints-to-svala.md) | Approved fingerprints reach Svala through scoped, idempotent delivery | P1 | L | 001, 002 | DONE |
 | [008](008-build-supplier-intelligence-workbench.md) | Svala clusters fingerprints and supports human recipe-candidate triage | P1 | L | 007 | DONE |
-| [009](009-launch-guided-capture-missions.md) | Authorized contributors receive bounded capture missions and receipts | P2 | L | 007, 008 | DONE |
+| [009](009-launch-guided-capture-missions.md) | Authorized contributors receive bounded capture missions and receipts | P2 | L | 007, 008 | REJECTED — removed in favor of Collector linking to the public GitHub contribution path |
 | [010](010-orchestrate-vendor-health-with-temporal.md) | Temporal TypeScript schedules supplier-health evaluation and follow-up | P1 | L | 004, 008 | BLOCKED — the app, schema, and worker manifest are deployed, but production has no operational EKS/Temporal platform; the schedule remains unregistered and paused under the plan's STOP condition |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or

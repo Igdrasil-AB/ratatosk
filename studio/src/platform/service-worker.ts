@@ -15,7 +15,6 @@ import {
   resumeFingerprintDeliveries,
 } from "./fingerprint-outbox";
 import { disconnectSvalaFingerprintTransport, pairSvalaFingerprintTransport } from "./fingerprint-transport";
-import { activeCaptureMission, clearCaptureMission, loadCaptureMission } from "./capture-mission";
 
 interface RecorderEntryMessage {
   type: "recorder:entry";
@@ -86,10 +85,6 @@ async function handle(message: StudioMessage): Promise<StudioResponse> {
       if (!tab?.id || !tab.url || !/^https?:/.test(tab.url)) {
         return { ok: false, error: "Open an HTTPS billing page before recording" };
       }
-      const mission = await activeCaptureMission();
-      if (mission && new URL(tab.url).origin !== mission.mission.allowedOrigin) {
-        return { ok: false, error: `This mission is scoped to ${mission.mission.allowedOrigin}. Open that exact supplier origin before recording.` };
-      }
       await startRecording(tab.id, tab.url, "deep");
       setRecordingBadge(true);
       return { ok: true };
@@ -110,8 +105,7 @@ async function handle(message: StudioMessage): Promise<StudioResponse> {
         authorityConfirmed: message.authorityConfirmed,
         shareApproved: message.shareApproved,
       });
-      const mission = await activeCaptureMission();
-      return { ok: true, submission, outbox: await enqueueFingerprintSubmission(submission, new Date(), mission?.code) };
+      return { ok: true, submission, outbox: await enqueueFingerprintSubmission(submission) };
     }
     case "fingerprintOutboxStatus":
       return { ok: true, outbox: await fingerprintOutboxStatus() };
@@ -135,15 +129,6 @@ async function handle(message: StudioMessage): Promise<StudioResponse> {
     case "fingerprintDisconnect":
       await disconnectSvalaFingerprintTransport();
       return { ok: true, outbox: await fingerprintOutboxStatus() };
-    case "missionLoad": {
-      const active = await loadCaptureMission(message.code);
-      return { ok: true, mission: active.mission };
-    }
-    case "missionStatus":
-      return { ok: true, mission: (await activeCaptureMission())?.mission ?? null };
-    case "missionClear":
-      await clearCaptureMission();
-      return { ok: true, mission: null };
     case "fingerprintClearOutbox":
       return { ok: true, outbox: await clearFingerprintOutbox() };
   }
