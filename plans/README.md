@@ -20,8 +20,8 @@ public repository.
 | [005](005-operationalize-collector-failures.md) | Typed failures, partial success, and rate-limit backoff reach storage and UI | P1 | M | 003 | DONE |
 | [006](006-run-unlisted-collector-pilot.md) | A controlled unlisted pilot produces reviewable, non-sensitive evidence | P1 | M | 001, 003, 004, 005 | BLOCKED — current live attestations and explicit operator submission approval required |
 | [007](007-deliver-fingerprints-to-svala.md) | Approved fingerprints reach Svala through scoped, idempotent delivery | P1 | L | 001, 002 | DONE |
-| [008](008-build-supplier-intelligence-workbench.md) | Svala clusters fingerprints and supports human recipe-candidate triage | P1 | L | 007 | TODO |
-| [009](009-launch-guided-capture-missions.md) | Authorized contributors receive bounded capture missions and receipts | P2 | L | 007, 008 | TODO |
+| [008](008-build-supplier-intelligence-workbench.md) | Svala clusters fingerprints and supports human recipe-candidate triage | P1 | L | 007 | DONE |
+| [009](009-launch-guided-capture-missions.md) | Authorized contributors receive bounded capture missions and receipts | P2 | L | 007, 008 | DONE |
 | [010](010-orchestrate-vendor-health-with-temporal.md) | Temporal TypeScript schedules supplier-health evaluation and follow-up | P1 | L | 004, 008 | TODO |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or

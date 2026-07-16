@@ -200,12 +200,31 @@ describe("Studio supplier fingerprint outbox", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     await expect(requeueRejectedFingerprintSubmissions(now)).resolves.toMatchObject({ pendingCount: 1, rejectedCount: 0 });
   });
+
+  it("scopes a mission code to delivery and retains the mission receipt state", async () => {
+    const now = new Date("2026-07-16T10:00:00.000Z");
+    const approved = submission(6);
+    const missionCode = `rmc_${"B".repeat(43)}`;
+    await enqueueFingerprintSubmission(approved, now, missionCode);
+    await pairSvalaFingerprintTransport(INTAKE_TOKEN);
+    const fetch = vi.fn(async () => receiptResponse(approved.fingerprint.fingerprintId, true));
+    vi.stubGlobal("fetch", fetch);
+    const delivered = await deliverFingerprintSubmission(approved.fingerprint.fingerprintId, now);
+    expect(delivered).toMatchObject({
+      deliveryState: "delivered",
+      mission: { missionId: "ratmission_0123456789abcdef0123456789abcdef", status: "accepted_for_review" },
+    });
+    const [, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.headers).toMatchObject({ "X-Ratatosk-Mission-Code": missionCode });
+    expect(await getFingerprintOutboxSubmission(approved.fingerprint.fingerprintId, now)).toEqual(approved);
+  });
 });
 
-function receiptResponse(fingerprintId: string): Response {
+function receiptResponse(fingerprintId: string, includeMission = false): Response {
   return new Response(JSON.stringify({
     receipt: { receiptId: RECEIPT_ID, fingerprintId, acceptedAt: "2026-07-16T10:02:00.000Z", status: "accepted" },
     replayed: false,
+    ...(includeMission ? { mission: { missionId: "ratmission_0123456789abcdef0123456789abcdef", status: "accepted_for_review" } } : {}),
   }), { status: 201, headers: { "content-type": "application/json" } });
 }
 

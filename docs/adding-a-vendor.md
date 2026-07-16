@@ -30,6 +30,9 @@ explicitly deliver it. Approved submissions remain in Studio's local outbox for
 popup is reopened. Recording and approval never trigger network delivery. See
 [supplier fingerprints](supplier-fingerprints.md).
 
+For guided contributions by authorized account holders, follow the
+[supplier fingerprint contribution guide](contributing-supplier-fingerprints.md).
+
 In DevTools, open the vendor's billing/invoices page while signed in, choose
 **Network**, filter to `Fetch/XHR`, then reload.
 

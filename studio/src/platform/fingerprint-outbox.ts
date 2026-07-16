@@ -28,13 +28,15 @@ interface StoredItem {
   attempts: number;
   nextAttemptAt?: string;
   receipt?: SvalaFingerprintReceipt;
+  missionCode?: string;
+  mission?: { missionId: string; status: string };
   lastFailure?: FailureReason;
 }
 
 let writeChain = Promise.resolve();
 const inFlight = new Map<string, Promise<FingerprintOutboxItemSummary | undefined>>();
 
-export function enqueueFingerprintSubmission(submission: unknown, now = new Date()): Promise<FingerprintOutboxStatus> {
+export function enqueueFingerprintSubmission(submission: unknown, now = new Date(), missionCode?: string): Promise<FingerprintOutboxStatus> {
   return serialized(async () => {
     const valid = parseSupplierFingerprintSubmission(submission);
     const items = await readValidItems(now, false);
@@ -45,6 +47,7 @@ export function enqueueFingerprintSubmission(submission: unknown, now = new Date
       submission: valid,
       deliveryState: "pending",
       attempts: 0,
+      ...(missionCode && /^rmc_[A-Za-z0-9_-]{43}$/.test(missionCode) ? { missionCode } : {}),
     });
     const retained = withoutDuplicate.slice(-MAX_ITEMS);
     await persist(retained);
@@ -100,7 +103,7 @@ export function deliverFingerprintSubmission(
     };
     items[index] = delivering;
     await persist(items);
-    const result = await svalaFingerprintTransport.deliver(delivering.submission);
+    const result = await svalaFingerprintTransport.deliver(delivering.submission, { missionCode: delivering.missionCode });
     const updated = resultItem(delivering, result, now);
     items[index] = updated;
     await persist(items);
@@ -164,7 +167,7 @@ async function readValidItems(now: Date, recoverInterrupted: boolean): Promise<S
 }
 
 function parseStoredItem(value: unknown, now: Date): StoredItem | undefined {
-  if (!isRecordWithOnly(value, ["queuedAt", "expiresAt", "submission", "deliveryState", "attempts", "nextAttemptAt", "receipt", "lastFailure"])) return undefined;
+  if (!isRecordWithOnly(value, ["queuedAt", "expiresAt", "submission", "deliveryState", "attempts", "nextAttemptAt", "receipt", "lastFailure", "missionCode", "mission"])) return undefined;
   if (typeof value.queuedAt !== "string" || typeof value.expiresAt !== "string") return undefined;
   const queuedAt = Date.parse(value.queuedAt);
   const expiresAt = Date.parse(value.expiresAt);
@@ -198,6 +201,14 @@ function parseStoredItem(value: unknown, now: Date): StoredItem | undefined {
     if (!receipt) return undefined;
     item.receipt = receipt;
   }
+  if (value.missionCode !== undefined) {
+    if (typeof value.missionCode !== "string" || !/^rmc_[A-Za-z0-9_-]{43}$/.test(value.missionCode)) return undefined;
+    item.missionCode = value.missionCode;
+  }
+  if (value.mission !== undefined) {
+    if (!isExactRecord(value.mission, ["missionId", "status"]) || typeof value.mission.missionId !== "string" || !/^ratmission_[a-f0-9]{32}$/.test(value.mission.missionId) || typeof value.mission.status !== "string") return undefined;
+    item.mission = { missionId: value.mission.missionId, status: value.mission.status };
+  }
   if (item.deliveryState === "delivered" && !item.receipt) return undefined;
   return item;
 }
@@ -225,11 +236,12 @@ function summaryFrom(item: StoredItem): FingerprintOutboxItemSummary {
     attempts: item.attempts,
     ...(item.nextAttemptAt ? { nextAttemptAt: item.nextAttemptAt } : {}),
     ...(item.receipt ? { receipt: { receiptId: item.receipt.receiptId, acceptedAt: item.receipt.acceptedAt, status: item.receipt.status } } : {}),
+    ...(item.mission ? { mission: item.mission } : {}),
   });
 }
 
 function resultItem(current: StoredItem, result: SvalaFingerprintDeliveryResult, now: Date): StoredItem {
-  if (result.delivered) return { ...current, deliveryState: "delivered", receipt: result.receipt, nextAttemptAt: undefined, lastFailure: undefined };
+  if (result.delivered) return { ...current, deliveryState: "delivered", receipt: result.receipt, ...(result.mission ? { mission: result.mission } : {}), missionCode: undefined, nextAttemptAt: undefined, lastFailure: undefined };
   if (result.reason === "not_configured") return { ...current, deliveryState: "pending", nextAttemptAt: undefined, lastFailure: undefined };
   if (result.reason === "rejected") return { ...current, deliveryState: "rejected", nextAttemptAt: undefined, lastFailure: "rejected" };
   const exponential = Math.min(60_000 * (2 ** Math.min(Math.max(current.attempts - 1, 0), 10)), MAX_RETRY_MS);

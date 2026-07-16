@@ -61,6 +61,8 @@ Origins, query-key names, GraphQL operation names, and inferred schema paths are
 structural but can still contain tenant or internal naming chosen by a supplier.
 The user must inspect the exact preview. Do not commit fingerprint JSON or agent
 reports to this public repository; import approved submissions into private Svala.
+Guided capture missions follow the separate
+[safe contribution guide](contributing-supplier-fingerprints.md).
 
 ## Why local installation does not prevent delivery
 

@@ -1,0 +1,25 @@
+{
+  "schema": "ratatosk.capture-mission.v1",
+  "id": "ratmission_0123456789abcdef0123456789abcdef",
+  "candidateId": "ratsup_0123456789abcdef0123456789abcdef",
+  "supplierLabel": "billing-example",
+  "allowedOrigin": "https://billing.example.com",
+  "requestedRoles": ["invoice_list", "document"],
+  "actions": [
+    {
+      "kind": "open_billing",
+      "label": "Open the supplier's Billing or Invoices page."
+    },
+    {
+      "kind": "reload",
+      "label": "Reload the page after recording starts."
+    }
+  ],
+  "eligibilityStatement": "Claim only if you are authorized to use this supplier account. Never share passwords, 2FA codes, invoices, or raw logs.",
+  "priority": 50,
+  "status": "claimed",
+  "expiresAt": "2026-07-30T10:00:00.000Z",
+  "claimedAt": "2026-07-16T10:00:00.000Z",
+  "completedAt": null,
+  "receiptId": null
+}

@@ -13,6 +13,9 @@ export type StudioMessage =
   | { type: "fingerprintDeliver"; fingerprintId: string }
   | { type: "fingerprintPair"; token: string }
   | { type: "fingerprintDisconnect" }
+  | { type: "missionLoad"; code: string }
+  | { type: "missionStatus" }
+  | { type: "missionClear" }
   | { type: "fingerprintClearOutbox" };
 
 export interface RecorderProgress {
@@ -59,6 +62,7 @@ export interface FingerprintOutboxItemSummary {
   readonly attempts: number;
   readonly nextAttemptAt?: string;
   readonly receipt?: FingerprintReceiptSummary;
+  readonly mission?: { readonly missionId: string; readonly status: string };
 }
 
 export type StudioResponse =
@@ -69,6 +73,7 @@ export type StudioResponse =
   | { ok: true; items: readonly FingerprintOutboxItemSummary[] }
   | { ok: true; submission: SupplierFingerprintSubmissionV1 }
   | { ok: true; item: FingerprintOutboxItemSummary }
+  | { ok: true; mission: import("./fingerprint-transport").SvalaCaptureMission | null }
   | { ok: true; outbox: FingerprintOutboxStatus }
   | ({ ok: true } & RecorderStopResult)
   | { ok: false; error: string };
