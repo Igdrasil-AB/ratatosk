@@ -13,7 +13,7 @@ public repository.
 
 | Plan | Outcome | Priority | Effort | Depends on | Status |
 | --- | --- | --- | --- | --- | --- |
-| [001](001-ship-recoverable-studio-v070.md) | Studio v0.7.0 is downloadable and saved fingerprints remain exportable | P0 | M | — | IN PROGRESS |
+| [001](001-ship-recoverable-studio-v070.md) | Studio v0.7.0 is downloadable and saved fingerprints remain exportable | P0 | M | — | BLOCKED — local release is complete; public tag/publication requires explicit operator authority |
 | [002](002-harden-studio-capture-contract.md) | Studio persists structural authentication evidence without credential values | P0 | M | — | DONE |
 | [003](003-enforce-collector-document-integrity.md) | Collector rejects false PDFs and joins overlapping supplier runs | P0 | M | — | DONE |
 | [004](004-add-vendor-lifecycle-manifest.md) | Vendor support and live-verification evidence become validated data | P1 | M | 003 | DONE |
@@ -22,7 +22,7 @@ public repository.
 | [007](007-deliver-fingerprints-to-svala.md) | Approved fingerprints reach Svala through scoped, idempotent delivery | P1 | L | 001, 002 | DONE |
 | [008](008-build-supplier-intelligence-workbench.md) | Svala clusters fingerprints and supports human recipe-candidate triage | P1 | L | 007 | DONE |
 | [009](009-launch-guided-capture-missions.md) | Authorized contributors receive bounded capture missions and receipts | P2 | L | 007, 008 | DONE |
-| [010](010-orchestrate-vendor-health-with-temporal.md) | Temporal TypeScript schedules supplier-health evaluation and follow-up | P1 | L | 004, 008 | TODO |
+| [010](010-orchestrate-vendor-health-with-temporal.md) | Temporal TypeScript schedules supplier-health evaluation and follow-up | P1 | L | 004, 008 | BLOCKED — implementation and local gates are complete; production shadow evidence and operator-approved cutover are required |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or
 `REJECTED — <reason>`.
