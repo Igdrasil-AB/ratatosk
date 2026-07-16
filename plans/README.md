@@ -13,19 +13,46 @@ public repository.
 
 | Plan | Outcome | Priority | Effort | Depends on | Status |
 | --- | --- | --- | --- | --- | --- |
-| [001](001-ship-recoverable-studio-v070.md) | Studio v0.7.0 is downloadable and saved fingerprints remain exportable | P0 | M | — | BLOCKED — local release is complete; public tag/publication requires explicit operator authority |
+| [001](001-ship-recoverable-studio-v070.md) | Studio v0.7.0 is downloadable and saved fingerprints remain exportable | P0 | M | — | DONE |
 | [002](002-harden-studio-capture-contract.md) | Studio persists structural authentication evidence without credential values | P0 | M | — | DONE |
 | [003](003-enforce-collector-document-integrity.md) | Collector rejects false PDFs and joins overlapping supplier runs | P0 | M | — | DONE |
 | [004](004-add-vendor-lifecycle-manifest.md) | Vendor support and live-verification evidence become validated data | P1 | M | 003 | DONE |
 | [005](005-operationalize-collector-failures.md) | Typed failures, partial success, and rate-limit backoff reach storage and UI | P1 | M | 003 | DONE |
-| [006](006-run-unlisted-collector-pilot.md) | A controlled unlisted pilot produces reviewable, non-sensitive evidence | P1 | M | 001, 003, 004, 005 | BLOCKED — current live attestations and explicit operator submission approval required |
+| [006](006-run-unlisted-collector-pilot.md) | A controlled unlisted pilot produces reviewable, non-sensitive evidence | P1 | M | 001, 003, 004, 005 | BLOCKED — the exact candidate is built, but authorized synthetic live attestations are still required for Anthropic, ChatGPT, and Railway |
 | [007](007-deliver-fingerprints-to-svala.md) | Approved fingerprints reach Svala through scoped, idempotent delivery | P1 | L | 001, 002 | DONE |
 | [008](008-build-supplier-intelligence-workbench.md) | Svala clusters fingerprints and supports human recipe-candidate triage | P1 | L | 007 | DONE |
 | [009](009-launch-guided-capture-missions.md) | Authorized contributors receive bounded capture missions and receipts | P2 | L | 007, 008 | DONE |
-| [010](010-orchestrate-vendor-health-with-temporal.md) | Temporal TypeScript schedules supplier-health evaluation and follow-up | P1 | L | 004, 008 | BLOCKED — implementation and local gates are complete; production shadow evidence and operator-approved cutover are required |
+| [010](010-orchestrate-vendor-health-with-temporal.md) | Temporal TypeScript schedules supplier-health evaluation and follow-up | P1 | L | 004, 008 | BLOCKED — the app, schema, and worker manifest are deployed, but production has no operational EKS/Temporal platform; the schedule remains unregistered and paused under the plan's STOP condition |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or
 `REJECTED — <reason>`.
+
+## Execution evidence (2026-07-16)
+
+- Plan 001: public release
+  [`v0.7.0`](https://github.com/Igdrasil-AB/ratatosk/releases/tag/v0.7.0)
+  targets `1ef31103960a118ec25c060308f93c746bdaf857`. The reviewed Studio archive
+  SHA-256 is
+  `24ba81dfd3b7623ece40a78383dc37e578402339226ca27874860ef990e5cac6`;
+  the downloaded public asset matches the published checksum.
+- Plan 006: the exact local Collector candidate is
+  `ratatosk-collector-v0.7.0.zip`, SHA-256
+  `fe3225c7929e79e7f79a6d4768b16acecfd1ed6b9735258a25e4d67cf5381c2c`.
+  CI and the high-severity audit pass, and the archive contains only the 12
+  reviewed Collector files. The release validator correctly refuses to mark
+  Anthropic, ChatGPT, or Railway release-ready without fresh sanitized live
+  attestations. The retained public rollback is Collector v0.6.8, SHA-256
+  `da99c8baf9af17a7a90af13d9d9c13f21b97d43f4baa69af7ec0b3a0ad5d8488`.
+- Plan 007: Svala production runs commit `fef6570c0b03` with migration
+  `0053_ratatosk_supplier_health` applied and zero pending migrations. The
+  Ratatosk intake flag is enabled; an unauthenticated intake probe returns a
+  bounded `401 unauthorized` response with `Cache-Control: no-store`, confirming
+  that the public boundary is enabled and still fails closed.
+- Plan 010: production inventory reports no EKS cluster, so the existing
+  self-hosted Temporal/TLS prerequisite is not operational. No local server or
+  alternate orchestration stack was substituted, and no schedule was activated.
+  Provisioning the reviewed platform is the next external prerequisite before a
+  paused manual trigger and shadow comparison can produce cutover evidence.
 
 ## Dependency graph
 
