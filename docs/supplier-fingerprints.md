@@ -16,12 +16,16 @@ account's invoices or credentials.
 5. The approved `ratatosk.supplier-fingerprint-submission.v1` is kept in a local
    outbox (20 items maximum, 30-day validity), remains visible after the popup is
    reopened, and can be downloaded again as JSON until it expires or is cleared.
-6. Today, a developer imports that JSON into a Svala task's **Context docs**.
+6. An internal developer can either import that JSON manually or pair a scoped
+   Svala intake token and explicitly deliver one approved item.
 
-There is no configured network destination in this version. The extension does
-not attempt automatic delivery. A future Svala transport implements the existing
-transport interface after its endpoint, authentication, replay, and deletion
-policy are chosen; the fingerprint and consent contracts do not need to change.
+The only network destination is the fixed
+`https://svala.igdrasil.se/api/dev/ratatosk/fingerprints` endpoint. Studio stores
+the one-time token only in extension-local storage, omits cookies and referrers,
+refuses redirects, and uses the fingerprint ID as the idempotency key. Network,
+429, and server failures retry with bounded backoff after restart; other 4xx
+responses require re-pairing or review. A successful receipt is retained locally
+alongside the still-downloadable approved envelope.
 
 ## Included
 
@@ -49,8 +53,8 @@ payloads, unsupported schema versions, and consent envelopes whose previewed ID
 does not match the included fingerprint. Svala's manual import requires the
 approved submission envelope and converts it into a Markdown context document
 through its existing authenticated developer workflow. The envelope records a
-user assertion; it is not a cryptographic signature. A future authenticated
-transport must provide server-verifiable uploader and company attribution.
+user assertion; it is not a cryptographic signature. The authenticated intake
+token provides server-verifiable uploader and optional company attribution.
 Expired outbox records are discarded whenever Studio starts or reads the outbox.
 
 Origins, query-key names, GraphQL operation names, and inferred schema paths are
@@ -58,11 +62,10 @@ structural but can still contain tenant or internal naming chosen by a supplier.
 The user must inspect the exact preview. Do not commit fingerprint JSON or agent
 reports to this public repository; import approved submissions into private Svala.
 
-## Why local installation does not prevent future delivery
+## Why local installation does not prevent delivery
 
 A locally installed Chrome extension can make an authenticated HTTPS request if
 its manifest and runtime policy allow the destination. It cannot give Svala
-access to browser-local storage by itself. Automatic collection therefore needs
-an explicit extension transport plus a user/company authentication design. The
-local outbox provides retryable state without committing this release to an
-endpoint prematurely.
+access to browser-local storage by itself. Studio therefore uses an explicit,
+least-privilege transport and durable local state; nothing about installing the
+extension locally grants Svala access to captures or other browser storage.

@@ -82,7 +82,9 @@ function validateStudioManifest(manifest: {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error(`unexpected Studio permissions: ${actual.join(", ")}`);
   }
-  if ((manifest.host_permissions ?? []).length > 0) throw new Error("Studio must not have host permissions");
+  if (JSON.stringify(manifest.host_permissions ?? []) !== JSON.stringify(["https://svala.igdrasil.se/*"])) {
+    throw new Error(`unexpected Studio host permissions: ${(manifest.host_permissions ?? []).join(", ")}`);
+  }
   if ((manifest.content_scripts ?? []).length > 0) throw new Error("Studio must not ship content scripts");
   if (manifest.content_security_policy?.extension_pages !== "script-src 'self'; object-src 'self'") {
     throw new Error("Studio CSP is not the reviewed strict policy");

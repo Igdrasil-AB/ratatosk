@@ -24,10 +24,10 @@ personal account.
 
 After Studio stops, review the structural supplier fingerprint separately from
 the richer agent report. If authorized, approve the exact preview and download
-its JSON for import into the relevant Svala developer task. Approved submissions
-remain in Studio's local outbox for 30 days and can be downloaded again after the
-popup is reopened. Studio does not send them automatically because the Svala
-endpoint and authentication policy have not yet been selected. See
+its JSON for manual import, or pair an upload-only token created in Svala and
+explicitly deliver it. Approved submissions remain in Studio's local outbox for
+30 days, retain their delivery receipt, and can be downloaded again after the
+popup is reopened. Recording and approval never trigger network delivery. See
 [supplier fingerprints](supplier-fingerprints.md).
 
 In DevTools, open the vendor's billing/invoices page while signed in, choose

@@ -6,11 +6,15 @@ import { appendEntry, clearAllRecorderState, getCurrentTab } from "./recorder/se
 import { approveSupplierFingerprint } from "../../../src/core/recorder/supplier-fingerprint";
 import {
   clearFingerprintOutbox,
+  deliverFingerprintSubmission,
   enqueueFingerprintSubmission,
   fingerprintOutboxStatus,
   getFingerprintOutboxSubmission,
   listFingerprintOutboxItems,
+  requeueRejectedFingerprintSubmissions,
+  resumeFingerprintDeliveries,
 } from "./fingerprint-outbox";
+import { disconnectSvalaFingerprintTransport, pairSvalaFingerprintTransport } from "./fingerprint-transport";
 
 interface RecorderEntryMessage {
   type: "recorder:entry";
@@ -21,7 +25,7 @@ chrome.runtime.onInstalled.addListener(() => {
   void Promise.all([clearAllRecorderState(), fingerprintOutboxStatus()]).finally(() => setRecordingBadge(false));
 });
 chrome.runtime.onStartup.addListener(() => {
-  void Promise.all([clearAllRecorderState(), fingerprintOutboxStatus()]).finally(() => setRecordingBadge(false));
+  void Promise.all([clearAllRecorderState(), resumeFingerprintDeliveries()]).finally(() => setRecordingBadge(false));
 });
 
 chrome.runtime.onMessage.addListener(
@@ -113,6 +117,18 @@ async function handle(message: StudioMessage): Promise<StudioResponse> {
         ? { ok: true, submission }
         : { ok: false, error: "That saved fingerprint is missing, expired, or invalid." };
     }
+    case "fingerprintDeliver": {
+      const item = await deliverFingerprintSubmission(message.fingerprintId);
+      return item
+        ? { ok: true, item }
+        : { ok: false, error: "That saved fingerprint is missing, expired, or invalid." };
+    }
+    case "fingerprintPair":
+      await pairSvalaFingerprintTransport(message.token);
+      return { ok: true, outbox: await requeueRejectedFingerprintSubmissions() };
+    case "fingerprintDisconnect":
+      await disconnectSvalaFingerprintTransport();
+      return { ok: true, outbox: await fingerprintOutboxStatus() };
     case "fingerprintClearOutbox":
       return { ok: true, outbox: await clearFingerprintOutbox() };
   }

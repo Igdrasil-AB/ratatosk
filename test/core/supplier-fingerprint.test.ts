@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { inferRecipe } from "../../src/core/recorder/infer";
 import { buildEntry } from "../../src/core/recorder/cdp";
@@ -10,6 +11,10 @@ import type { CaptureSession } from "../../src/core/recorder/types";
 
 const ACCOUNT = "11111111-2222-4333-8444-555555555555";
 const TOKEN = `eyJhbGciOiJ${"A".repeat(60)}`;
+const contractFixture = JSON.parse(readFileSync(
+  new URL("../fixtures/ratatosk/valid-submission.json", import.meta.url),
+  "utf8",
+));
 
 function capturedSession(): CaptureSession {
   return {
@@ -48,6 +53,16 @@ function capturedSession(): CaptureSession {
 }
 
 describe("shareable supplier fingerprint", () => {
+  it("accepts the exact cross-repository Svala contract fixture", () => {
+    const fingerprint = parseSupplierFingerprint(contractFixture.fingerprint);
+    expect(approveSupplierFingerprint({
+      fingerprint,
+      approvedAt: contractFixture.consent.approvedAt,
+      authorityConfirmed: contractFixture.consent.authorityConfirmed,
+      shareApproved: contractFixture.consent.shareApproved,
+    })).toEqual(contractFixture);
+  });
+
   it("keeps structural evidence while excluding captured values and raw payloads", () => {
     const session = capturedSession();
     const fingerprint = buildSupplierFingerprint({

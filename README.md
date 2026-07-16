@@ -59,9 +59,10 @@ To install it in Chrome:
 See [adding a vendor](docs/adding-a-vendor.md) for the reviewed recipe and test
 requirements.
 
-Approved supplier fingerprints are saved only in Studio's bounded local outbox
-unless the user downloads the JSON. This release has no configured delivery
-endpoint; the JSON can be imported into a Svala developer task's **Context docs**.
+Approved supplier fingerprints are always saved in Studio's bounded local
+outbox and remain downloadable as JSON. An internal developer may also pair a
+revocable, upload-only Svala intake token and explicitly deliver an item to the
+single reviewed Svala endpoint; capture itself never sends automatically.
 
 ## Product preview
 

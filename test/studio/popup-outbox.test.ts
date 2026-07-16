@@ -9,5 +9,9 @@ describe("Studio popup outbox recovery", () => {
     expect(popupSource).toContain('class="secondary download-saved"');
     expect(popupSource).toContain('send({ type: "fingerprintOutboxGet", fingerprintId })');
     expect(popupSource).not.toMatch(/fingerprintOutboxList[\s\S]{0,500}downloadSubmission\(/);
+    expect(popupSource).toContain('send({ type: "fingerprintPair", token })');
+    expect(popupSource).toContain('send({ type: "fingerprintDeliver", fingerprintId:');
+    expect(popupSource).toContain('type="password"');
+    expect(popupSource).not.toMatch(/fingerprintApprove[\s\S]{0,1000}fingerprintDeliver/);
   });
 });

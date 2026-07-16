@@ -125,9 +125,11 @@ creates a redacted, manually copied report; captured HTML bodies are not exporte
 
 Studio also creates a separately validated, structural-only supplier fingerprint.
 The exact fingerprint requires authority confirmation and explicit sharing
-approval before it enters a bounded local outbox. No network destination is
-configured; approved JSON can be imported through Svala's existing developer
-context workflow. See [supplier fingerprints](supplier-fingerprints.md).
+approval before it enters a bounded local outbox. Internal developers can pair a
+revocable upload-only token and explicitly deliver an approved envelope to the
+fixed HTTPS Svala intake endpoint. The token cannot follow redirects or be sent
+to a configured alternate origin; local JSON export remains available. See
+[supplier fingerprints](supplier-fingerprints.md).
 
 Studio output is always a draft. A human must remove unnecessary data, verify the
 vendor contract in a dedicated test account, add a fixture test, and explicitly

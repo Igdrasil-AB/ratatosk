@@ -10,6 +10,9 @@ export type StudioMessage =
   | { type: "fingerprintOutboxStatus" }
   | { type: "fingerprintOutboxList" }
   | { type: "fingerprintOutboxGet"; fingerprintId: string }
+  | { type: "fingerprintDeliver"; fingerprintId: string }
+  | { type: "fingerprintPair"; token: string }
+  | { type: "fingerprintDisconnect" }
   | { type: "fingerprintClearOutbox" };
 
 export interface RecorderProgress {
@@ -29,9 +32,20 @@ export interface RecorderStopResult {
 }
 
 export interface FingerprintOutboxStatus {
+  totalCount: number;
   pendingCount: number;
+  deliveredCount: number;
+  rejectedCount: number;
   oldestQueuedAt?: string;
-  transport: { target: "svala"; configured: false };
+  transport: { target: "svala"; configured: boolean };
+}
+
+export type FingerprintDeliveryState = "pending" | "delivering" | "delivered" | "retryable" | "rejected";
+
+export interface FingerprintReceiptSummary {
+  readonly receiptId: string;
+  readonly acceptedAt: string;
+  readonly status: "accepted";
 }
 
 export interface FingerprintOutboxItemSummary {
@@ -41,6 +55,10 @@ export interface FingerprintOutboxItemSummary {
   readonly capturedAt: string;
   readonly queuedAt: string;
   readonly expiresAt: string;
+  readonly deliveryState: FingerprintDeliveryState;
+  readonly attempts: number;
+  readonly nextAttemptAt?: string;
+  readonly receipt?: FingerprintReceiptSummary;
 }
 
 export type StudioResponse =
@@ -50,6 +68,7 @@ export type StudioResponse =
   | { ok: true; submission: SupplierFingerprintSubmissionV1; outbox: FingerprintOutboxStatus }
   | { ok: true; items: readonly FingerprintOutboxItemSummary[] }
   | { ok: true; submission: SupplierFingerprintSubmissionV1 }
+  | { ok: true; item: FingerprintOutboxItemSummary }
   | { ok: true; outbox: FingerprintOutboxStatus }
   | ({ ok: true } & RecorderStopResult)
   | { ok: false; error: string };

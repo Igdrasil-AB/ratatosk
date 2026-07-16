@@ -15,6 +15,7 @@ export default defineManifest({
   description: "Developer tool for recording billing pages and drafting reviewed Ratatosk vendor recipes.",
   minimum_chrome_version: "116",
   permissions: ["storage", "scripting", "debugger", "activeTab"],
+  host_permissions: ["https://svala.igdrasil.se/*"],
   content_security_policy: {
     extension_pages: "script-src 'self'; object-src 'self'",
   },
