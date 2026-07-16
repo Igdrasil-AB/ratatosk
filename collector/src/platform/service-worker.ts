@@ -8,7 +8,8 @@
  *   - onMessage               → handle popup commands
  *   - notifications.onClicked → open the vendor login on a "reconnect" nudge
  */
-import { getVendor, VENDORS } from "../../../src/vendors";
+import { getVendor, VENDORS, VENDOR_LIFECYCLE_BY_ID } from "../../../src/vendors";
+import { isLifecycleRunnable } from "../../../src/vendors/lifecycle";
 import { runAllConnected, runVendorById } from "./collector";
 import { ensureSyncAlarm, getScheduleInfo, isSyncAlarm, setSchedulePeriod } from "./scheduler";
 import { hasVendorPermissions, revokeVendorPermissions } from "./permissions";
@@ -33,6 +34,8 @@ import {
   validateIgdrasilConnectIntent,
 } from "./igdrasil-connect-intent";
 import type { Message, Response, SourceView } from "./messaging";
+import pkg from "../../../package.json";
+import { buildCollectorDiagnostic } from "./diagnostics";
 
 chrome.runtime.onInstalled.addListener(() => {
   void ensureSyncAlarm();
@@ -193,6 +196,8 @@ async function handle(message: Message): Promise<Response> {
         category: v.category,
         icon: v.icon,
         hosts: [...v.hosts],
+        lifecycle: VENDOR_LIFECYCLE_BY_ID[v.id],
+        runnable: isLifecycleRunnable(VENDOR_LIFECYCLE_BY_ID[v.id]),
         connection: connections[v.id] ?? null,
       }));
       return { ok: true, sources };
@@ -259,6 +264,21 @@ async function handle(message: Message): Promise<Response> {
         return { ok: true, summaries: [await runVendorById(message.vendorId)] };
       }
       return { ok: true, summaries: await runAllConnected() };
+    }
+
+    case "getVendorDiagnostic": {
+      const lifecycle = VENDOR_LIFECYCLE_BY_ID[message.vendorId];
+      if (!lifecycle) return { ok: false, error: "Unknown vendor." };
+      const connection = (await getConnections())[message.vendorId];
+      return {
+        ok: true,
+        diagnostic: buildCollectorDiagnostic({
+          vendorId: message.vendorId,
+          collectorVersion: pkg.version,
+          lifecycleRevision: lifecycle.recipeRevision,
+          connection,
+        }),
+      };
     }
 
     case "getLedger":

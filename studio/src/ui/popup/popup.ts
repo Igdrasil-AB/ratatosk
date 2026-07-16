@@ -1,5 +1,11 @@
 import type { SupplierFingerprintSubmissionV1 } from "../../../../src/core/recorder/supplier-fingerprint";
-import { send, type FingerprintOutboxStatus, type RecorderProgress, type RecorderStopResult } from "../../platform/messaging";
+import {
+  send,
+  type FingerprintOutboxItemSummary,
+  type FingerprintOutboxStatus,
+  type RecorderProgress,
+  type RecorderStopResult,
+} from "../../platform/messaging";
 
 const app = document.getElementById("app") as HTMLElement;
 const error = document.getElementById("error") as HTMLElement;
@@ -19,7 +25,7 @@ function showConsent(): void {
     <b>Before you record</b>
     <ul>
       <li>Studio observes network request metadata, JSON/HTML response bodies, embedded billing frames, and a rendered DOM snapshot.</li>
-      <li>Cookies and authentication values are removed before capture data is stored.</li>
+      <li>Request header values are never stored except a normalized content type. Studio keeps only a bounded authentication scheme/header-name marker.</li>
       <li>Capture data stays in browser session storage and is deleted when recording stops or Chrome closes.</li>
       <li>Nothing is sent automatically. An approved structural fingerprint can be saved locally for Svala; no network destination is configured.</li>
     </ul>
@@ -75,7 +81,7 @@ function showResult(result: RecorderStopResult): void {
     <button id="copy">Copy redacted report</button>
     <hr />
     <div class="section-title"><b>Supplier fingerprint</b><span class="badge">structural only</span></div>
-    <p class="notice">This exact preview contains request shapes and inferred field paths, never captured headers, bodies, query values, fixtures, or invoice values. Origins and schema names can still reveal tenant or internal naming, so inspect them before approval.</p>
+    <p class="notice">This exact preview contains request shapes and inferred field paths, never captured header values, bodies, query values, fixtures, or invoice values. Origins and schema names can still reveal tenant or internal naming, so inspect them before approval.</p>
     <pre class="fingerprint-preview">${esc(preview)}</pre>
     ${fingerprint ? `<div class="approval">
       <label><input id="authority" type="checkbox" /> <span>I am authorized to share structural information about this supplier portal.</span></label>
@@ -108,7 +114,7 @@ function wireFingerprintApproval(fingerprint: NonNullable<RecorderStopResult["fi
       authorityConfirmed: authority.checked,
       shareApproved: share.checked,
     });
-    if (!response.ok || !("submission" in response)) {
+    if (!response.ok || !("submission" in response) || !("outbox" in response)) {
       error.textContent = response.ok ? "The approved fingerprint was not saved." : response.error;
       update();
       return;
@@ -127,23 +133,50 @@ function wireFingerprintApproval(fingerprint: NonNullable<RecorderStopResult["fi
 }
 
 async function refreshOutbox(): Promise<void> {
-  const response = await send({ type: "fingerprintOutboxStatus" });
-  if (!response.ok || !("outbox" in response)) return;
-  renderOutbox(response.outbox);
+  const [statusResponse, listResponse] = await Promise.all([
+    send({ type: "fingerprintOutboxStatus" }),
+    send({ type: "fingerprintOutboxList" }),
+  ]);
+  if (!statusResponse.ok || !("outbox" in statusResponse) || !listResponse.ok || !("items" in listResponse)) return;
+  renderOutbox(statusResponse.outbox, listResponse.items);
 }
 
-function renderOutbox(status: FingerprintOutboxStatus): void {
+function renderOutbox(status: FingerprintOutboxStatus, items: readonly FingerprintOutboxItemSummary[] = []): void {
   const outbox = document.getElementById("outbox");
   if (!outbox) return;
   if (!status.pendingCount) {
     outbox.innerHTML = `<span>No approved fingerprints saved.</span>`;
     return;
   }
-  outbox.innerHTML = `<span>${esc(outboxLabel(status))} Delivery is not configured.</span><button class="text-button" id="clear-outbox">Clear</button>`;
+  outbox.innerHTML = `<div class="outbox-heading"><span>${esc(outboxLabel(status))} Delivery is not configured.</span><button class="text-button" id="clear-outbox">Clear all</button></div>
+    <div class="outbox-items">${items.map((item) => `<article class="outbox-item">
+      <b>${esc(item.supplierId)}</b><span title="${esc(item.supplierOrigin)}">${esc(item.supplierOrigin)}</span>
+      <span>Captured ${esc(formatTimestamp(item.capturedAt))} · expires ${esc(formatTimestamp(item.expiresAt))}</span>
+      <button class="secondary download-saved" data-fingerprint-id="${esc(item.fingerprintId)}">Download JSON</button>
+    </article>`).join("")}</div>`;
+  outbox.querySelectorAll<HTMLButtonElement>(".download-saved").forEach((button) => {
+    button.addEventListener("click", () => void downloadSavedSubmission(button.dataset.fingerprintId ?? ""));
+  });
   document.getElementById("clear-outbox")?.addEventListener("click", async () => {
     const response = await send({ type: "fingerprintClearOutbox" });
-    if (response.ok && "outbox" in response) renderOutbox(response.outbox);
+    if (response.ok && "outbox" in response) renderOutbox(response.outbox, []);
   });
+}
+
+async function downloadSavedSubmission(fingerprintId: string): Promise<void> {
+  error.textContent = "";
+  const response = await send({ type: "fingerprintOutboxGet", fingerprintId });
+  if (!response.ok || !("submission" in response)) {
+    error.textContent = response.ok ? "The saved fingerprint could not be exported." : response.error;
+    await refreshOutbox();
+    return;
+  }
+  downloadSubmission(response.submission);
+}
+
+function formatTimestamp(value: string): string {
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed.toLocaleString() : value;
 }
 
 function outboxLabel(status: FingerprintOutboxStatus): string {

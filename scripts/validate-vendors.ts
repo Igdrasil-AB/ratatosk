@@ -8,8 +8,15 @@
 import { existsSync } from "node:fs";
 import { ALL_VENDORS, VENDORS } from "../src/vendors";
 import { ICONS } from "../src/vendors/icons.generated";
+import pkg from "../package.json";
+import {
+  lifecycleCoverageIssues,
+  publicVendorCapabilityIssues,
+  releaseLifecycleIssues,
+} from "../src/vendors/lifecycle";
 
 let failures = 0;
+const release = process.argv.includes("--release");
 
 for (const vendor of ALL_VENDORS) {
   const testPath = `test/vendors/${vendor.id}.test.ts`;
@@ -22,6 +29,16 @@ for (const vendor of ALL_VENDORS) {
     console.error(`✗ ${vendor.id}: icon "${vendor.icon}" isn't in simple-icons (run npm run gen:icons; check the slug).`);
     failures++;
   }
+}
+
+for (const issue of lifecycleCoverageIssues(ALL_VENDORS)) {
+  console.error(`✗ ${issue}`);
+  failures++;
+}
+
+for (const issue of publicVendorCapabilityIssues(VENDORS)) {
+  console.error(`✗ ${issue}`);
+  failures++;
 }
 
 for (const vendor of VENDORS) {
@@ -37,9 +54,18 @@ for (const vendor of VENDORS) {
   }
 }
 
+if (release) {
+  const configuredMaxAge = Number.parseInt(process.env.VENDOR_VERIFICATION_MAX_AGE_DAYS ?? "", 10);
+  const maxAgeDays = Number.isFinite(configuredMaxAge) && configuredMaxAge > 0 ? configuredMaxAge : undefined;
+  for (const issue of releaseLifecycleIssues(VENDORS.map((vendor) => vendor.id), { collectorVersion: pkg.version, maxAgeDays })) {
+    console.error(`✗ release: ${issue}`);
+    failures++;
+  }
+}
+
 if (failures > 0) {
   console.error(`\n${failures} vendor(s) failed validation.`);
   process.exit(1);
 }
 
-console.log(`✓ ${ALL_VENDORS.length} vendors: schema-valid and covered by tests (${VENDORS.length} ship in Collector).`);
+console.log(`✓ ${ALL_VENDORS.length} vendors: schema-valid, lifecycle-covered, and tested (${VENDORS.length} ship in Collector).`);

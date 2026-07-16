@@ -6,7 +6,7 @@ describe *where* the invoices are, and the engine does the rest. Most recipes ar
 
 ## 1. Install the development build
 
-Download [Ratatosk Studio v0.6.8](https://github.com/Igdrasil-AB/ratatosk/releases/download/v0.6.8/ratatosk-studio-v0.6.8.zip),
+Download [Ratatosk Studio v0.7.0](https://github.com/Igdrasil-AB/ratatosk/releases/download/v0.7.0/ratatosk-studio-v0.7.0.zip),
 unzip it, then open `chrome://extensions`, turn on **Developer mode**, select
 **Load unpacked**, and choose the unzipped folder containing `manifest.json`.
 
@@ -24,9 +24,11 @@ personal account.
 
 After Studio stops, review the structural supplier fingerprint separately from
 the richer agent report. If authorized, approve the exact preview and download
-its JSON for import into the relevant Svala developer task. Studio does not send
-it automatically because the Svala endpoint and authentication policy have not
-yet been selected. See [supplier fingerprints](supplier-fingerprints.md).
+its JSON for import into the relevant Svala developer task. Approved submissions
+remain in Studio's local outbox for 30 days and can be downloaded again after the
+popup is reopened. Studio does not send them automatically because the Svala
+endpoint and authentication policy have not yet been selected. See
+[supplier fingerprints](supplier-fingerprints.md).
 
 In DevTools, open the vendor's billing/invoices page while signed in, choose
 **Network**, filter to `Fetch/XHR`, then reload.
@@ -83,9 +85,17 @@ Add the recipe to `EXPERIMENTAL_VENDORS` in `src/vendors/index.ts` first. The
 validator and tests cover experimental recipes, but Collector does not display or
 package them as supported integrations.
 
+Add the matching strict entry to `src/vendors/lifecycle.ts`. New recipes start as
+`experimental` with empty verification fields. Never place account IDs, invoice
+data, URLs, or credentials in this public manifest; verification references are
+limited to sanitized PR/release IDs or opaque internal receipt IDs.
+
 Promotion into public `VENDORS` requires a current live test, reviewed fixture,
-least-privilege host list, and explicit release decision. Keep both arrays
-alphabetical.
+least-privilege host list, complete lifecycle attestation, and explicit release
+decision. Keep both arrays alphabetical. `npm run validate:release` enforces the
+configured verification window (90 days unless
+`VENDOR_VERIFICATION_MAX_AGE_DAYS` is set by release policy) and intentionally
+fails while public entries still say `needs_verification`.
 
 ## 6. Verify end to end
 
@@ -110,3 +120,4 @@ record non-sensitive pass/fail evidence.
 - [ ] Studio output and fixtures contain no token, cookie, real invoice, personal
       identifier, or unnecessary HTML
 - [ ] public promotion was an explicit reviewed decision, not a registry default
+- [ ] lifecycle evidence is complete, sanitized, and passes `npm run validate:release`

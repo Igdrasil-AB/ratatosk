@@ -8,6 +8,8 @@ export type StudioMessage =
   | { type: "recorderProgress" }
   | { type: "fingerprintApprove"; fingerprint: SupplierFingerprintV1; authorityConfirmed: boolean; shareApproved: boolean }
   | { type: "fingerprintOutboxStatus" }
+  | { type: "fingerprintOutboxList" }
+  | { type: "fingerprintOutboxGet"; fingerprintId: string }
   | { type: "fingerprintClearOutbox" };
 
 export interface RecorderProgress {
@@ -32,11 +34,22 @@ export interface FingerprintOutboxStatus {
   transport: { target: "svala"; configured: false };
 }
 
+export interface FingerprintOutboxItemSummary {
+  readonly fingerprintId: string;
+  readonly supplierId: string;
+  readonly supplierOrigin: string;
+  readonly capturedAt: string;
+  readonly queuedAt: string;
+  readonly expiresAt: string;
+}
+
 export type StudioResponse =
   | { ok: true }
   | { ok: true; recording: boolean }
   | { ok: true; progress: RecorderProgress }
   | { ok: true; submission: SupplierFingerprintSubmissionV1; outbox: FingerprintOutboxStatus }
+  | { ok: true; items: readonly FingerprintOutboxItemSummary[] }
+  | { ok: true; submission: SupplierFingerprintSubmissionV1 }
   | { ok: true; outbox: FingerprintOutboxStatus }
   | ({ ok: true } & RecorderStopResult)
   | { ok: false; error: string };

@@ -26,5 +26,10 @@ export default defineManifest({
     default_popup: "studio/src/ui/popup/popup.html",
     default_title: "Ratatosk Studio",
   },
-  icons: { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" },
+  icons: {
+    "16": "public/icons/16.png",
+    "32": "public/icons/32.png",
+    "48": "public/icons/48.png",
+    "128": "public/icons/128.png",
+  },
 });

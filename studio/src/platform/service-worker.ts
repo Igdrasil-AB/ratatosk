@@ -4,7 +4,13 @@ import type { StudioMessage, StudioResponse } from "./messaging";
 import { isRecording, recordingProgress, startRecording, stopRecording } from "./recorder/orchestrator";
 import { appendEntry, clearAllRecorderState, getCurrentTab } from "./recorder/session-store";
 import { approveSupplierFingerprint } from "../../../src/core/recorder/supplier-fingerprint";
-import { clearFingerprintOutbox, enqueueFingerprintSubmission, fingerprintOutboxStatus } from "./fingerprint-outbox";
+import {
+  clearFingerprintOutbox,
+  enqueueFingerprintSubmission,
+  fingerprintOutboxStatus,
+  getFingerprintOutboxSubmission,
+  listFingerprintOutboxItems,
+} from "./fingerprint-outbox";
 
 interface RecorderEntryMessage {
   type: "recorder:entry";
@@ -54,8 +60,8 @@ async function acceptRecorderEntry(sender: chrome.runtime.MessageSender, entry: 
     (raw.responseBody !== undefined && typeof raw.responseBody !== "string") ||
     (raw.requestBody !== undefined && typeof raw.requestBody !== "string")
   ) return;
-  const requestHeaders = raw.requestHeaders && typeof raw.requestHeaders === "object"
-    ? Object.fromEntries(Object.entries(raw.requestHeaders).filter(([key, value]) => key.length <= 256 && typeof value === "string"))
+  const requestHeaders = raw.requestHeaders && typeof raw.requestHeaders === "object" && !Array.isArray(raw.requestHeaders)
+    ? raw.requestHeaders as Record<string, unknown>
     : undefined;
   await appendEntry(tabId, buildEntry({
     url: raw.url,
@@ -99,6 +105,14 @@ async function handle(message: StudioMessage): Promise<StudioResponse> {
     }
     case "fingerprintOutboxStatus":
       return { ok: true, outbox: await fingerprintOutboxStatus() };
+    case "fingerprintOutboxList":
+      return { ok: true, items: await listFingerprintOutboxItems() };
+    case "fingerprintOutboxGet": {
+      const submission = await getFingerprintOutboxSubmission(message.fingerprintId);
+      return submission
+        ? { ok: true, submission }
+        : { ok: false, error: "That saved fingerprint is missing, expired, or invalid." };
+    }
     case "fingerprintClearOutbox":
       return { ok: true, outbox: await clearFingerprintOutbox() };
   }

@@ -4,6 +4,8 @@ import {
   clearFingerprintOutbox,
   enqueueFingerprintSubmission,
   fingerprintOutboxStatus,
+  getFingerprintOutboxSubmission,
+  listFingerprintOutboxItems,
 } from "../../studio/src/platform/fingerprint-outbox";
 import { svalaFingerprintTransport } from "../../studio/src/platform/fingerprint-transport";
 import studioManifest from "../../studio/manifest.config";
@@ -45,6 +47,53 @@ describe("Studio supplier fingerprint outbox", () => {
     values["studio:supplier-fingerprint-outbox:v1"] = [{ queuedAt: "today", expiresAt: "later", submission: { rawCapture: "secret" } }];
     expect((await fingerprintOutboxStatus()).pendingCount).toBe(0);
     expect((await clearFingerprintOutbox()).pendingCount).toBe(0);
+  });
+
+  it("lists and revalidates retained submissions after the popup is reopened", async () => {
+    const now = new Date("2026-07-16T10:00:00.000Z");
+    const approved = submission(7);
+    await enqueueFingerprintSubmission(approved, now);
+
+    const [item] = await listFingerprintOutboxItems(new Date("2026-07-16T10:05:00.000Z"));
+    expect(item).toEqual({
+      fingerprintId: approved.fingerprint.fingerprintId,
+      supplierId: "billing-example",
+      supplierOrigin: "https://billing.example.com",
+      capturedAt: "2026-07-16T10:00:00.000Z",
+      queuedAt: "2026-07-16T10:00:00.000Z",
+      expiresAt: "2026-08-15T10:00:00.000Z",
+    });
+    expect(Object.isFrozen(item)).toBe(true);
+    expect(await getFingerprintOutboxSubmission(item.fingerprintId, new Date("2026-07-16T10:05:00.000Z"))).toEqual(approved);
+    expect(await getFingerprintOutboxSubmission("fp_ffffffffffffffffffffffffffffffff", now)).toBeUndefined();
+    expect(await getFingerprintOutboxSubmission("not-an-id", now)).toBeUndefined();
+  });
+
+  it("never lists or exports expired and corrupted submissions", async () => {
+    const approved = submission(8);
+    await enqueueFingerprintSubmission(approved, new Date("2026-06-01T00:00:00.000Z"));
+    const afterExpiry = new Date("2026-07-16T00:00:00.000Z");
+    expect(await listFingerprintOutboxItems(afterExpiry)).toEqual([]);
+    expect(await getFingerprintOutboxSubmission(approved.fingerprint.fingerprintId, afterExpiry)).toBeUndefined();
+
+    values["studio:supplier-fingerprint-outbox:v1"] = [{
+      queuedAt: "2026-07-16T00:00:00.000Z",
+      expiresAt: "2026-08-15T00:00:00.000Z",
+      submission: { ...approved, unexpected: "must be rejected" },
+    }];
+    expect(await listFingerprintOutboxItems(new Date("2026-07-17T00:00:00.000Z"))).toEqual([]);
+    expect(await getFingerprintOutboxSubmission(approved.fingerprint.fingerprintId)).toBeUndefined();
+  });
+
+  it("serializes concurrent enqueue and export operations", async () => {
+    const now = new Date("2026-07-16T10:00:00.000Z");
+    const approved = submission(9);
+    const enqueue = enqueueFingerprintSubmission(approved, now);
+    const exported = getFingerprintOutboxSubmission(approved.fingerprint.fingerprintId, now);
+
+    await expect(enqueue).resolves.toMatchObject({ pendingCount: 1 });
+    await expect(exported).resolves.toEqual(approved);
+    await expect(listFingerprintOutboxItems(now)).resolves.toHaveLength(1);
   });
 
   it("cannot deliver or call the network while the Svala transport is unconfigured", async () => {

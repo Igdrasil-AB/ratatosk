@@ -18,7 +18,7 @@ import type {
   VendorRecipe,
 } from "../types";
 import type { RawDocument, Strategy } from "../engine";
-import { AuthExpired, DocumentNotFound, UnexpectedResponse } from "../errors";
+import { AuthExpired, DocumentInvalid, DocumentNotFound, UnexpectedResponse } from "../errors";
 import { extract, extractString } from "../extract";
 import { get, getArray } from "../jsonpath";
 import { render } from "../template";
@@ -77,14 +77,20 @@ export const networkStrategy: Strategy = {
     const bytes = await res.arrayBuffer();
     const head = new Uint8Array(bytes.slice(0, 4));
     const looksPdf = head[0] === 0x25 && head[1] === 0x50 && head[2] === 0x44 && head[3] === 0x46; // "%PDF"
+    const responseContentType = normalizeResponseContentType(res.headers.get("content-type"));
+    const expectedContentType = normalizeResponseContentType(doc.contentType ?? "application/pdf");
     console.info(
-      `[collector] ${recipe.id} document: ${bytes.byteLength}b type=${res.headers.get("content-type") ?? "?"} pdf=${looksPdf}`,
+      `[collector] ${recipe.id} document: ${bytes.byteLength}b type=${responseContentType || "?"} pdf=${looksPdf}`,
     );
-    // Trust the server's content-type when it disagrees with the recipe, so an
-    // HTML error page isn't silently saved as a .pdf.
-    const contentType = res.headers.get("content-type")?.includes("pdf")
+    if (expectedContentType === "application/pdf") {
+      const compatibleType = !responseContentType || responseContentType === "application/pdf" || responseContentType === "application/x-pdf";
+      if (!compatibleType || !looksPdf) {
+        throw new DocumentInvalid(res.status, responseContentType, recipe.id);
+      }
+    }
+    const contentType = expectedContentType === "application/pdf"
       ? "application/pdf"
-      : (doc.contentType ?? res.headers.get("content-type") ?? "application/pdf");
+      : responseContentType || expectedContentType;
     const filename = render(doc.filename ?? DEFAULT_FILENAME, {
       vendorId: recipe.id,
       issuedAt: ref.issuedAt,
@@ -94,6 +100,10 @@ export const networkStrategy: Strategy = {
     return { bytes, contentType, filename };
   },
 };
+
+function normalizeResponseContentType(value: string | null): string {
+  return (value ?? "").split(";", 1)[0].trim().toLowerCase();
+}
 
 // ---- Pure mapping (unit-tested directly against fixtures) -----------------
 

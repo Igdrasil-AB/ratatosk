@@ -27,10 +27,10 @@ From a clean release commit on Node 22:
 ```bash
 npm ci
 npm run release:collector
-shasum -a 256 -c artifacts/ratatosk-collector-v0.6.8.zip.sha256
+shasum -a 256 -c artifacts/ratatosk-collector-v0.7.0.zip.sha256
 ```
 
-Upload only `artifacts/ratatosk-collector-v0.6.8.zip`. Do not upload the Studio
+Upload only `artifacts/ratatosk-collector-v0.7.0.zip`. Do not upload the Studio
 ZIP, `dist/`, a GitHub source archive, or the repository root.
 
 The packaging command rejects a non-MV3 build, version mismatch, source maps,
@@ -61,6 +61,10 @@ Official dashboard guidance:
 - https://developer.chrome.com/docs/webstore/cws-dashboard-test-instructions
 
 ## 4. Submit an unlisted pilot
+
+Before opening the dashboard, complete the private manifest and operator
+checkpoints in `pilot-runbook.md`; the repository template contains zero hashes
+and is deliberately not submission evidence.
 
 Submit the item for review as Unlisted. Do not change the ZIP, listing claims, or
 privacy disclosures while the review is pending unless the submission is

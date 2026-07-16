@@ -38,8 +38,8 @@ Studio is the developer build for collecting sanitized technical information
 from a supplier's billing portal so a reviewed Ratatosk recipe can be created.
 It is not the extension used for routine invoice collection.
 
-**[Download Ratatosk Studio v0.6.8 (ZIP)](https://github.com/Igdrasil-AB/ratatosk/releases/download/v0.6.8/ratatosk-studio-v0.6.8.zip)**
-· [SHA-256 checksum](https://github.com/Igdrasil-AB/ratatosk/releases/download/v0.6.8/ratatosk-studio-v0.6.8.zip.sha256)
+**[Download Ratatosk Studio v0.7.0 (ZIP)](https://github.com/Igdrasil-AB/ratatosk/releases/download/v0.7.0/ratatosk-studio-v0.7.0.zip)**
+· [SHA-256 checksum](https://github.com/Igdrasil-AB/ratatosk/releases/download/v0.7.0/ratatosk-studio-v0.7.0.zip.sha256)
 
 To install it in Chrome:
 
@@ -148,11 +148,22 @@ npm run release:collector
 This writes a ZIP and SHA-256 checksum under `artifacts/`. The ZIP contains the
 Collector manifest at its root and excludes Studio.
 
+Build and inspect the independent Studio release artifact with:
+
+```bash
+npm run release:studio
+```
+
+This runs the complete test and security gate before writing a deterministic
+Studio-only ZIP and checksum. Publishing remains an explicit operator action;
+the tag workflow runs only after a matching `v<package-version>` tag is pushed.
+
 ## Vendor status
 
 Collector currently exposes Anthropic, ChatGPT, and Railway as pilot recipes.
 Their parsing behavior is fixture-tested, but live vendor endpoints and auth flows
-must be re-verified in Chrome before a public claim or rollout. GitHub, Slack, and
+are explicitly marked `needs_verification`; the Collector release gate remains
+closed until sanitized current attestations are recorded. GitHub, Slack, and
 Vercel remain contributor examples and are not shipped by Collector.
 
 See [testing a vendor](docs/testing.md), [adding a vendor](docs/adding-a-vendor.md),

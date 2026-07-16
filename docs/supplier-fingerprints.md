@@ -14,7 +14,8 @@ account's invoices or credentials.
 4. Studio shows the exact fingerprint. The user separately confirms authority
    and approves saving that preview for Svala.
 5. The approved `ratatosk.supplier-fingerprint-submission.v1` is kept in a local
-   outbox (20 items maximum, 30-day validity) and can be downloaded as JSON.
+   outbox (20 items maximum, 30-day validity), remains visible after the popup is
+   reopened, and can be downloaded again as JSON until it expires or is cleared.
 6. Today, a developer imports that JSON into a Svala task's **Context docs**.
 
 There is no configured network destination in this version. The extension does

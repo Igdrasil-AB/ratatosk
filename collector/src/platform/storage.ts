@@ -1,3 +1,4 @@
+import type { OperationalOutcomeCode } from "../../../src/core/errors";
 import type { SeenStore } from "../../../src/core/types";
 
 /**
@@ -19,7 +20,7 @@ export function sinkCompanyId(cfg: SinkConfig | undefined): string {
   return cfg.kind === "filesystem" ? "local" : cfg.companyId;
 }
 
-export type ConnectionStatus = "ok" | "auth_expired" | "error";
+export type ConnectionStatus = "ok" | "partial" | "auth_expired" | "rate_limited" | "error";
 
 export interface Connection {
   vendorId: string;
@@ -28,11 +29,19 @@ export interface Connection {
   lastStatus?: ConnectionStatus;
   lastError?: string;
   lastCount?: number;
+  lastCode?: OperationalOutcomeCode;
+  lastFailedScopes?: number;
+  lastEmptyScopes?: number;
+  nextEligibleRunAt?: number;
 }
 
 const KEY = { config: "config", connections: "connections", seen: "seen", ledger: "ledger" } as const;
 const SEEN_CAP = 5000;
 const LEDGER_CAP = 100;
+const MAX_RATE_LIMIT_DELAY_MS = 24 * 60 * 60 * 1_000;
+const MIN_RATE_LIMIT_DELAY_MS = 5_000;
+const CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1_000;
+const writeChains = new Map<string, Promise<void>>();
 
 // ---- sink config ----------------------------------------------------------
 
@@ -47,15 +56,17 @@ export async function getConnections(): Promise<Record<string, Connection>> {
 }
 
 export async function upsertConnection(conn: Connection): Promise<void> {
-  const all = await getConnections();
-  all[conn.vendorId] = conn;
-  await set(KEY.connections, all);
+  await mutate<Record<string, Connection>>(KEY.connections, {}, (all) => {
+    all[conn.vendorId] = conn;
+    return all;
+  });
 }
 
 export async function removeConnection(vendorId: string): Promise<void> {
-  const all = await getConnections();
-  delete all[vendorId];
-  await set(KEY.connections, all);
+  await mutate<Record<string, Connection>>(KEY.connections, {}, (all) => {
+    delete all[vendorId];
+    return all;
+  });
 }
 
 /** Merge a run outcome into a connection, preserving `connectedAt`. */
@@ -63,13 +74,38 @@ export async function recordRun(
   vendorId: string,
   patch: Partial<Omit<Connection, "vendorId" | "connectedAt">>,
 ): Promise<void> {
-  const existing = (await getConnections())[vendorId];
-  await upsertConnection({
-    vendorId,
-    connectedAt: existing?.connectedAt ?? Date.now(),
-    lastRunAt: Date.now(),
-    ...patch,
+  await mutate<Record<string, Connection>>(KEY.connections, {}, (all) => {
+    const existing = all[vendorId];
+    const next: Connection = {
+      vendorId,
+      connectedAt: existing?.connectedAt ?? Date.now(),
+      lastRunAt: Date.now(),
+      ...patch,
+    };
+    for (const [key, value] of Object.entries(next)) {
+      if (value === undefined) delete (next as unknown as Record<string, unknown>)[key];
+    }
+    all[vendorId] = next;
+    return all;
   });
+}
+
+export function boundedNextEligibleRunAt(retryAfterMs: number, now = Date.now()): number {
+  const requested = Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? retryAfterMs : 30_000;
+  return now + Math.min(MAX_RATE_LIMIT_DELAY_MS, Math.max(MIN_RATE_LIMIT_DELAY_MS, requested));
+}
+
+export async function getNextEligibleRunAt(vendorId: string, now = Date.now()): Promise<number | null> {
+  const connection = (await getConnections())[vendorId];
+  const value = connection?.nextEligibleRunAt;
+  if (value === undefined) return null;
+  const valid = Number.isFinite(value) && value > now && value <= now + MAX_RATE_LIMIT_DELAY_MS + CLOCK_SKEW_TOLERANCE_MS;
+  if (valid) return value;
+  await mutate<Record<string, Connection>>(KEY.connections, {}, (all) => {
+    if (all[vendorId]) delete all[vendorId].nextEligibleRunAt;
+    return all;
+  });
+  return null;
 }
 
 // ---- seen set (bounded) ---------------------------------------------------
@@ -81,11 +117,12 @@ export function seenStore(): SeenStore {
       return key in map;
     },
     async add(key, source) {
-      const map = (await get<Record<string, unknown>>(KEY.seen)) ?? {};
-      map[key] = source ?? ""; // value tags the vendor so history is clearable
-      const keys = Object.keys(map);
-      if (keys.length > SEEN_CAP) for (const k of keys.slice(0, keys.length - SEEN_CAP)) delete map[k];
-      await set(KEY.seen, map);
+      await mutate<Record<string, unknown>>(KEY.seen, {}, (map) => {
+        map[key] = source ?? ""; // value tags the vendor so history is clearable
+        const keys = Object.keys(map);
+        if (keys.length > SEEN_CAP) for (const k of keys.slice(0, keys.length - SEEN_CAP)) delete map[k];
+        return map;
+      });
     },
   };
 }
@@ -93,15 +130,12 @@ export function seenStore(): SeenStore {
 /** Forget a vendor's download history (so a reconnect re-fetches). Also clears
  * legacy untagged entries from before keys carried a source. */
 export async function clearSeenForSource(source: string): Promise<void> {
-  const map = (await get<Record<string, unknown>>(KEY.seen)) ?? {};
-  let changed = false;
-  for (const [k, v] of Object.entries(map)) {
-    if (v === source || typeof v === "number") {
-      delete map[k];
-      changed = true;
+  await mutate<Record<string, unknown>>(KEY.seen, {}, (map) => {
+    for (const [k, v] of Object.entries(map)) {
+      if (v === source || typeof v === "number") delete map[k];
     }
-  }
-  if (changed) await set(KEY.seen, map);
+    return map;
+  });
 }
 
 // ---- collected-invoice ledger (bounded) -----------------------------------
@@ -125,18 +159,16 @@ export async function getLedger(): Promise<LedgerEntry[]> {
 /** Append newly-collected invoices, newest kept, deduped by key, bounded. */
 export async function recordCollected(entries: LedgerEntry[]): Promise<void> {
   if (!entries.length) return;
-  const existing = (await get<LedgerEntry[]>(KEY.ledger)) ?? [];
-  const byKey = new Map(existing.map((e) => [e.key, e]));
-  for (const e of entries) byKey.set(e.key, e);
-  const merged = [...byKey.values()].sort((a, b) => b.collectedAt - a.collectedAt).slice(0, LEDGER_CAP);
-  await set(KEY.ledger, merged);
+  await mutate<LedgerEntry[]>(KEY.ledger, [], (existing) => {
+    const byKey = new Map(existing.map((entry) => [entry.key, entry]));
+    for (const entry of entries) byKey.set(entry.key, entry);
+    return [...byKey.values()].sort((a, b) => b.collectedAt - a.collectedAt).slice(0, LEDGER_CAP);
+  });
 }
 
 /** Remove a disconnected vendor's user-facing collection history. */
 export async function clearLedgerForVendor(vendorId: string): Promise<void> {
-  const existing = (await get<LedgerEntry[]>(KEY.ledger)) ?? [];
-  const kept = existing.filter((entry) => entry.vendorId !== vendorId);
-  if (kept.length !== existing.length) await set(KEY.ledger, kept);
+  await mutate<LedgerEntry[]>(KEY.ledger, [], (existing) => existing.filter((entry) => entry.vendorId !== vendorId));
 }
 
 /** How many entries were added in the most recent run (collectedAt within the window). */
@@ -165,14 +197,35 @@ function validateSinkConfig(cfg: SinkConfig): SinkConfig {
 }
 
 async function get<T>(key: string): Promise<T | undefined> {
+  await writeChains.get(key);
+  return getRaw<T>(key);
+}
+
+async function getRaw<T>(key: string): Promise<T | undefined> {
   const values = await chrome.storage.local.get(key);
   return values[key] as T | undefined;
 }
 
 async function set(key: string, value: unknown): Promise<void> {
-  await chrome.storage.local.set({ [key]: value });
+  await enqueueWrite(key, () => chrome.storage.local.set({ [key]: value }));
 }
 
 async function remove(key: string): Promise<void> {
-  await chrome.storage.local.remove(key);
+  await enqueueWrite(key, () => chrome.storage.local.remove(key));
+}
+
+async function mutate<T>(key: string, fallback: T, update: (current: T) => T): Promise<void> {
+  await enqueueWrite(key, async () => {
+    const current = (await getRaw<T>(key)) ?? fallback;
+    await chrome.storage.local.set({ [key]: update(current) });
+  });
+}
+
+function enqueueWrite(key: string, operation: () => Promise<unknown>): Promise<void> {
+  const previous = writeChains.get(key) ?? Promise.resolve();
+  const current = previous.then(operation, operation).then(() => undefined);
+  writeChains.set(key, current);
+  return current.finally(() => {
+    if (writeChains.get(key) === current) writeChains.delete(key);
+  });
 }

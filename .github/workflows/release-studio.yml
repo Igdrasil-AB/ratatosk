@@ -1,0 +1,35 @@
+name: Release Studio
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Require the tag to match the package version
+        run: test "$GITHUB_REF_NAME" = "v$(node -p 'require("./package.json").version')"
+      - run: npm ci
+      - run: npm run release:studio
+      - name: Verify the packaged checksum
+        run: shasum -a 256 -c artifacts/ratatosk-studio-*.zip.sha256
+      - name: Publish the reviewed Studio artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          artifacts/ratatosk-studio-*.zip
+          artifacts/ratatosk-studio-*.zip.sha256
+          --verify-tag
+          --title "Ratatosk Studio $GITHUB_REF_NAME"
+          --generate-notes

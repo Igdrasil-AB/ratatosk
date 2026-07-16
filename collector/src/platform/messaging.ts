@@ -1,5 +1,7 @@
 import type { Connection, LedgerEntry, SinkConfig } from "./storage";
 import type { VendorRunSummary } from "./collector";
+import type { VendorLifecycleEntry } from "../../../src/vendors/lifecycle";
+import type { CollectorDiagnostic } from "./diagnostics";
 
 /**
  * The popup ↔ service-worker message contract. One discriminated union in, one
@@ -16,6 +18,7 @@ export type Message =
   | { type: "connect"; vendorId: string }
   | { type: "disconnect"; vendorId: string }
   | { type: "runNow"; vendorId?: string }
+  | { type: "getVendorDiagnostic"; vendorId: string }
   | { type: "getLedger" }
   | { type: "getSchedule" }
   | { type: "setSchedule"; periodMinutes: number };
@@ -33,12 +36,15 @@ export interface SourceView {
   icon?: string;
   /** Preloaded so the popup can request access directly inside the Connect click gesture. */
   hosts: readonly string[];
+  lifecycle: VendorLifecycleEntry;
+  runnable: boolean;
   connection: Connection | null;
 }
 
 export type Response =
   | { ok: true; sources: SourceView[] }
   | { ok: true; summaries: VendorRunSummary[] }
+  | { ok: true; diagnostic: CollectorDiagnostic }
   | { ok: true; config: SinkConfig | null }
   | { ok: true; ledger: LedgerEntry[] }
   | { ok: true; schedule: ScheduleInfo }

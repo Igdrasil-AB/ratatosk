@@ -4,6 +4,10 @@ Complete this checklist against the exact commit and ZIP intended for submission
 Record evidence in the release or pull request; never attach real invoices or
 tokens.
 
+The strict pilot template and rollback/stop procedure are in
+`pilot-manifest.template.json` and `pilot-runbook.md`. A ready private manifest
+must pass `npm run validate:pilot -- <path> --ready` before dashboard work.
+
 ## Automated gate
 
 ```bash

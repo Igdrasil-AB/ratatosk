@@ -43,13 +43,14 @@ function pageInterceptor(nonce: string): void {
   const emit = (entry: unknown) => window.postMessage({ __invRec: nonce, entry }, "*");
   const cap = (s: string | undefined) => (s ? s.slice(0, 1500000) : undefined);
   const keep = (ct: string) => ct.includes("json") || ct.includes("html"); // invoices live in either
-  // Lower-case header keys and drop the cookie (never templated; most sensitive).
+  // Copy bounded raw inputs only. The trusted service worker rebuilds every
+  // relayed entry through the same shared sanitizer used by debugger capture.
   const normHeaders = (h: unknown): Record<string, string> | undefined => {
     if (!h) return undefined;
     const out: Record<string, string> = {};
     const put = (k: string, v: string) => {
       const key = String(k).toLowerCase();
-      if (key !== "cookie" && typeof v === "string") out[key] = v;
+      if (typeof v === "string") out[key] = v.slice(0, 8192);
     };
     try {
       if (h instanceof Headers) h.forEach((v, k) => put(k, v));
@@ -90,7 +91,7 @@ function pageInterceptor(nonce: string): void {
   };
   XMLHttpRequest.prototype.setRequestHeader = function (name: string, value: string) {
     const inv = (this as unknown as { __inv?: XhrInv }).__inv;
-    if (inv && String(name).toLowerCase() !== "cookie") inv.headers[String(name).toLowerCase()] = value;
+    if (inv) inv.headers[String(name).toLowerCase()] = String(value).slice(0, 8192);
     // eslint-disable-next-line prefer-rest-params
     return setHeader.apply(this, arguments as unknown as Parameters<typeof setHeader>);
   };

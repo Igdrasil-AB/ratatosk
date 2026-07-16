@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { inferRecipe } from "../../src/core/recorder/infer";
+import { buildEntry } from "../../src/core/recorder/cdp";
 import {
   approveSupplierFingerprint,
   buildSupplierFingerprint,
@@ -14,34 +15,34 @@ function capturedSession(): CaptureSession {
   return {
     origin: "https://billing.example.com",
     entries: [
-      {
+      buildEntry({
         url: "https://billing.example.com/api/organizations",
         method: "GET",
         status: 200,
         contentType: "application/json",
-        responseBody: JSON.stringify({
+        body: JSON.stringify({
           user: { email: "owner@example.com", accessToken: TOKEN },
           organization: { id: ACCOUNT },
         }),
-      },
-      {
+      }),
+      buildEntry({
         url: `https://billing.example.com/api/organizations/${ACCOUNT}/invoices?limit=100&page=secret-cursor`,
         method: "POST",
         status: 200,
         contentType: "application/json",
         requestHeaders: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         requestBody: JSON.stringify({ operationName: "BillingInvoices", variables: { organizationId: ACCOUNT } }),
-        responseBody: JSON.stringify({
+        body: JSON.stringify({
           invoices: [{ id: "invoice-secret-123", amount: 9000, currency: "sek", issuedAt: "2026-07-01", pdfUrl: `https://files.example.com/invoices/${ACCOUNT}/invoice-secret-123.pdf` }],
           next_cursor: "secret-next-page",
         }),
-      },
-      {
+      }),
+      buildEntry({
         url: `https://files.example.com/invoices/${ACCOUNT}/invoice-secret-123.pdf?signature=secret`,
         method: "GET",
         status: 200,
         contentType: "application/pdf",
-      },
+      }),
     ],
   };
 }

@@ -60,6 +60,13 @@ issue.
   run until a destination is selected again.
 - Simulate a destination failure and confirm the invoice is retried rather than
   marked collected.
+- Simulate one failed account scope beside one successful scope and confirm the
+  popup says `partial`, including only bounded failed/empty scope counts.
+- Simulate HTTP 429 and confirm automatic and manual runs remain skipped until
+  the persisted per-vendor eligibility time; another vendor must still run.
+- Use **Copy diagnostic** on a non-OK vendor and inspect the JSON. It may contain
+  only vendor ID, Collector/lifecycle revisions, stable outcome code, timestamps,
+  and counts—never URLs, headers, bodies, invoice/company IDs, or tokens.
 
 ## 6. Record the verification
 
@@ -67,5 +74,10 @@ Record the Chrome version, Ratatosk commit and package checksum, vendor name,
 test date, destination mode, and pass/fail for fetch, download, de-duplication,
 expired-session handling, and disconnect. Do not record secrets or actual invoice
 content.
+
+After storing the private test record, update `src/vendors/lifecycle.ts` using
+only a sanitized `pr:`, `release:`, or opaque `receipt:` reference. Set the next
+review date according to the release policy and run `npm run validate:release`.
+The public manifest is release metadata, not a place for captured evidence.
 
 The full pre-release flow is in `store/release-checklist.md`.

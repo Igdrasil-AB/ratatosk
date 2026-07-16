@@ -35,9 +35,10 @@ manifest inside the release ZIP, not infer permissions from the repository.
 | Connect bridge | A hostile page installing a token or destination | Content script is limited to `https://accounting.igdrasil.se/*`; worker verifies extension id and exact sender origin; backend URL must be HTTPS on `igdrasil.se` or a subdomain; connect requires a short-lived, one-use state created by an explicit Ratatosk or in-app action |
 | Extension message bus | Web content issuing privileged commands | Consumer/control messages are accepted only when Chrome reports this extension's id and exact `chrome-extension://<this-id>/` sender URL; content-script senders retain their web URL and are rejected |
 | Download paths | Path traversal or unintended overwrite | Folder and filename segments are normalized and tested; local root configuration is validated and bounded |
-| Studio capture | A page leaking secrets through headers, URLs, or bodies | Explicit disclosure checkbox; recording limited to the active HTTP(S) tab; auth/cookie/API-key headers dropped; URL credentials/query values and secret-like body fields redacted; state stays in session storage and is cleared on startup |
+| Studio capture | A page leaking secrets through headers, URLs, or bodies | Explicit disclosure checkbox; recording limited to the active HTTP(S) tab; all request-header values are dropped except normalized `content-type`; auth is represented only by a bounded scheme/header-name marker; URL credentials/query values and secret-like body fields are redacted; state stays in session storage and is cleared on startup |
 | Studio relay | A page fabricating entries for another recording | Per-session nonce, same-window relay checks, active recording-tab check, and worker-side entry rebuilding |
 | Studio fingerprint outbox | Captured account data being retained or delivered without informed approval | A strict structural projection excludes bodies, headers, fixtures, query values, and invoice values; canonical origins and traversal-free patterns are enforced; the exact preview requires authority and share confirmation; local retention is capped at 20 items with 30-day validity; no delivery endpoint or host permission is configured |
+| Collector diagnostics | Error export leaking supplier or accounting data | Diagnostics are an explicit user action and contain only a stable vendor ID/code, package and lifecycle revisions, bounded counts, and normalized timestamps; stored error strings, URLs, headers, bodies, invoice IDs, company IDs, and tokens are excluded by construction |
 
 ## Security invariants enforced by tests
 
@@ -50,7 +51,8 @@ manifest inside the release ZIP, not infer permissions from the repository.
 - Download paths cannot escape the configured folder:
   `collector/src/platform/filesystem-sink.ts` and
   `test/core/filesystem-traversal.test.ts`.
-- Captured headers, URLs, and bodies are sanitized before Studio persists them:
+- Captured header values are allowlisted, authentication structure is value-free,
+  and URLs and bodies are sanitized before Studio persists them:
   `src/core/recorder/cdp.ts` and `test/core/recorder-capture.test.ts`.
 - Supplier fingerprints and approval envelopes reject unknown or unsafe fields;
   outbox retention, expiry, and deduplication are tested in

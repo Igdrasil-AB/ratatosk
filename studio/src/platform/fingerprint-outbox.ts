@@ -3,7 +3,7 @@ import {
   type SupplierFingerprintSubmissionV1,
 } from "../../../src/core/recorder/supplier-fingerprint";
 import { svalaFingerprintTransport } from "./fingerprint-transport";
-import type { FingerprintOutboxStatus } from "./messaging";
+import type { FingerprintOutboxItemSummary, FingerprintOutboxStatus } from "./messaging";
 
 const STORAGE_KEY = "studio:supplier-fingerprint-outbox:v1";
 const MAX_ITEMS = 20;
@@ -37,6 +37,29 @@ export function enqueueFingerprintSubmission(submission: unknown, now = new Date
 
 export function fingerprintOutboxStatus(now = new Date()): Promise<FingerprintOutboxStatus> {
   const operation = async () => statusFrom(await readValidItems(now));
+  const result = writeChain.then(operation, operation);
+  writeChain = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+export function listFingerprintOutboxItems(now = new Date()): Promise<readonly FingerprintOutboxItemSummary[]> {
+  const operation = async () => (await readValidItems(now)).map(summaryFrom);
+  const result = writeChain.then(operation, operation);
+  writeChain = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+export function getFingerprintOutboxSubmission(
+  fingerprintId: string,
+  now = new Date(),
+): Promise<SupplierFingerprintSubmissionV1 | undefined> {
+  const operation = async () => {
+    if (!/^fp_[a-f0-9]{32}$/.test(fingerprintId)) return undefined;
+    const item = (await readValidItems(now)).find(
+      (candidate) => candidate.submission.fingerprint.fingerprintId === fingerprintId,
+    );
+    return item ? parseSupplierFingerprintSubmission(item.submission) : undefined;
+  };
   const result = writeChain.then(operation, operation);
   writeChain = result.then(() => undefined, () => undefined);
   return result;
@@ -78,6 +101,17 @@ function statusFrom(items: StoredItem[]): FingerprintOutboxStatus {
     ...(items[0] ? { oldestQueuedAt: items[0].queuedAt } : {}),
     transport: { target: svalaFingerprintTransport.target, configured: false },
   };
+}
+
+function summaryFrom(item: StoredItem): FingerprintOutboxItemSummary {
+  return Object.freeze({
+    fingerprintId: item.submission.fingerprint.fingerprintId,
+    supplierId: item.submission.fingerprint.supplier.idCandidate,
+    supplierOrigin: item.submission.fingerprint.supplier.origin,
+    capturedAt: item.submission.fingerprint.capturedAt,
+    queuedAt: item.queuedAt,
+    expiresAt: item.expiresAt,
+  });
 }
 
 function isExactRecord(value: unknown, keys: string[]): value is Record<string, unknown> {
