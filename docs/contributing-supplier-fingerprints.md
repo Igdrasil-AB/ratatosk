@@ -35,6 +35,14 @@ account may be observed and whether the structural result may be shared.
    share.
 9. Explicitly deliver the saved item. Manual JSON export remains available.
 
+If a developer will author a new Collector recipe from the capture, separately
+download the **redacted agent report** before leaving the result screen and send
+it through the approved private development channel. A structural fingerprint is
+deliberately insufficient to reconstruct exact billing endpoints: it excludes
+the request templates and response fixture needed to prove that a recipe works.
+The richer report is never delivered with the fingerprint and must not be
+committed to this public repository.
+
 ## What crosses the boundary
 
 Studio may share normalized origins, methods, path shapes, query-key names,

@@ -81,6 +81,8 @@ function showResult(result: RecorderStopResult): void {
     <span>${result.captured} captured entries analyzed.</span>
     <details><summary>Agent report</summary><pre>${esc(result.report.slice(0, 5000))}</pre></details>
     <button id="copy">Copy redacted report</button>
+    <button class="secondary" id="download-report">Download redacted agent report</button>
+    <p class="notice">The agent report contains a locally inferred recipe and sanitized endpoint URLs. It is more detailed than, and not the structural-only fingerprint. Review it and share it privately with the developer authoring the recipe; never commit it to a public repository.</p>
     <hr />
     <div class="section-title"><b>Supplier fingerprint</b><span class="badge">structural only</span></div>
     <p class="notice">This exact preview contains request shapes and inferred field paths, never captured header values, bodies, query values, fixtures, or invoice values. Origins and schema names can still reveal tenant or internal naming, so inspect them before approval.</p>
@@ -95,6 +97,10 @@ function showResult(result: RecorderStopResult): void {
     <div class="notice">The approved outbox retains at most 20 fingerprints for 30 days. You can clear it from the start screen.</div>
   </section>`;
   document.getElementById("copy")?.addEventListener("click", () => void copy(result.report));
+  document.getElementById("download-report")?.addEventListener("click", () => downloadAgentReport(
+    result.report,
+    fingerprint?.supplier.idCandidate ?? "supplier",
+  ));
   document.getElementById("again")?.addEventListener("click", showConsent);
   if (fingerprint) wireFingerprintApproval(fingerprint);
 }
@@ -267,6 +273,15 @@ function downloadSubmission(submission: SupplierFingerprintSubmissionV1): void {
   const link = document.createElement("a");
   link.href = url;
   link.download = `ratatosk-${submission.fingerprint.supplier.idCandidate}-${submission.fingerprint.fingerprintId}.json`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}
+
+function downloadAgentReport(report: string, supplierId: string): void {
+  const url = URL.createObjectURL(new Blob([`${report}\n`], { type: "text/plain" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `ratatosk-${supplierId}-agent-report.txt`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }

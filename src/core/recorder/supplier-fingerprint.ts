@@ -320,16 +320,25 @@ function recipeRequestUrl(draft: DraftRecipe | null, kind: "list" | "auth"): str
 
 function dedupeRequests(requests: Array<z.infer<typeof requestFingerprintSchema>>): Array<z.infer<typeof requestFingerprintSchema>> {
   const seen = new Set<string>();
-  const out: Array<z.infer<typeof requestFingerprintSchema>> = [];
-  for (const request of requests) {
+  const unique: Array<{ request: z.infer<typeof requestFingerprintSchema>; index: number }> = [];
+  for (const [index, request] of requests.entries()) {
     if (NOISE.test(`${request.contentType} ${request.pathPattern}`)) continue;
     const key = JSON.stringify(request);
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push(request);
-    if (out.length >= MAX_REQUESTS) break;
+    unique.push({ request, index });
   }
-  return out;
+  return unique
+    .sort((left, right) => requestPriority(left.request.role) - requestPriority(right.request.role) || left.index - right.index)
+    .slice(0, MAX_REQUESTS)
+    .map(({ request }) => request);
+}
+
+function requestPriority(role: z.infer<typeof requestRoleSchema>): number {
+  if (role === "invoice_list") return 0;
+  if (role === "document") return 1;
+  if (role === "auth") return 2;
+  return 3;
 }
 
 function normalizeOrigin(value: string): string {
