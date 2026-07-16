@@ -30,6 +30,33 @@ The repository deliberately produces two separate extensions:
 
 Shared, browser-independent code lives in `src/` and is used by both builds.
 
+## Download Studio to add a new supplier
+
+Studio is the developer build for collecting sanitized technical information
+from a supplier's billing portal so a reviewed Ratatosk recipe can be created.
+It is not the extension used for routine invoice collection.
+
+**[Download Ratatosk Studio v0.6.8 (ZIP)](https://github.com/Igdrasil-AB/ratatosk/releases/download/v0.6.8/ratatosk-studio-v0.6.8.zip)**
+· [SHA-256 checksum](https://github.com/Igdrasil-AB/ratatosk/releases/download/v0.6.8/ratatosk-studio-v0.6.8.zip.sha256)
+
+To install it in Chrome:
+
+1. Download and unzip the Studio ZIP.
+2. Open `chrome://extensions`.
+3. Turn on **Developer mode**.
+4. Select **Load unpacked** and choose the unzipped Studio folder containing
+   `manifest.json`.
+
+> **Developer build warning:** Studio requests Chrome's broad `debugger` and
+> `activeTab` permissions so it can inspect a billing page after explicit
+> consent. Install it only in a dedicated developer profile, use only authorized
+> synthetic supplier accounts, and remove it when the supplier investigation is
+> complete. Studio is separate from Collector and must not be submitted or
+> distributed as the consumer extension.
+
+See [adding a vendor](docs/adding-a-vendor.md) for the reviewed recipe and test
+requirements.
+
 ## Product preview
 
 The Web Store presentation uses the same squirrel and rustic ledger-root artwork
