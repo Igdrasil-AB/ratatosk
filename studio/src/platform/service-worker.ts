@@ -4,7 +4,18 @@ import type { StudioMessage, StudioResponse } from "./messaging";
 import { isRecording, recordingProgress, startRecording, stopRecording } from "./recorder/orchestrator";
 import { appendEntry, clearAllRecorderState, getCurrentTab } from "./recorder/session-store";
 import { approveSupplierFingerprint } from "../../../src/core/recorder/supplier-fingerprint";
-import { clearFingerprintOutbox, enqueueFingerprintSubmission, fingerprintOutboxStatus } from "./fingerprint-outbox";
+import {
+  clearFingerprintOutbox,
+  deliverFingerprintSubmission,
+  enqueueFingerprintSubmission,
+  fingerprintOutboxStatus,
+  getFingerprintOutboxSubmission,
+  listFingerprintOutboxItems,
+  requeueRejectedFingerprintSubmissions,
+  resumeFingerprintDeliveries,
+} from "./fingerprint-outbox";
+import { disconnectSvalaFingerprintTransport, pairSvalaFingerprintTransport } from "./fingerprint-transport";
+import { activeCaptureMission, clearCaptureMission, loadCaptureMission } from "./capture-mission";
 
 interface RecorderEntryMessage {
   type: "recorder:entry";
@@ -15,7 +26,7 @@ chrome.runtime.onInstalled.addListener(() => {
   void Promise.all([clearAllRecorderState(), fingerprintOutboxStatus()]).finally(() => setRecordingBadge(false));
 });
 chrome.runtime.onStartup.addListener(() => {
-  void Promise.all([clearAllRecorderState(), fingerprintOutboxStatus()]).finally(() => setRecordingBadge(false));
+  void Promise.all([clearAllRecorderState(), resumeFingerprintDeliveries()]).finally(() => setRecordingBadge(false));
 });
 
 chrome.runtime.onMessage.addListener(
@@ -54,8 +65,8 @@ async function acceptRecorderEntry(sender: chrome.runtime.MessageSender, entry: 
     (raw.responseBody !== undefined && typeof raw.responseBody !== "string") ||
     (raw.requestBody !== undefined && typeof raw.requestBody !== "string")
   ) return;
-  const requestHeaders = raw.requestHeaders && typeof raw.requestHeaders === "object"
-    ? Object.fromEntries(Object.entries(raw.requestHeaders).filter(([key, value]) => key.length <= 256 && typeof value === "string"))
+  const requestHeaders = raw.requestHeaders && typeof raw.requestHeaders === "object" && !Array.isArray(raw.requestHeaders)
+    ? raw.requestHeaders as Record<string, unknown>
     : undefined;
   await appendEntry(tabId, buildEntry({
     url: raw.url,
@@ -74,6 +85,10 @@ async function handle(message: StudioMessage): Promise<StudioResponse> {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.id || !tab.url || !/^https?:/.test(tab.url)) {
         return { ok: false, error: "Open an HTTPS billing page before recording" };
+      }
+      const mission = await activeCaptureMission();
+      if (mission && new URL(tab.url).origin !== mission.mission.allowedOrigin) {
+        return { ok: false, error: `This mission is scoped to ${mission.mission.allowedOrigin}. Open that exact supplier origin before recording.` };
       }
       await startRecording(tab.id, tab.url, "deep");
       setRecordingBadge(true);
@@ -95,10 +110,40 @@ async function handle(message: StudioMessage): Promise<StudioResponse> {
         authorityConfirmed: message.authorityConfirmed,
         shareApproved: message.shareApproved,
       });
-      return { ok: true, submission, outbox: await enqueueFingerprintSubmission(submission) };
+      const mission = await activeCaptureMission();
+      return { ok: true, submission, outbox: await enqueueFingerprintSubmission(submission, new Date(), mission?.code) };
     }
     case "fingerprintOutboxStatus":
       return { ok: true, outbox: await fingerprintOutboxStatus() };
+    case "fingerprintOutboxList":
+      return { ok: true, items: await listFingerprintOutboxItems() };
+    case "fingerprintOutboxGet": {
+      const submission = await getFingerprintOutboxSubmission(message.fingerprintId);
+      return submission
+        ? { ok: true, submission }
+        : { ok: false, error: "That saved fingerprint is missing, expired, or invalid." };
+    }
+    case "fingerprintDeliver": {
+      const item = await deliverFingerprintSubmission(message.fingerprintId);
+      return item
+        ? { ok: true, item }
+        : { ok: false, error: "That saved fingerprint is missing, expired, or invalid." };
+    }
+    case "fingerprintPair":
+      await pairSvalaFingerprintTransport(message.token);
+      return { ok: true, outbox: await requeueRejectedFingerprintSubmissions() };
+    case "fingerprintDisconnect":
+      await disconnectSvalaFingerprintTransport();
+      return { ok: true, outbox: await fingerprintOutboxStatus() };
+    case "missionLoad": {
+      const active = await loadCaptureMission(message.code);
+      return { ok: true, mission: active.mission };
+    }
+    case "missionStatus":
+      return { ok: true, mission: (await activeCaptureMission())?.mission ?? null };
+    case "missionClear":
+      await clearCaptureMission();
+      return { ok: true, mission: null };
     case "fingerprintClearOutbox":
       return { ok: true, outbox: await clearFingerprintOutbox() };
   }

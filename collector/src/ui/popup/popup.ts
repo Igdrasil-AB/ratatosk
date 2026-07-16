@@ -4,6 +4,7 @@
  */
 import { send, type ScheduleInfo, type SourceView } from "../../platform/messaging";
 import type { LedgerEntry } from "../../platform/storage";
+import { vendorLifecycleLabel } from "../../../../src/vendors/lifecycle";
 import { requestHostPermissions } from "../../platform/permissions";
 import { clearConnectBadge } from "../../platform/popup-handoff";
 import { brandIcon } from "../../../../src/vendors/icons";
@@ -218,14 +219,20 @@ function renderVendors(): void {
     const connection = source.connection;
     const isBusy = state.busyVendorId === source.id;
     let sub = categoryLabel(source.category);
-    let action = `<button type="button" class="btn tonal sm" data-action="connect" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}" ${isBusy ? "disabled" : ""}>${isBusy ? "Connecting…" : "Connect"}</button>`;
+    let action = source.runnable
+      ? `<button type="button" class="btn tonal sm" data-action="connect" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}" ${isBusy ? "disabled" : ""}>${isBusy ? "Connecting…" : "Connect"}</button>`
+      : `<button type="button" class="btn tonal sm" disabled aria-describedby="vendor-status-${esc(source.id)}">Unavailable</button>`;
     let secondaryAction = `<span class="action-spacer" aria-hidden="true"></span>`;
     if (connection?.lastStatus === "auth_expired") {
       sub = "Session expired — sign in, then reconnect";
       action = `<button type="button" class="btn warn sm" data-action="connect" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}" ${isBusy ? "disabled" : ""}>${isBusy ? "Connecting…" : "Reconnect"}</button>`;
     } else if (connection) {
       const count = connection.lastCount ?? 0;
-      sub = connection.lastStatus === "error"
+      sub = connection.lastStatus === "partial"
+        ? `Collected ${count}; ${connection.lastFailedScopes ?? 0} account scope${connection.lastFailedScopes === 1 ? "" : "s"} need attention`
+        : connection.lastStatus === "rate_limited"
+          ? `Supplier asked Ratatosk to wait · resumes ${relTime(connection.nextEligibleRunAt)}`
+          : connection.lastStatus === "error"
         ? connection.lastError ? `Couldn’t sync — ${connection.lastError}` : "Couldn’t sync — try again"
         : count > 0 ? `${count} collected · synced ${relTime(connection.lastRunAt)}` : `Connected · synced ${relTime(connection.lastRunAt)}`;
       action = `<button type="button" class="btn outline sm" data-action="sync" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}">Sync</button>`;
@@ -233,7 +240,9 @@ function renderVendors(): void {
     }
     const error = state.inlineError?.scope === "vendor" && state.inlineError.vendorId === source.id
       ? `<div class="inline-error" id="vendor-error-${esc(source.id)}" role="alert" tabindex="-1">${esc(state.inlineError.message)}</div>` : "";
-    return `<li class="vrow">${logo(source.icon, source.name)}<div class="mid"><div class="vn">${esc(source.name)}</div><div class="vs" id="vendor-status-${esc(source.id)}">${esc(sub)}</div>${error}</div><div class="actions">${action}${secondaryAction}</div></li>`;
+    const diagnostic = connection?.lastStatus && connection.lastStatus !== "ok"
+      ? `<button type="button" class="diagnostic-link" data-action="copy-diagnostic" data-id="${esc(source.id)}">Copy diagnostic</button>` : "";
+    return `<li class="vrow">${logo(source.icon, source.name)}<div class="mid"><div class="vn">${esc(source.name)}</div><div class="vlifecycle">${esc(vendorLifecycleLabel(source.lifecycle))}</div><div class="vs" id="vendor-status-${esc(source.id)}">${esc(sub)}</div>${diagnostic}${error}</div><div class="actions">${action}${secondaryAction}</div></li>`;
   }).join("");
 
   const infoButton = state.vendorGuidanceSeen && !showGuidance
@@ -355,6 +364,7 @@ async function handle(action: string, vendorId?: string): Promise<void> {
     case "sync": await run({ type: "runNow", vendorId: vendorId! }, vendorId); return;
     case "sync-all": await run({ type: "runNow" }); return;
     case "disconnect": openDisconnectDialog(vendorId!); return;
+    case "copy-diagnostic": await copyVendorDiagnostic(vendorId!); return;
     case "connect-igdrasil": await openIgdrasilConnect(); return;
     case "manage-igdrasil": await chrome.tabs.create({ url: "https://accounting.igdrasil.se/integrations/invoice-collector" }); return;
     case "dismiss-vendor-guidance":
@@ -387,7 +397,10 @@ async function run(message: Parameters<typeof send>[0], vendorId?: string): Prom
       return;
     }
     if ("summaries" in response) {
-      const collected = response.summaries.reduce((count, summary) => count + (summary.status === "ok" ? summary.count : 0), 0);
+      const collected = response.summaries.reduce((count, summary) => count + (summary.status === "ok" || summary.status === "partial" ? summary.count : 0), 0);
+      const waiting = response.summaries.find((summary) => summary.status === "rate_limited" || summary.status === "skipped");
+      if (waiting) toast(`Supplier asked Ratatosk to wait until ${relTime(waiting.nextEligibleRunAt)}`);
+      else
       toast(collected ? `Collected ${collected} Invoice${collected === 1 ? "" : "s"}` : "No New Invoices");
     }
     await load();
@@ -395,6 +408,20 @@ async function run(message: Parameters<typeof send>[0], vendorId?: string): Prom
     console.error("[collector] popup action failed", error);
     if (vendorId) sourceError(vendorId, "Ratatosk couldn’t reach the background process. Reopen the extension and try again.");
     else toast("Couldn’t finish. Reopen Ratatosk and try again.");
+  }
+}
+
+async function copyVendorDiagnostic(vendorId: string): Promise<void> {
+  const response = await send({ type: "getVendorDiagnostic", vendorId });
+  if (!response.ok || !("diagnostic" in response)) {
+    sourceError(vendorId, response.ok ? "Diagnostic unavailable." : response.error);
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(`${JSON.stringify(response.diagnostic, null, 2)}\n`);
+    toast("Redacted Diagnostic Copied");
+  } catch {
+    sourceError(vendorId, "Clipboard access failed. Reopen Ratatosk and try again.");
   }
 }
 

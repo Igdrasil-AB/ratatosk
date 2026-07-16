@@ -108,15 +108,14 @@ function inferStructured(session: CaptureSession): DraftRecipe | null {
     notes.push('documentUrl is a Stripe HOSTED invoice page — insert "/pdf" before the "?" (a `replace` transform) to fetch the actual PDF.');
   }
 
-  // Auth: if the list request carried a bearer token, template it in and trace the
-  // token to the endpoint that mints it (e.g. /api/auth/session → accessToken), so
-  // the recipe fetches a fresh token per user instead of hardcoding one.
+  // Auth: use the structural bearer marker and a redacted response path. Header
+  // values never enter inference or storage.
   const authWiring = isHtml ? undefined : inferAuthToken(session.entries, entry);
-  const authHeaders = authWiring?.tokenSpec ? authWiring.header : undefined;
+  const authHeaders = authWiring?.header;
   if (authWiring && !authWiring.tokenSpec) {
     notes.push("The list request uses a bearer token, but the endpoint that mints it wasn't in the capture — add `auth.token` manually (usually an /auth/session call).");
   } else if (authWiring?.tokenSpec) {
-    notes.push(`Auth: bearer token auto-wired from ${authWiring.tokenSpec.request.url} at "${authWiring.tokenSpec.value}" — nothing is hardcoded.`);
+    notes.push(`Auth: bearer token source candidate ${authWiring.tokenSpec.request.url} at "${authWiring.tokenSpec.value}" was inferred from redacted structural evidence — review required; nothing is hardcoded.`);
   }
 
   // Multi-tenant: trace any per-user id baked into the list URL OR request body
@@ -248,24 +247,39 @@ function withHeaders(req: Obj, extra?: Record<string, string>): Obj {
 }
 
 /**
- * If the list request carried an `Authorization: Bearer …` header, template it in
- * and locate the token in a captured response (e.g. `/api/auth/session` →
- * `accessToken`) so the recipe re-mints it per user via `auth.token`. The token
- * value is only used to trace its source — it's never written into the recipe.
+ * If the sanitizer observed bearer authentication on the list request, template
+ * it without retaining the value. A token-source proposal requires both an
+ * auth-like endpoint and one explicitly supported redacted response leaf.
  */
 function inferAuthToken(
   entries: CapturedEntry[],
   listEntry: CapturedEntry,
 ): { header: Record<string, string>; tokenSpec?: { request: Obj; value: string } } | undefined {
-  const auth = listEntry.requestHeaders?.["authorization"];
-  if (!auth) return undefined;
-  const token = (auth.match(/^bearer\s+(.+)$/i)?.[1] ?? auth).trim();
-  if (token.length < 12) return undefined;
-  const source = locateValue(entries, listEntry, token);
+  if (listEntry.requestAuth?.scheme !== "bearer") return undefined;
+  const source = locateCredentialPath(entries, listEntry);
   return {
     header: { authorization: "Bearer {token}" },
     tokenSpec: source ? { request: sourceRequest(source), value: source.path } : undefined,
   };
+}
+
+const TOKEN_SOURCE_LEAF = new Set(["accessToken", "access_token", "idToken", "id_token", "token"]);
+
+function locateCredentialPath(entries: CapturedEntry[], exclude: CapturedEntry): SourceHit | undefined {
+  for (const entry of entries) {
+    if (entry === exclude || !AUTH_URL.test(entry.url) || !entry.redactedResponsePaths?.length) continue;
+    const path = entry.redactedResponsePaths.find((candidate) => TOKEN_SOURCE_LEAF.has(candidate.split(".").pop() ?? ""));
+    if (path) {
+      return {
+        url: entry.url,
+        path,
+        method: entry.method,
+        body: entry.requestBody,
+        contentType: entry.requestHeaders?.["content-type"],
+      };
+    }
+  }
+  return undefined;
 }
 
 /** id-like tokens in a URL's query values and path segments, with the query key if any. */

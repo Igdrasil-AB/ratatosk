@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { inferRecipe } from "../../src/core/recorder/infer";
+import { buildEntry } from "../../src/core/recorder/cdp";
 import type { CaptureSession } from "../../src/core/recorder/types";
 
 /**
@@ -250,24 +251,24 @@ describe("recorder inference — bearer token auto-wired from captured headers",
     origin: "https://chatgpt.com",
     entries: [
       // The endpoint that mints the token.
-      {
+      buildEntry({
         url: "https://chatgpt.com/api/auth/session",
         method: "GET",
         status: 200,
         contentType: "application/json",
-        responseBody: JSON.stringify({ user: { id: "u_1" }, accessToken: TOKEN, expires: "2026-08-01" }),
-      },
+        body: JSON.stringify({ user: { id: "u_1" }, accessToken: TOKEN, expires: "2026-08-01" }),
+      }),
       // The invoice list — captured WITH its Authorization header this time.
-      {
+      buildEntry({
         url: "https://chatgpt.com/backend-api/invoices?limit=4",
         method: "GET",
         status: 200,
         contentType: "application/json",
         requestHeaders: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        responseBody: JSON.stringify({
+        body: JSON.stringify({
           data: [{ id: "in_1", created: 1744158410, amount_due: 2000, currency: "usd", invoice_pdf: "https://pay.stripe.com/x/A/pdf" }],
         }),
-      },
+      }),
     ],
   });
 
@@ -278,7 +279,30 @@ describe("recorder inference — bearer token auto-wired from captured headers",
     expect(recipe.invoices.list.request.headers.authorization).toBe("Bearer {token}");
     // The raw token must never end up in the recipe.
     expect(JSON.stringify(recipe)).not.toContain(TOKEN);
-    expect(draft!.notes.some((n) => /bearer token auto-wired/i.test(n))).toBe(true);
+    expect(draft!.notes.some((n) => /redacted structural evidence.*review required/i.test(n))).toBe(true);
+    expect(JSON.stringify(draft)).not.toContain(TOKEN);
+  });
+
+  it("does not propose a source from an arbitrary token-like field", () => {
+    const source = buildEntry({
+      url: "https://chatgpt.com/api/data",
+      method: "GET",
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ paginationToken: TOKEN }),
+    });
+    const list = buildEntry({
+      url: "https://chatgpt.com/backend-api/invoices",
+      method: "GET",
+      status: 200,
+      contentType: "application/json",
+      requestHeaders: { Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ data: [{ id: "in_1", created: "2026-01-01", amount: 1, currency: "usd" }] }),
+    });
+    const result = inferRecipe({ origin: "https://chatgpt.com", entries: [source, list] });
+    expect((result!.recipe as any).auth.token).toBeUndefined();
+    expect((result!.recipe as any).invoices.list.request.headers.authorization).toBe("Bearer {token}");
+    expect(result!.notes.some((note) => /add `auth\.token` manually/i.test(note))).toBe(true);
   });
 });
 

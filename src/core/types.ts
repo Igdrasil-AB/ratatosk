@@ -1,3 +1,5 @@
+import type { OperationalOutcomeCode } from "./errors";
+
 /**
  * Core contracts for the invoice collector.
  *
@@ -320,4 +322,11 @@ export interface HttpResponse {
 export interface RunResult {
   vendorId: string;
   documents: FetchedDocument[];
+  scopes: {
+    total: number;
+    succeeded: number;
+    empty: number;
+    failed: number;
+    failureCodes: OperationalOutcomeCode[];
+  };
 }

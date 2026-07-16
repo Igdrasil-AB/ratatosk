@@ -22,7 +22,7 @@ import type {
   VendorRecipe,
   Predicate,
 } from "./types";
-import { AuthExpired } from "./errors";
+import { AuthExpired, operationalCodeForError, RateLimited } from "./errors";
 import { idempotencyKey } from "./dedup";
 import { extract } from "./extract";
 import { get, getArray } from "./jsonpath";
@@ -67,11 +67,15 @@ export async function runVendor(
   const documents: FetchedDocument[] = [];
   const emittedThisRun = new Set<string>();
   const scopeErrors: unknown[] = [];
+  let succeededScopes = 0;
+  let emptyScopes = 0;
 
   for (const scopeVars of scopes) {
     const vars = { ...ctx.vars, ...scopeVars };
     try {
       const refs = await strategy.list(recipe, vars, ctx);
+      succeededScopes++;
+      if (refs.length === 0) emptyScopes++;
 
       for (const ref of refs) {
         const key = await idempotencyKey(ctx.companyId, source, ref.vendorInvoiceId);
@@ -96,7 +100,7 @@ export async function runVendor(
     } catch (err) {
       // A dead session is vendor-wide, so abort. Any other per-scope failure
       // (e.g. one org with no billing 404s) must NOT sink the sibling scopes.
-      if (err instanceof AuthExpired) throw err;
+      if (err instanceof AuthExpired || err instanceof RateLimited) throw err;
       scopeErrors.push(err);
     }
   }
@@ -107,7 +111,17 @@ export async function runVendor(
     throw scopeErrors[0];
   }
 
-  return { vendorId: recipe.id, documents };
+  return {
+    vendorId: recipe.id,
+    documents,
+    scopes: {
+      total: scopes.length,
+      succeeded: succeededScopes,
+      empty: emptyScopes,
+      failed: scopeErrors.length,
+      failureCodes: [...new Set(scopeErrors.map(operationalCodeForError))],
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

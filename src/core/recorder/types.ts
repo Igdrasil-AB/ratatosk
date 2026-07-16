@@ -13,9 +13,19 @@ export interface CapturedEntry {
   contentType: string;
   /** Request body (e.g. a GraphQL query) — needed to replay POST endpoints. */
   requestBody?: string;
-  /** Request headers (cookie stripped) — lets inference wire token/key auth.
-   * Sensitive values live only in the in-memory session, never in outputs. */
+  /** Allowlisted request-header values needed to reconstruct a request.
+   * Authentication and arbitrary header values are never persisted. */
   requestHeaders?: Record<string, string>;
+  /** Authentication structure inferred at the sanitizer boundary, without a
+   * value, hash, length, prefix, or other credential derivative. */
+  requestAuth?: {
+    scheme: "bearer" | "basic" | "custom" | "none";
+    headerName?: string;
+  };
+  /** Bounded structural paths whose request JSON values were redacted. */
+  redactedRequestPaths?: string[];
+  /** Bounded structural paths whose response JSON values were redacted. */
+  redactedResponsePaths?: string[];
   /** Response body as text — populated only for JSON-ish responses. */
   responseBody?: string;
 }

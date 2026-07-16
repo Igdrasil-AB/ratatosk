@@ -115,15 +115,21 @@ or connect Igdrasil before a vendor can be connected or run.
 Studio is not part of Collector's runtime or release. A developer checks a
 prominent disclosure before recording an active HTTP(S) tab. Studio can observe
 network metadata, supported response bodies, child-frame traffic, and a DOM
-snapshot. Before session storage, it removes auth and cookie headers, sanitizes
-URLs and secret-looking body fields, and caps bodies. On stop it creates a
-redacted, manually copied report; captured HTML bodies are not exported.
+snapshot. Before session storage, the shared capture boundary drops every request
+header value except a normalized `content-type`; retains only a bounded,
+value-free authentication scheme/header-name marker; sanitizes URLs and
+secret-looking body fields; records bounded redacted JSON paths; and caps bodies.
+Bearer-token source suggestions use only those structural markers and require
+review—Studio never matches or reconstructs a credential value. On stop it
+creates a redacted, manually copied report; captured HTML bodies are not exported.
 
 Studio also creates a separately validated, structural-only supplier fingerprint.
 The exact fingerprint requires authority confirmation and explicit sharing
-approval before it enters a bounded local outbox. No network destination is
-configured; approved JSON can be imported through Svala's existing developer
-context workflow. See [supplier fingerprints](supplier-fingerprints.md).
+approval before it enters a bounded local outbox. Internal developers can pair a
+revocable upload-only token and explicitly deliver an approved envelope to the
+fixed HTTPS Svala intake endpoint. The token cannot follow redirects or be sent
+to a configured alternate origin; local JSON export remains available. See
+[supplier fingerprints](supplier-fingerprints.md).
 
 Studio output is always a draft. A human must remove unnecessary data, verify the
 vendor contract in a dedicated test account, add a fixture test, and explicitly

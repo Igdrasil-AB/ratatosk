@@ -1,5 +1,11 @@
 import type { SupplierFingerprintSubmissionV1 } from "../../../../src/core/recorder/supplier-fingerprint";
-import { send, type FingerprintOutboxStatus, type RecorderProgress, type RecorderStopResult } from "../../platform/messaging";
+import {
+  send,
+  type FingerprintOutboxItemSummary,
+  type FingerprintOutboxStatus,
+  type RecorderProgress,
+  type RecorderStopResult,
+} from "../../platform/messaging";
 
 const app = document.getElementById("app") as HTMLElement;
 const error = document.getElementById("error") as HTMLElement;
@@ -19,12 +25,13 @@ function showConsent(): void {
     <b>Before you record</b>
     <ul>
       <li>Studio observes network request metadata, JSON/HTML response bodies, embedded billing frames, and a rendered DOM snapshot.</li>
-      <li>Cookies and authentication values are removed before capture data is stored.</li>
+      <li>Request header values are never stored except a normalized content type. Studio keeps only a bounded authentication scheme/header-name marker.</li>
       <li>Capture data stays in browser session storage and is deleted when recording stops or Chrome closes.</li>
-      <li>Nothing is sent automatically. An approved structural fingerprint can be saved locally for Svala; no network destination is configured.</li>
+      <li>Nothing is sent automatically during capture. Approved fingerprints stay locally recoverable and can be explicitly delivered only after pairing with a scoped Svala intake token.</li>
     </ul>
     <label><input id="consent" type="checkbox" /> <span>I understand the capture scope and am authorized to record this billing page.</span></label>
     <button id="start" disabled>Start recording this page</button>
+    <div id="mission" class="mission" aria-live="polite"></div>
     <div id="outbox" class="outbox" aria-live="polite"></div>
   </section>`;
   const consent = document.getElementById("consent") as HTMLInputElement;
@@ -32,6 +39,7 @@ function showConsent(): void {
   consent.addEventListener("change", () => { start.disabled = !consent.checked; });
   start.addEventListener("click", () => void startRecording());
   void refreshOutbox();
+  void refreshMission();
 }
 
 async function startRecording(): Promise<void> {
@@ -75,13 +83,13 @@ function showResult(result: RecorderStopResult): void {
     <button id="copy">Copy redacted report</button>
     <hr />
     <div class="section-title"><b>Supplier fingerprint</b><span class="badge">structural only</span></div>
-    <p class="notice">This exact preview contains request shapes and inferred field paths, never captured headers, bodies, query values, fixtures, or invoice values. Origins and schema names can still reveal tenant or internal naming, so inspect them before approval.</p>
+    <p class="notice">This exact preview contains request shapes and inferred field paths, never captured header values, bodies, query values, fixtures, or invoice values. Origins and schema names can still reveal tenant or internal naming, so inspect them before approval.</p>
     <pre class="fingerprint-preview">${esc(preview)}</pre>
     ${fingerprint ? `<div class="approval">
       <label><input id="authority" type="checkbox" /> <span>I am authorized to share structural information about this supplier portal.</span></label>
       <label><input id="share" type="checkbox" /> <span>I approve saving the exact fingerprint displayed above for Svala.</span></label>
       <button id="approve" disabled>Approve &amp; save for Svala</button>
-      <div id="delivery-status" class="notice" aria-live="polite">Approval will save locally only. No Svala network destination is configured.</div>
+      <div id="delivery-status" class="notice" aria-live="polite">Approval saves locally first. Delivery is always a separate action.</div>
     </div>` : ""}
     <button class="secondary" id="again">Record another page</button>
     <div class="notice">The approved outbox retains at most 20 fingerprints for 30 days. You can clear it from the start screen.</div>
@@ -108,12 +116,12 @@ function wireFingerprintApproval(fingerprint: NonNullable<RecorderStopResult["fi
       authorityConfirmed: authority.checked,
       shareApproved: share.checked,
     });
-    if (!response.ok || !("submission" in response)) {
+    if (!response.ok || !("submission" in response) || !("outbox" in response)) {
       error.textContent = response.ok ? "The approved fingerprint was not saved." : response.error;
       update();
       return;
     }
-    status.textContent = `${outboxLabel(response.outbox)} No automatic delivery was attempted.`;
+    status.textContent = `${outboxLabel(response.outbox)} No automatic delivery was attempted.${response.outbox.transport.configured ? " Open the start screen to deliver it." : " Pair with Svala on the start screen when ready."}`;
     approve.textContent = "Approved & saved locally";
     authority.disabled = true;
     share.disabled = true;
@@ -127,27 +135,130 @@ function wireFingerprintApproval(fingerprint: NonNullable<RecorderStopResult["fi
 }
 
 async function refreshOutbox(): Promise<void> {
-  const response = await send({ type: "fingerprintOutboxStatus" });
-  if (!response.ok || !("outbox" in response)) return;
-  renderOutbox(response.outbox);
+  const [statusResponse, listResponse] = await Promise.all([
+    send({ type: "fingerprintOutboxStatus" }),
+    send({ type: "fingerprintOutboxList" }),
+  ]);
+  if (!statusResponse.ok || !("outbox" in statusResponse) || !listResponse.ok || !("items" in listResponse)) return;
+  renderOutbox(statusResponse.outbox, listResponse.items);
 }
 
-function renderOutbox(status: FingerprintOutboxStatus): void {
+function renderOutbox(status: FingerprintOutboxStatus, items: readonly FingerprintOutboxItemSummary[] = []): void {
   const outbox = document.getElementById("outbox");
   if (!outbox) return;
-  if (!status.pendingCount) {
-    outbox.innerHTML = `<span>No approved fingerprints saved.</span>`;
-    return;
-  }
-  outbox.innerHTML = `<span>${esc(outboxLabel(status))} Delivery is not configured.</span><button class="text-button" id="clear-outbox">Clear</button>`;
+  const pairing = status.transport.configured
+    ? `<div class="pairing-row"><span><b>Svala paired</b><br />Scoped upload token stored locally.</span><button class="text-button" id="disconnect-svala">Disconnect</button></div>`
+    : `<div class="pairing"><label for="svala-token">Svala intake token</label><input id="svala-token" type="password" autocomplete="off" spellcheck="false" placeholder="rtk_…" /><button class="secondary" id="pair-svala">Pair with Svala</button></div>`;
+  const heading = status.totalCount
+    ? `<div class="outbox-heading"><span>${esc(outboxLabel(status))}</span><button class="text-button" id="clear-outbox">Clear all</button></div>`
+    : `<span>No approved fingerprints saved.</span>`;
+  outbox.innerHTML = `${pairing}${heading}
+    <div class="outbox-items">${items.map((item) => `<article class="outbox-item">
+      <b>${esc(item.supplierId)}</b><span title="${esc(item.supplierOrigin)}">${esc(item.supplierOrigin)}</span>
+      <span>Captured ${esc(formatTimestamp(item.capturedAt))} · expires ${esc(formatTimestamp(item.expiresAt))}</span>
+      <span class="delivery-state">${esc(deliveryLabel(item))}</span>
+      ${item.receipt ? `<span>Receipt ${esc(item.receipt.receiptId)} · ${esc(formatTimestamp(item.receipt.acceptedAt))}</span>` : ""}
+      ${item.mission ? `<span>Mission ${esc(item.mission.missionId)} · ${esc(item.mission.status.replaceAll("_", " "))}</span>` : ""}
+      ${status.transport.configured && (item.deliveryState === "pending" || item.deliveryState === "retryable") ? `<button class="deliver-saved" data-fingerprint-id="${esc(item.fingerprintId)}">Deliver to Svala</button>` : ""}
+      <button class="secondary download-saved" data-fingerprint-id="${esc(item.fingerprintId)}">Download JSON</button>
+    </article>`).join("")}</div>`;
+  document.getElementById("pair-svala")?.addEventListener("click", () => void pairWithSvala());
+  document.getElementById("disconnect-svala")?.addEventListener("click", () => void disconnectSvala());
+  outbox.querySelectorAll<HTMLButtonElement>(".deliver-saved").forEach((button) => {
+    button.addEventListener("click", () => void deliverSavedSubmission(button));
+  });
+  outbox.querySelectorAll<HTMLButtonElement>(".download-saved").forEach((button) => {
+    button.addEventListener("click", () => void downloadSavedSubmission(button.dataset.fingerprintId ?? ""));
+  });
   document.getElementById("clear-outbox")?.addEventListener("click", async () => {
     const response = await send({ type: "fingerprintClearOutbox" });
-    if (response.ok && "outbox" in response) renderOutbox(response.outbox);
+    if (response.ok && "outbox" in response) renderOutbox(response.outbox, []);
   });
 }
 
+async function refreshMission(): Promise<void> {
+  const container = document.getElementById("mission");
+  if (!container) return;
+  const response = await send({ type: "missionStatus" });
+  if (!response.ok || !("mission" in response)) return;
+  const mission = response.mission;
+  if (!mission) {
+    container.innerHTML = `<label for="mission-code">Optional capture mission code</label><input id="mission-code" type="password" autocomplete="off" spellcheck="false" placeholder="rmc_…" /><button class="secondary" id="load-mission">Load mission</button>`;
+    document.getElementById("load-mission")?.addEventListener("click", () => void loadMission());
+    return;
+  }
+  container.innerHTML = `<div class="mission-heading"><b>${esc(mission.supplierLabel)} capture mission</b><button class="text-button" id="clear-mission">Remove from Studio</button></div>
+    <span>Required origin: ${esc(mission.allowedOrigin)}</span>
+    <p>${esc(mission.eligibilityStatement)}</p>
+    <ol>${mission.actions.map((action) => `<li>${esc(action.label)}</li>`).join("")}</ol>
+    <span>Status: ${esc(mission.status.replaceAll("_", " "))} · expires ${esc(formatTimestamp(mission.expiresAt))}</span>`;
+  document.getElementById("clear-mission")?.addEventListener("click", async () => {
+    await send({ type: "missionClear" });
+    await refreshMission();
+  });
+}
+
+async function loadMission(): Promise<void> {
+  const input = document.getElementById("mission-code") as HTMLInputElement | null;
+  const code = input?.value.trim() ?? "";
+  if (input) input.value = "";
+  error.textContent = "";
+  const response = await send({ type: "missionLoad", code });
+  if (!response.ok) error.textContent = response.error;
+  await refreshMission();
+}
+
+async function pairWithSvala(): Promise<void> {
+  const input = document.getElementById("svala-token") as HTMLInputElement | null;
+  const token = input?.value.trim() ?? "";
+  if (input) input.value = "";
+  error.textContent = "";
+  const response = await send({ type: "fingerprintPair", token });
+  if (!response.ok) error.textContent = response.error;
+  await refreshOutbox();
+}
+
+async function disconnectSvala(): Promise<void> {
+  error.textContent = "";
+  const response = await send({ type: "fingerprintDisconnect" });
+  if (!response.ok) error.textContent = response.error;
+  await refreshOutbox();
+}
+
+async function deliverSavedSubmission(button: HTMLButtonElement): Promise<void> {
+  button.disabled = true;
+  error.textContent = "";
+  const response = await send({ type: "fingerprintDeliver", fingerprintId: button.dataset.fingerprintId ?? "" });
+  if (!response.ok) error.textContent = response.error;
+  await refreshOutbox();
+}
+
+async function downloadSavedSubmission(fingerprintId: string): Promise<void> {
+  error.textContent = "";
+  const response = await send({ type: "fingerprintOutboxGet", fingerprintId });
+  if (!response.ok || !("submission" in response)) {
+    error.textContent = response.ok ? "The saved fingerprint could not be exported." : response.error;
+    await refreshOutbox();
+    return;
+  }
+  downloadSubmission(response.submission);
+}
+
+function formatTimestamp(value: string): string {
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed.toLocaleString() : value;
+}
+
 function outboxLabel(status: FingerprintOutboxStatus): string {
-  return `${status.pendingCount} approved fingerprint${status.pendingCount === 1 ? "" : "s"} saved locally.`;
+  return `${status.totalCount} approved fingerprint${status.totalCount === 1 ? "" : "s"} saved locally${status.deliveredCount ? ` · ${status.deliveredCount} delivered` : ""}${status.rejectedCount ? ` · ${status.rejectedCount} needs review` : ""}.`;
+}
+
+function deliveryLabel(item: FingerprintOutboxItemSummary): string {
+  if (item.deliveryState === "pending") return "Ready for explicit delivery";
+  if (item.deliveryState === "delivering") return "Delivering…";
+  if (item.deliveryState === "delivered") return "Delivered — receipt retained locally";
+  if (item.deliveryState === "rejected") return "Rejected — re-pair or review before retrying";
+  return item.nextAttemptAt ? `Retry eligible ${formatTimestamp(item.nextAttemptAt)}` : "Retryable";
 }
 
 function downloadSubmission(submission: SupplierFingerprintSubmissionV1): void {

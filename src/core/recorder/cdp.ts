@@ -34,19 +34,53 @@ export function isPdfContentType(contentType: string): boolean {
   return contentType.includes("pdf");
 }
 
-/** Authentication-bearing headers are never persisted in a Studio capture. */
-const SENSITIVE_HEADER = /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key|x-auth-token|x-access-token|x-csrf-token|x-xsrf-token)$/i;
 const SENSITIVE_KEY = /(token|secret|password|passwd|cookie|session|authorization|api[_-]?key|csrf|xsrf)/i;
+const SAFE_HEADER_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const CUSTOM_AUTH_HEADER = /(?:^|[-])(auth|token|key|secret|session|csrf|xsrf)(?:[-]|$)/;
+const MAX_HEADER_COUNT = 100;
+const MAX_HEADER_VALUE_CHARS = 8_192;
+const MAX_REDACTED_PATHS = 40;
+const MAX_REDACTED_PATH_CHARS = 300;
 
-/** Lower-case header keys and remove every authentication-bearing value. */
-export function sanitizeHeaders(headers: Record<string, string> | undefined): Record<string, string> | undefined {
+type RawHeaders = Record<string, unknown> | undefined;
+type RequestAuth = CapturedEntry["requestAuth"];
+interface SanitizedBody {
+  value: string;
+  redactedPaths: string[];
+}
+
+/** Retain only explicitly reviewed, non-sensitive header values. */
+export function sanitizeHeaders(headers: RawHeaders): Record<string, string> | undefined {
   if (!headers) return undefined;
   const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(headers)) {
-    const key = k.toLowerCase();
-    if (!SENSITIVE_HEADER.test(key) && typeof v === "string") out[key] = redactText(v);
+  for (const [rawKey, rawValue] of Object.entries(headers).slice(0, MAX_HEADER_COUNT)) {
+    const key = rawKey.toLowerCase();
+    if (key !== "content-type" || typeof rawValue !== "string" || rawValue.length > MAX_HEADER_VALUE_CHARS) continue;
+    const contentType = normalizeContentType(rawValue);
+    if (/^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$/.test(contentType)) {
+      out[key] = contentType;
+    }
   }
   return Object.keys(out).length ? out : undefined;
+}
+
+/** Reduce raw request headers to one bounded structural authentication marker. */
+export function detectRequestAuth(headers: RawHeaders): RequestAuth {
+  if (!headers) return { scheme: "none" };
+  let customHeader: string | undefined;
+  for (const [rawKey, rawValue] of Object.entries(headers).slice(0, MAX_HEADER_COUNT)) {
+    const key = rawKey.toLowerCase();
+    if (!SAFE_HEADER_NAME.test(key)) continue;
+    const value = typeof rawValue === "string" ? rawValue.slice(0, MAX_HEADER_VALUE_CHARS) : "";
+    if (key === "authorization" || key === "proxy-authorization") {
+      if (/^bearer(?:\s|$)/i.test(value)) return { scheme: "bearer", headerName: key };
+      if (/^basic(?:\s|$)/i.test(value)) return { scheme: "basic", headerName: key };
+      customHeader ??= key;
+    } else if (key === "cookie" || key === "set-cookie" || CUSTOM_AUTH_HEADER.test(key) || key.startsWith("x-")) {
+      customHeader ??= key;
+    }
+  }
+  return customHeader ? { scheme: "custom", headerName: customHeader } : { scheme: "none" };
 }
 
 /** Build a normalized entry; keeps JSON+HTML bodies (capped), drops binary noise. */
@@ -57,18 +91,25 @@ export function buildEntry(input: {
   contentType: string | undefined | null;
   body?: string;
   requestBody?: string;
-  requestHeaders?: Record<string, string>;
+  requestHeaders?: RawHeaders;
 }): CapturedEntry {
   const contentType = normalizeContentType(input.contentType);
-  const keepBody = isCapturableBody(contentType) && input.body ? sanitizeBody(input.body.slice(0, MAX_BODY_CHARS), contentType) : undefined;
+  const response = isCapturableBody(contentType) && input.body
+    ? sanitizeBodyWithMetadata(input.body.slice(0, MAX_BODY_CHARS), contentType)
+    : undefined;
+  const requestContentType = headerValue(input.requestHeaders, "content-type") ?? "";
+  const request = input.requestBody ? sanitizeBodyWithMetadata(input.requestBody.slice(0, MAX_BODY_CHARS), requestContentType) : undefined;
   return {
     url: sanitizeUrl(input.url),
     method: (input.method || "GET").toUpperCase(),
     status: input.status,
     contentType,
-    requestBody: input.requestBody ? sanitizeBody(input.requestBody, input.requestHeaders?.["content-type"] ?? "") : undefined,
+    requestBody: request?.value,
     requestHeaders: sanitizeHeaders(input.requestHeaders),
-    responseBody: keepBody,
+    requestAuth: detectRequestAuth(input.requestHeaders),
+    ...(request?.redactedPaths.length ? { redactedRequestPaths: request.redactedPaths } : {}),
+    ...(response?.redactedPaths.length ? { redactedResponsePaths: response.redactedPaths } : {}),
+    responseBody: response?.value,
   };
 }
 
@@ -97,23 +138,48 @@ function isSensitivePathSegment(segment: string): boolean {
 
 /** Preserve JSON shape for inference while replacing secret-bearing values. */
 export function sanitizeBody(value: string, contentType: string): string {
+  return sanitizeBodyWithMetadata(value, contentType).value;
+}
+
+function sanitizeBodyWithMetadata(value: string, contentType: string): SanitizedBody {
   if (contentType.toLowerCase().includes("json") || /^[\s]*[\[{]/.test(value)) {
     try {
-      return JSON.stringify(redactJson(JSON.parse(value)));
+      const redactedPaths: string[] = [];
+      return { value: JSON.stringify(redactJson(JSON.parse(value), undefined, "", redactedPaths)), redactedPaths };
     } catch {
       // Fall through to conservative text redaction for malformed JSON.
     }
   }
-  return redactText(value);
+  return { value: redactText(value), redactedPaths: [] };
 }
 
-function redactJson(value: unknown, key?: string): unknown {
-  if (key && SENSITIVE_KEY.test(key)) return "REDACTED";
-  if (Array.isArray(value)) return value.map((item) => redactJson(item));
+function redactJson(value: unknown, key: string | undefined, path: string, redactedPaths: string[]): unknown {
+  if (key && SENSITIVE_KEY.test(key)) {
+    if (isSafeRedactedPath(path) && redactedPaths.length < MAX_REDACTED_PATHS) redactedPaths.push(path);
+    return "REDACTED";
+  }
+  if (Array.isArray(value)) return value.map((item, index) => redactJson(item, undefined, joinPath(path, String(index)), redactedPaths));
   if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, redactJson(v, k)]));
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+      k,
+      redactJson(v, k, joinPath(path, k), redactedPaths),
+    ]));
   }
   return typeof value === "string" ? redactText(value) : value;
+}
+
+function joinPath(prefix: string, key: string): string {
+  return prefix ? `${prefix}.${key}` : key;
+}
+
+function isSafeRedactedPath(path: string): boolean {
+  return path.length <= MAX_REDACTED_PATH_CHARS && path.split(".").every((part) => /^[A-Za-z0-9_$-]+$/.test(part));
+}
+
+function headerValue(headers: RawHeaders, wanted: string): string | undefined {
+  if (!headers) return undefined;
+  const found = Object.entries(headers).slice(0, MAX_HEADER_COUNT).find(([key]) => key.toLowerCase() === wanted);
+  return found && typeof found[1] === "string" && found[1].length <= MAX_HEADER_VALUE_CHARS ? found[1] : undefined;
 }
 
 function redactText(value: string): string {

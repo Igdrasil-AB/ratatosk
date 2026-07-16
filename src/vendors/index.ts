@@ -15,6 +15,7 @@ import github from "./github";
 import railway from "./railway";
 import slack from "./slack";
 import vercel from "./vercel";
+import { isLifecycleRunnable, VENDOR_LIFECYCLE_BY_ID } from "./lifecycle";
 
 /**
  * Recipes exposed by the public Collector.
@@ -33,8 +34,12 @@ export const ALL_VENDORS: readonly VendorRecipe[] = [...VENDORS, ...EXPERIMENTAL
 
 /** Look up a recipe by its id. */
 export function getVendor(id: string): VendorRecipe | undefined {
-  return VENDORS.find((v) => v.id === id);
+  const recipe = VENDORS.find((v) => v.id === id);
+  const lifecycle = VENDOR_LIFECYCLE_BY_ID[id];
+  return recipe && lifecycle && isLifecycleRunnable(lifecycle) ? recipe : undefined;
 }
+
+export { VENDOR_LIFECYCLE_BY_ID } from "./lifecycle";
 
 /** All host match patterns across every vendor — used to build manifest permissions. */
 export function allHosts(): string[] {
