@@ -101,7 +101,7 @@ function redactRequestBody(value: string): string {
   try {
     return JSON.stringify(redactRequestPayload(JSON.parse(value)));
   } catch {
-    return redactSecrets(value);
+    return "REDACTED";
   }
 }
 
@@ -114,13 +114,18 @@ function redactRequestPayload(value: unknown, key?: string): unknown {
     ]));
   }
   if (typeof value === "string") {
-    if (key === "query" || key === "operationName" || /^\{[A-Za-z][A-Za-z0-9_-]*\}$/.test(value)) {
-      return redactSecrets(value);
-    }
+    if (key === "query") return redactGraphqlQuery(value);
+    if (key === "operationName" || /^\{[A-Za-z][A-Za-z0-9_-]*\}$/.test(value)) return redactSecrets(value);
     return "REDACTED";
   }
   if (typeof value === "number") return 0;
   return value;
+}
+
+function redactGraphqlQuery(value: string): string {
+  return redactSecrets(value)
+    .replace(/"(?:\\.|[^"\\])*"/g, '"REDACTED"')
+    .replace(/(:\s*)-?\d+(?:\.\d+)?\b/g, "$10");
 }
 
 function sanitizeReportUrl(value: string): string {

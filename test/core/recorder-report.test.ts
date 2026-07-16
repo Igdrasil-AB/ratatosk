@@ -48,7 +48,7 @@ describe("agent report — request payloads preserve shape but not captured valu
         contentType: "application/json",
         requestBody: JSON.stringify({
           operationName: "BillingInvoices",
-          query: "query BillingInvoices($workspaceId: ID!) { invoices(workspaceId: $workspaceId) { id } }",
+          query: 'query BillingInvoices($workspaceId: ID!) { invoices(workspaceId: $workspaceId, legacyId: "private-456", limit: 100) { id } }',
           variables: { workspaceId: "workspace-private-123", limit: 100 },
         }),
         responseBody: JSON.stringify({ invoices: [{ id: "inv_private", amount: 1200, date: "2026-07-01" }] }),
@@ -67,6 +67,8 @@ describe("agent report — request payloads preserve shape but not captured valu
     expect(report).toContain('\\\"workspaceId\\\":\\\"REDACTED\\\"');
     expect(report).toContain('\\\"limit\\\":0');
     expect(report).not.toContain("workspace-private-123");
+    expect(report).not.toContain("private-456");
+    expect(report).not.toContain("limit: 100");
   });
 });
 
