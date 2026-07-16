@@ -7,6 +7,7 @@ export const SUPPLIER_FINGERPRINT_CONSENT = "ratatosk.studio.share.v1" as const;
 export const SUPPLIER_FINGERPRINT_TARGET = "svala" as const;
 
 const MAX_FINGERPRINT_BYTES = 64 * 1024;
+const MAX_SUBMISSION_BYTES = MAX_FINGERPRINT_BYTES + 4 * 1024;
 const MAX_REQUESTS = 40;
 const FINGERPRINT_ID = /^fp_[a-f0-9]{32}$/;
 const SAFE_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -24,11 +25,28 @@ const STATIC_PATH_SEGMENTS = new Set([
   "v1", "v2", "v3", "workspace", "workspaces",
 ]);
 
+const safeOriginSchema = z.string().max(300).superRefine((value, ctx) => {
+  try {
+    const parsed = new URL(value);
+    const local = parsed.protocol === "http:" && ["localhost", "127.0.0.1"].includes(parsed.hostname);
+    if ((parsed.protocol !== "https:" && !local) || parsed.origin !== value || parsed.username || parsed.password) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Expected a canonical HTTPS origin" });
+    }
+  } catch {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Expected a valid origin" });
+  }
+});
+
+const pathPatternSchema = z.string().regex(SAFE_PATH).max(1_024).refine(
+  (value) => !value.split("/").some((segment) => segment === "." || segment === ".."),
+  "Path patterns cannot contain traversal segments",
+);
+
 const requestRoleSchema = z.enum(["auth", "invoice_list", "document", "other"]);
 const requestReferenceSchema = z.object({
   method: z.string().regex(/^[A-Z]{1,12}$/),
-  origin: z.string().url().max(300),
-  pathPattern: z.string().regex(SAFE_PATH).max(1_024),
+  origin: safeOriginSchema,
+  pathPattern: pathPatternSchema,
   queryKeys: z.array(z.string().regex(SAFE_IDENTIFIER)).max(20),
 }).strict();
 
@@ -56,7 +74,7 @@ const inferredSchema = z.object({
   pagination: z.object({ cursorPath: z.string().regex(SAFE_DOTTED_PATH).max(200) }).strict().optional(),
   document: z.object({
     contentType: z.literal("application/pdf"),
-    origins: z.array(z.string().url().max(300)).max(12),
+    origins: z.array(safeOriginSchema).max(12),
   }).strict(),
 }).strict();
 
@@ -66,7 +84,7 @@ export const supplierFingerprintSchema = z.object({
   capturedAt: z.string().datetime(),
   studioVersion: z.string().regex(/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/).max(40),
   supplier: z.object({
-    origin: z.string().url().max(300),
+    origin: safeOriginSchema,
     idCandidate: z.string().regex(SAFE_SLUG).max(100),
   }).strict(),
   evidence: z.object({
@@ -150,12 +168,14 @@ export function buildSupplierFingerprint(input: BuildSupplierFingerprintInput): 
 }
 
 export function parseSupplierFingerprint(value: unknown): SupplierFingerprintV1 {
+  assertJsonSize(value, MAX_FINGERPRINT_BYTES, "Supplier fingerprint");
   const parsed = supplierFingerprintSchema.parse(value);
   assertFingerprintSafety(parsed);
   return parsed;
 }
 
 export function parseSupplierFingerprintSubmission(value: unknown): SupplierFingerprintSubmissionV1 {
+  assertJsonSize(value, MAX_SUBMISSION_BYTES, "Supplier fingerprint submission");
   const parsed = supplierFingerprintSubmissionSchema.parse(value);
   parseSupplierFingerprint(parsed.fingerprint);
   return parsed;
@@ -357,8 +377,14 @@ function objectValue(value: unknown): Record<string, unknown> {
 
 function assertFingerprintSafety(fingerprint: SupplierFingerprintV1): void {
   const serialized = JSON.stringify(fingerprint);
-  if (new TextEncoder().encode(serialized).byteLength > MAX_FINGERPRINT_BYTES) throw new Error("Supplier fingerprint exceeds the 64 KB safety limit");
   if (/\b[Bb]earer\s+(?!\{token\})[A-Za-z0-9._~+/-]{8,}/.test(serialized)) throw new Error("Supplier fingerprint contains an authentication value");
   if (/\beyJ[A-Za-z0-9._-]{20,}/.test(serialized)) throw new Error("Supplier fingerprint contains a JWT-like value");
   if (/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/.test(serialized)) throw new Error("Supplier fingerprint contains an email address");
+}
+
+function assertJsonSize(value: unknown, maxBytes: number, label: string): void {
+  let serialized: string | undefined;
+  try { serialized = JSON.stringify(value); } catch { throw new Error(`${label} must be JSON serializable`); }
+  if (serialized === undefined) throw new Error(`${label} must be JSON serializable`);
+  if (new TextEncoder().encode(serialized).byteLength > maxBytes) throw new Error(`${label} exceeds its safety limit`);
 }

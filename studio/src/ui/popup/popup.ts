@@ -75,7 +75,7 @@ function showResult(result: RecorderStopResult): void {
     <button id="copy">Copy redacted report</button>
     <hr />
     <div class="section-title"><b>Supplier fingerprint</b><span class="badge">structural only</span></div>
-    <p class="notice">This exact preview contains request shapes and inferred field paths, never captured headers, bodies, query values, fixtures, or invoice values.</p>
+    <p class="notice">This exact preview contains request shapes and inferred field paths, never captured headers, bodies, query values, fixtures, or invoice values. Origins and schema names can still reveal tenant or internal naming, so inspect them before approval.</p>
     <pre class="fingerprint-preview">${esc(preview)}</pre>
     ${fingerprint ? `<div class="approval">
       <label><input id="authority" type="checkbox" /> <span>I am authorized to share structural information about this supplier portal.</span></label>

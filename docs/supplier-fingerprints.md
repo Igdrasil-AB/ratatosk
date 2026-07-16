@@ -39,14 +39,23 @@ Unknown path segments become `{id}`. Query parameter values are never included.
 - headers, cookies, bearer tokens, and API keys;
 - query values and URL credentials;
 - fixtures and generated recipe objects;
-- invoice IDs, dates, amounts, currencies, document URLs, and customer details;
+- invoice IDs, dates, amounts, currencies, document URLs, and customer details
+  contained in captured values;
 - email addresses and JWT-like strings.
 
 Both Studio and Svala strictly reject unknown fields, unsafe literals, oversized
-payloads, unsupported schema versions, and consent envelopes that do not match
-the fingerprint the user previewed. Svala converts a validated import into a
-Markdown context document through its existing authenticated developer workflow.
+payloads, unsupported schema versions, and consent envelopes whose previewed ID
+does not match the included fingerprint. Svala's manual import requires the
+approved submission envelope and converts it into a Markdown context document
+through its existing authenticated developer workflow. The envelope records a
+user assertion; it is not a cryptographic signature. A future authenticated
+transport must provide server-verifiable uploader and company attribution.
 Expired outbox records are discarded whenever Studio starts or reads the outbox.
+
+Origins, query-key names, GraphQL operation names, and inferred schema paths are
+structural but can still contain tenant or internal naming chosen by a supplier.
+The user must inspect the exact preview. Do not commit fingerprint JSON or agent
+reports to this public repository; import approved submissions into private Svala.
 
 ## Why local installation does not prevent future delivery
 

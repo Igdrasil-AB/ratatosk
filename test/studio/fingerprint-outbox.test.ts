@@ -5,6 +5,8 @@ import {
   enqueueFingerprintSubmission,
   fingerprintOutboxStatus,
 } from "../../studio/src/platform/fingerprint-outbox";
+import { svalaFingerprintTransport } from "../../studio/src/platform/fingerprint-transport";
+import studioManifest from "../../studio/manifest.config";
 
 const values: Record<string, unknown> = {};
 
@@ -43,6 +45,18 @@ describe("Studio supplier fingerprint outbox", () => {
     values["studio:supplier-fingerprint-outbox:v1"] = [{ queuedAt: "today", expiresAt: "later", submission: { rawCapture: "secret" } }];
     expect((await fingerprintOutboxStatus()).pendingCount).toBe(0);
     expect((await clearFingerprintOutbox()).pendingCount).toBe(0);
+  });
+
+  it("cannot deliver or call the network while the Svala transport is unconfigured", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    expect(svalaFingerprintTransport.configured).toBe(false);
+    expect(await svalaFingerprintTransport.deliver(submission(1))).toEqual({ delivered: false, reason: "not_configured" });
+    expect(fetch).not.toHaveBeenCalled();
+    const manifest = studioManifest as unknown as Record<string, unknown>;
+    expect(manifest.permissions).toEqual(["storage", "scripting", "debugger", "activeTab"]);
+    expect("host_permissions" in manifest).toBe(false);
   });
 });
 

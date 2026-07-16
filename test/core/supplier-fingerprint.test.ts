@@ -128,5 +128,20 @@ describe("shareable supplier fingerprint", () => {
       ...fingerprint,
       supplier: { ...fingerprint.supplier, idCandidate: "owner@example.com" },
     })).toThrow();
+    expect(() => parseSupplierFingerprint({
+      ...fingerprint,
+      supplier: { ...fingerprint.supplier, origin: "https://user:password@billing.example.com/private" },
+    })).toThrow(/origin/i);
+    expect(() => parseSupplierFingerprint({
+      ...fingerprint,
+      evidence: {
+        ...fingerprint.evidence,
+        requests: [{ ...fingerprint.evidence.requests[0], pathPattern: "/api/../private" }],
+      },
+    })).toThrow(/traversal/i);
+    expect(() => parseSupplierFingerprint({
+      ...fingerprint,
+      supplier: { ...fingerprint.supplier, idCandidate: "a".repeat(70_000) },
+    })).toThrow(/safety limit/i);
   });
 });
