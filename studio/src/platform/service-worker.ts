@@ -3,6 +3,8 @@ import { buildEntry } from "../../../src/core/recorder/cdp";
 import type { StudioMessage, StudioResponse } from "./messaging";
 import { isRecording, recordingProgress, startRecording, stopRecording } from "./recorder/orchestrator";
 import { appendEntry, clearAllRecorderState, getCurrentTab } from "./recorder/session-store";
+import { approveSupplierFingerprint } from "../../../src/core/recorder/supplier-fingerprint";
+import { clearFingerprintOutbox, enqueueFingerprintSubmission, fingerprintOutboxStatus } from "./fingerprint-outbox";
 
 interface RecorderEntryMessage {
   type: "recorder:entry";
@@ -10,10 +12,10 @@ interface RecorderEntryMessage {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  void clearAllRecorderState().finally(() => setRecordingBadge(false));
+  void Promise.all([clearAllRecorderState(), fingerprintOutboxStatus()]).finally(() => setRecordingBadge(false));
 });
 chrome.runtime.onStartup.addListener(() => {
-  void clearAllRecorderState().finally(() => setRecordingBadge(false));
+  void Promise.all([clearAllRecorderState(), fingerprintOutboxStatus()]).finally(() => setRecordingBadge(false));
 });
 
 chrome.runtime.onMessage.addListener(
@@ -86,6 +88,19 @@ async function handle(message: StudioMessage): Promise<StudioResponse> {
       return { ok: true, recording: await isRecording() };
     case "recorderProgress":
       return { ok: true, progress: await recordingProgress() };
+    case "fingerprintApprove": {
+      const submission = approveSupplierFingerprint({
+        fingerprint: message.fingerprint,
+        approvedAt: new Date().toISOString(),
+        authorityConfirmed: message.authorityConfirmed,
+        shareApproved: message.shareApproved,
+      });
+      return { ok: true, submission, outbox: await enqueueFingerprintSubmission(submission) };
+    }
+    case "fingerprintOutboxStatus":
+      return { ok: true, outbox: await fingerprintOutboxStatus() };
+    case "fingerprintClearOutbox":
+      return { ok: true, outbox: await clearFingerprintOutbox() };
   }
 }
 

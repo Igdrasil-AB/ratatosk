@@ -1,5 +1,6 @@
 import { findDocLinks, inferRecipe } from "../../../../src/core/recorder/infer";
 import { buildAgentReport } from "../../../../src/core/recorder/report";
+import { buildSupplierFingerprint, type SupplierFingerprintV1 } from "../../../../src/core/recorder/supplier-fingerprint";
 import type { DraftRecipe } from "../../../../src/core/recorder/types";
 import type { RecorderProgress } from "../messaging";
 import { beginSession, clearCurrentTab, endSession, getCurrentTab, getSession, setCurrentTab } from "./session-store";
@@ -25,6 +26,8 @@ export interface StopResult {
   docLinks: string[];
   /** One paste-ready block (recipe + notes + sanitized samples) for a coding agent. */
   report: string;
+  /** Strict structural evidence suitable for explicit approval and future delivery. */
+  fingerprint: SupplierFingerprintV1 | null;
 }
 
 export async function startRecording(tabId: number, url: string, mode: RecordMode): Promise<void> {
@@ -45,7 +48,7 @@ export async function startRecording(tabId: number, url: string, mode: RecordMod
 
 export async function stopRecording(): Promise<StopResult> {
   const tabId = await getCurrentTab();
-  if (tabId === undefined) return { draft: null, captured: 0, samples: [], docLinks: [], report: "" };
+  if (tabId === undefined) return { draft: null, captured: 0, samples: [], docLinks: [], report: "", fingerprint: null };
 
   await stopDebuggerCapture(tabId); // no-op for silent mode
   const session = await endSession(tabId);
@@ -66,13 +69,22 @@ export async function stopRecording(): Promise<StopResult> {
   const report = session
     ? buildAgentReport({ version: chrome.runtime.getManifest().version, session, draft, docLinks })
     : "";
+  const fingerprint = session
+    ? buildSupplierFingerprint({
+        fingerprintId: `fp_${crypto.randomUUID().replaceAll("-", "")}`,
+        capturedAt: new Date().toISOString(),
+        studioVersion: chrome.runtime.getManifest().version,
+        session,
+        draft,
+      })
+    : null;
 
   console.info(
     `[recorder] stop tab ${tabId}: ${entries.length} captured, ${entries.filter((e) => e.responseBody).length} with bodies, ${docLinks.length} doc-links, draft=${draft ? draft.confidence : "none"}`,
   );
   if (docLinks.length) console.info(`[recorder] ${docLinks.length} document link(s) found`);
 
-  return { draft, captured: entries.length, samples, docLinks, report };
+  return { draft, captured: entries.length, samples, docLinks, report, fingerprint };
 }
 
 export async function isRecording(): Promise<boolean> {
