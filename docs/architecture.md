@@ -119,6 +119,12 @@ snapshot. Before session storage, it removes auth and cookie headers, sanitizes
 URLs and secret-looking body fields, and caps bodies. On stop it creates a
 redacted, manually copied report; captured HTML bodies are not exported.
 
+Studio also creates a separately validated, structural-only supplier fingerprint.
+The exact fingerprint requires authority confirmation and explicit sharing
+approval before it enters a bounded local outbox. No network destination is
+configured; approved JSON can be imported through Svala's existing developer
+context workflow. See [supplier fingerprints](supplier-fingerprints.md).
+
 Studio output is always a draft. A human must remove unnecessary data, verify the
 vendor contract in a dedicated test account, add a fixture test, and explicitly
 promote the recipe into the public `VENDORS` registry before a Collector release.

@@ -22,6 +22,12 @@ page with Chrome DevTools or use the separately installed Studio development
 extension and accept its capture disclosure. Never capture a customer or
 personal account.
 
+After Studio stops, review the structural supplier fingerprint separately from
+the richer agent report. If authorized, approve the exact preview and download
+its JSON for import into the relevant Svala developer task. Studio does not send
+it automatically because the Svala endpoint and authentication policy have not
+yet been selected. See [supplier fingerprints](supplier-fingerprints.md).
+
 In DevTools, open the vendor's billing/invoices page while signed in, choose
 **Network**, filter to `Fetch/XHR`, then reload.
 

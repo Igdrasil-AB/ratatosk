@@ -26,7 +26,9 @@ The repository deliberately produces two separate extensions:
   permission.
 - **Studio** (`studio/`) is a development-only authoring extension. It records a
   billing page after explicit, informed consent and creates a redacted draft for
-  a developer to review. Do not submit Studio as the consumer extension.
+  a developer to review. It can also create an explicitly approved,
+  structural-only [supplier fingerprint](docs/supplier-fingerprints.md) for Svala.
+  Do not submit Studio as the consumer extension.
 
 Shared, browser-independent code lives in `src/` and is used by both builds.
 
@@ -56,6 +58,10 @@ To install it in Chrome:
 
 See [adding a vendor](docs/adding-a-vendor.md) for the reviewed recipe and test
 requirements.
+
+Approved supplier fingerprints are saved only in Studio's bounded local outbox
+unless the user downloads the JSON. This release has no configured delivery
+endpoint; the JSON can be imported into a Svala developer task's **Context docs**.
 
 ## Product preview
 

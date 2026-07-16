@@ -1,0 +1,58 @@
+# Supplier fingerprints
+
+Ratatosk Studio can turn an authorized billing-page recording into a small,
+versioned supplier fingerprint. The fingerprint helps developers recognize
+request shapes and draft a new supplier recipe without receiving the recorded
+account's invoices or credentials.
+
+## Data flow
+
+1. Studio records one authorized page into temporary session storage.
+2. The recorder infers a draft locally.
+3. A separate builder projects only structural facts into
+   `ratatosk.supplier-fingerprint.v1` and validates the result.
+4. Studio shows the exact fingerprint. The user separately confirms authority
+   and approves saving that preview for Svala.
+5. The approved `ratatosk.supplier-fingerprint-submission.v1` is kept in a local
+   outbox (20 items maximum, 30-day validity) and can be downloaded as JSON.
+6. Today, a developer imports that JSON into a Svala task's **Context docs**.
+
+There is no configured network destination in this version. The extension does
+not attempt automatic delivery. A future Svala transport implements the existing
+transport interface after its endpoint, authentication, replay, and deletion
+policy are chosen; the fingerprint and consent contracts do not need to change.
+
+## Included
+
+- supplier and document origins;
+- HTTP methods, normalized path patterns, query parameter names, response status,
+  and base content type;
+- safe GraphQL operation names;
+- inferred list, field, authentication-template, pagination, and document shapes;
+- aggregate request/document counts and inference confidence.
+
+Unknown path segments become `{id}`. Query parameter values are never included.
+
+## Excluded by schema
+
+- request and response bodies;
+- headers, cookies, bearer tokens, and API keys;
+- query values and URL credentials;
+- fixtures and generated recipe objects;
+- invoice IDs, dates, amounts, currencies, document URLs, and customer details;
+- email addresses and JWT-like strings.
+
+Both Studio and Svala strictly reject unknown fields, unsafe literals, oversized
+payloads, unsupported schema versions, and consent envelopes that do not match
+the fingerprint the user previewed. Svala converts a validated import into a
+Markdown context document through its existing authenticated developer workflow.
+Expired outbox records are discarded whenever Studio starts or reads the outbox.
+
+## Why local installation does not prevent future delivery
+
+A locally installed Chrome extension can make an authenticated HTTPS request if
+its manifest and runtime policy allow the destination. It cannot give Svala
+access to browser-local storage by itself. Automatic collection therefore needs
+an explicit extension transport plus a user/company authentication design. The
+local outbox provides retryable state without committing this release to an
+endpoint prematurely.
