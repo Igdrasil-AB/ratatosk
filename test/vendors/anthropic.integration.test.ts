@@ -51,7 +51,7 @@ function mockFetch(spec: RequestSpec, vars: Record<string, unknown>): Promise<Ht
     return Promise.resolve(jsonResponse(200, { ...invoices, has_more: false, next_page: null }));
   }
 
-  if (url.includes("pay.stripe.com")) return Promise.resolve(pdfResponse());
+  if (new URL(url).hostname === "pay.stripe.com") return Promise.resolve(pdfResponse());
 
   return Promise.reject(new Error(`unexpected url: ${url}`));
 }
