@@ -38,8 +38,8 @@ Studio is the developer build for collecting sanitized technical information
 from a supplier's billing portal so a reviewed Ratatosk recipe can be created.
 It is not the extension used for routine invoice collection.
 
-**[Download Ratatosk Studio v0.7.0 (ZIP)](https://github.com/Igdrasil-AB/ratatosk/releases/download/v0.7.0/ratatosk-studio-v0.7.0.zip)**
-· [SHA-256 checksum](https://github.com/Igdrasil-AB/ratatosk/releases/download/v0.7.0/ratatosk-studio-v0.7.0.zip.sha256)
+**[Download Ratatosk Studio v0.7.1 (ZIP)](https://github.com/Igdrasil-AB/ratatosk/releases/download/v0.7.1/ratatosk-studio-v0.7.1.zip)**
+· [SHA-256 checksum](https://github.com/Igdrasil-AB/ratatosk/releases/download/v0.7.1/ratatosk-studio-v0.7.1.zip.sha256)
 
 To install it in Chrome:
 
