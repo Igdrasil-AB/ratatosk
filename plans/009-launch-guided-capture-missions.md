@@ -1,5 +1,10 @@
 # Plan 009: Launch guided supplier-capture missions
 
+> **Retired on 2026-07-16:** This workflow was removed from Ratatosk. Collector
+> now links missing-supplier requests to the public GitHub contribution path, and
+> external contributors do not need Svala access or a special code. The remainder
+> of this file is retained only as historical implementation context.
+
 > **Executor instructions**: Missions guide an already-authorized account holder;
 > they never ask Svala, an agent, or Igdrasil to obtain access. Avoid coercive
 > copy and never request passwords, 2FA codes, invoices, or raw logs.
@@ -111,4 +116,3 @@ instructions, and cross-user receipt access.
 
 Use workbench missing-evidence reasons as the mission source. Do not let freeform
 developer instructions become an execution language.
-

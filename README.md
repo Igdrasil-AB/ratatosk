@@ -38,6 +38,9 @@ Studio is the developer build for collecting sanitized technical information
 from a supplier's billing portal so a reviewed Ratatosk recipe can be created.
 It is not the extension used for routine invoice collection.
 
+Collector links here from its Vendors screen when a supplier is missing. You do
+not need a Svala account or a special code to investigate an authorized supplier.
+
 **[Download Ratatosk Studio v0.7.1 (ZIP)](https://github.com/Igdrasil-AB/ratatosk/releases/download/v0.7.1/ratatosk-studio-v0.7.1.zip)**
 · [SHA-256 checksum](https://github.com/Igdrasil-AB/ratatosk/releases/download/v0.7.1/ratatosk-studio-v0.7.1.zip.sha256)
 

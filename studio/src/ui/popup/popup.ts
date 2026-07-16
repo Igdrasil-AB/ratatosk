@@ -31,7 +31,6 @@ function showConsent(): void {
     </ul>
     <label><input id="consent" type="checkbox" /> <span>I understand the capture scope and am authorized to record this billing page.</span></label>
     <button id="start" disabled>Start recording this page</button>
-    <div id="mission" class="mission" aria-live="polite"></div>
     <div id="outbox" class="outbox" aria-live="polite"></div>
   </section>`;
   const consent = document.getElementById("consent") as HTMLInputElement;
@@ -39,7 +38,6 @@ function showConsent(): void {
   consent.addEventListener("change", () => { start.disabled = !consent.checked; });
   start.addEventListener("click", () => void startRecording());
   void refreshOutbox();
-  void refreshMission();
 }
 
 async function startRecording(): Promise<void> {
@@ -164,7 +162,6 @@ function renderOutbox(status: FingerprintOutboxStatus, items: readonly Fingerpri
       <span>Captured ${esc(formatTimestamp(item.capturedAt))} · expires ${esc(formatTimestamp(item.expiresAt))}</span>
       <span class="delivery-state">${esc(deliveryLabel(item))}</span>
       ${item.receipt ? `<span>Receipt ${esc(item.receipt.receiptId)} · ${esc(formatTimestamp(item.receipt.acceptedAt))}</span>` : ""}
-      ${item.mission ? `<span>Mission ${esc(item.mission.missionId)} · ${esc(item.mission.status.replaceAll("_", " "))}</span>` : ""}
       ${status.transport.configured && (item.deliveryState === "pending" || item.deliveryState === "retryable") ? `<button class="deliver-saved" data-fingerprint-id="${esc(item.fingerprintId)}">Deliver to Svala</button>` : ""}
       <button class="secondary download-saved" data-fingerprint-id="${esc(item.fingerprintId)}">Download JSON</button>
     </article>`).join("")}</div>`;
@@ -180,38 +177,6 @@ function renderOutbox(status: FingerprintOutboxStatus, items: readonly Fingerpri
     const response = await send({ type: "fingerprintClearOutbox" });
     if (response.ok && "outbox" in response) renderOutbox(response.outbox, []);
   });
-}
-
-async function refreshMission(): Promise<void> {
-  const container = document.getElementById("mission");
-  if (!container) return;
-  const response = await send({ type: "missionStatus" });
-  if (!response.ok || !("mission" in response)) return;
-  const mission = response.mission;
-  if (!mission) {
-    container.innerHTML = `<label for="mission-code">Optional capture mission code</label><input id="mission-code" type="password" autocomplete="off" spellcheck="false" placeholder="rmc_…" /><button class="secondary" id="load-mission">Load mission</button>`;
-    document.getElementById("load-mission")?.addEventListener("click", () => void loadMission());
-    return;
-  }
-  container.innerHTML = `<div class="mission-heading"><b>${esc(mission.supplierLabel)} capture mission</b><button class="text-button" id="clear-mission">Remove from Studio</button></div>
-    <span>Required origin: ${esc(mission.allowedOrigin)}</span>
-    <p>${esc(mission.eligibilityStatement)}</p>
-    <ol>${mission.actions.map((action) => `<li>${esc(action.label)}</li>`).join("")}</ol>
-    <span>Status: ${esc(mission.status.replaceAll("_", " "))} · expires ${esc(formatTimestamp(mission.expiresAt))}</span>`;
-  document.getElementById("clear-mission")?.addEventListener("click", async () => {
-    await send({ type: "missionClear" });
-    await refreshMission();
-  });
-}
-
-async function loadMission(): Promise<void> {
-  const input = document.getElementById("mission-code") as HTMLInputElement | null;
-  const code = input?.value.trim() ?? "";
-  if (input) input.value = "";
-  error.textContent = "";
-  const response = await send({ type: "missionLoad", code });
-  if (!response.ok) error.textContent = response.error;
-  await refreshMission();
 }
 
 async function pairWithSvala(): Promise<void> {

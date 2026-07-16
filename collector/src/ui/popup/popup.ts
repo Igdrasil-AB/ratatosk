@@ -19,6 +19,7 @@ const disconnectName = document.getElementById("disconnect-name") as HTMLElement
 const confirmDisconnect = document.getElementById("confirm-disconnect") as HTMLButtonElement;
 const cancelDisconnect = document.getElementById("cancel-disconnect") as HTMLButtonElement;
 const VENDOR_GUIDANCE_SEEN = "ui.vendorGuidanceSeen.v1";
+const ADD_SUPPLIER_URL = "https://github.com/Igdrasil-AB/ratatosk#download-studio-to-add-a-new-supplier";
 
 let screen: Screen = "home";
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -247,7 +248,12 @@ function renderVendors(): void {
 
   const infoButton = state.vendorGuidanceSeen && !showGuidance
     ? `<button type="button" class="icon-btn" data-action="show-vendor-guidance" aria-label="How vendor connections work">${infoIcon()}</button>` : "";
-  app.innerHTML = `${sheetHeader("Vendors", infoButton)}${guidance}<ul class="vendor-list">${rows}</ul><p class="foot">Chrome may briefly hide this window while confirming vendor access. Setup continues safely in the background.</p>`;
+  const missingSupplier = `<aside class="supplier-request" aria-labelledby="supplier-request-title">
+    <span class="supplier-request-mark" aria-hidden="true">${branchIcon()}</span>
+    <span class="supplier-request-copy"><strong id="supplier-request-title">Can’t find your supplier?</strong><small>Help Ratatosk add it on GitHub.</small></span>
+    <button type="button" class="supplier-request-link" data-action="open-add-supplier" aria-label="Open the Ratatosk supplier contribution guide on GitHub">GitHub${externalIcon()}</button>
+  </aside>`;
+  app.innerHTML = `${sheetHeader("Vendors", infoButton)}${guidance}<ul class="vendor-list">${rows}</ul>${missingSupplier}<p class="foot">Chrome may briefly hide this window while confirming vendor access. Setup continues safely in the background.</p>`;
 }
 
 function renderSettings(): void {
@@ -367,6 +373,10 @@ async function handle(action: string, vendorId?: string): Promise<void> {
     case "copy-diagnostic": await copyVendorDiagnostic(vendorId!); return;
     case "connect-igdrasil": await openIgdrasilConnect(); return;
     case "manage-igdrasil": await chrome.tabs.create({ url: "https://accounting.igdrasil.se/integrations/invoice-collector" }); return;
+    case "open-add-supplier":
+      await chrome.tabs.create({ url: ADD_SUPPLIER_URL });
+      window.close();
+      return;
     case "dismiss-vendor-guidance":
       await chrome.storage.local.set({ [VENDOR_GUIDANCE_SEEN]: true });
       state.vendorGuidanceSeen = true;
@@ -517,6 +527,8 @@ function backIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24
 function xIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>`; }
 function chevronIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>`; }
 function infoIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>`; }
+function branchIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="7" cy="6" r="2.2"/><circle cx="17" cy="8" r="2.2"/><circle cx="7" cy="18" r="2.2"/><path d="M7 8.2v7.6M9.2 8h3.3A4.5 4.5 0 0 1 17 12.5v2.3"/></svg>`; }
+function externalIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 3.5H3.5v9h9V10M8.5 3.5h4v4M12.2 3.8 7 9"/></svg>`; }
 
 void clearConnectBadge();
 void load();

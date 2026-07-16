@@ -38,4 +38,12 @@ describe("Collector popup layout regressions", () => {
     expect(popupSource).toContain("connection.lastError");
     expect(popupSource).toContain("clearConnectBadge");
   });
+
+  it("offers a focused GitHub path when a supplier is missing", () => {
+    expect(popupSource).toContain("Can’t find your supplier?");
+    expect(popupSource).toContain("Help Ratatosk add it on GitHub.");
+    expect(popupSource).toContain("https://github.com/Igdrasil-AB/ratatosk#download-studio-to-add-a-new-supplier");
+    expect(popupSource).toContain('data-action="open-add-supplier"');
+    expect(popupStyles).toMatch(/\.supplier-request-link \{[^}]*min-height:\s*40px/s);
+  });
 });
