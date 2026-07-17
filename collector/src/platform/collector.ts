@@ -18,6 +18,7 @@ import {
   sinkCompanyId,
 } from "./storage";
 import { notifyReconnect } from "./notifications";
+import { isTransientRetryCode, nextTransientRetryAt } from "./retry-policy";
 
 export interface VendorRunSummary {
   vendorId: string;
@@ -39,25 +40,31 @@ export interface VendorRunSummary {
  * user's disclosure and destination choice aligned with every collection run.
  */
 const vendorRuns = new Map<string, Promise<VendorRunSummary>>();
+export type SyncTrigger = "scheduled" | "manual" | "connect";
 
-export function runVendorById(vendorId: string): Promise<VendorRunSummary> {
+export function runVendorById(vendorId: string, trigger: SyncTrigger = "manual"): Promise<VendorRunSummary> {
   const existing = vendorRuns.get(vendorId);
   if (existing) return existing;
 
-  const task = executeVendorRun(vendorId).finally(() => {
+  const task = executeVendorRun(vendorId, trigger).finally(() => {
     if (vendorRuns.get(vendorId) === task) vendorRuns.delete(vendorId);
   });
   vendorRuns.set(vendorId, task);
   return task;
 }
 
-async function executeVendorRun(vendorId: string): Promise<VendorRunSummary> {
+async function executeVendorRun(vendorId: string, trigger: SyncTrigger): Promise<VendorRunSummary> {
   const recipe = getVendor(vendorId);
   if (!recipe) return { vendorId, status: "error", count: 0, error: "unknown vendor" };
 
+  const previous = (await getConnections())[vendorId];
+  if (trigger === "scheduled" && previous?.lastStatus === "auth_expired") {
+    return { vendorId, status: "auth_expired", count: 0, code: "auth_expired" };
+  }
   const nextEligibleRunAt = await getNextEligibleRunAt(vendorId);
-  if (nextEligibleRunAt) {
-    return { vendorId, status: "skipped", count: 0, code: "rate_limited", nextEligibleRunAt };
+  const transientBackoff = isTransientRetryCode(previous?.lastCode);
+  if (nextEligibleRunAt && (trigger === "scheduled" || !transientBackoff)) {
+    return { vendorId, status: "skipped", count: 0, code: previous?.lastCode ?? "rate_limited", nextEligibleRunAt };
   }
 
   const config = await getSinkConfig();
@@ -118,35 +125,39 @@ async function executeVendorRun(vendorId: string): Promise<VendorRunSummary> {
     };
   } catch (err) {
     if (err instanceof AuthExpired) {
+      const failedAt = Date.now();
       console.warn(`[collector] "${vendorId}": auth check failed — session looks logged out`);
       notifyReconnect(recipe);
-      await recordRun(vendorId, { lastStatus: "auth_expired", lastCode: "auth_expired", nextEligibleRunAt: undefined });
+      await recordRun(vendorId, { lastStatus: "auth_expired", lastCode: "auth_expired", nextEligibleRunAt: undefined }, failedAt);
       return { vendorId, status: "auth_expired", count: 0, code: "auth_expired" };
     }
     if (err instanceof RateLimited) {
-      const eligibleAt = boundedNextEligibleRunAt(err.retryAfterMs);
+      const failedAt = Date.now();
+      const eligibleAt = boundedNextEligibleRunAt(err.retryAfterMs, failedAt);
       await recordRun(vendorId, {
         lastStatus: "rate_limited",
         lastCode: "rate_limited",
         lastError: operationalOutcomeLabel("rate_limited"),
         nextEligibleRunAt: eligibleAt,
-      });
+      }, failedAt);
       return { vendorId, status: "rate_limited", count: 0, code: "rate_limited", nextEligibleRunAt: eligibleAt };
     }
     const code: OperationalOutcomeCode = phase === "destination" ? "destination_unavailable" : operationalCodeForError(err);
     const message = operationalOutcomeLabel(code);
+    const failedAt = Date.now();
+    const nextEligibleRunAt = nextTransientRetryAt(code, (previous?.consecutiveFailures ?? 0) + 1, failedAt);
     console.error(`[collector] "${vendorId}": ${message}`);
-    await recordRun(vendorId, { lastStatus: "error", lastCode: code, lastError: message, nextEligibleRunAt: undefined });
-    return { vendorId, status: "error", count: 0, code, error: message };
+    await recordRun(vendorId, { lastStatus: "error", lastCode: code, lastError: message, nextEligibleRunAt }, failedAt);
+    return { vendorId, status: "error", count: 0, code, error: message, ...(nextEligibleRunAt ? { nextEligibleRunAt } : {}) };
   } finally {
     await dispose();
   }
 }
 
 /** Run every connected vendor in sequence (keeps concurrency gentle on the host). */
-export async function runAllConnected(): Promise<VendorRunSummary[]> {
+export async function runAllConnected(trigger: SyncTrigger = "manual"): Promise<VendorRunSummary[]> {
   const ids = Object.keys(await getConnections());
   const summaries: VendorRunSummary[] = [];
-  for (const id of ids) summaries.push(await runVendorById(id));
+  for (const id of ids) summaries.push(await runVendorById(id, trigger));
   return summaries;
 }

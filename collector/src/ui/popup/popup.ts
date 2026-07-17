@@ -87,6 +87,21 @@ function categoryLabel(category?: string): string {
   return category.charAt(0).toUpperCase() + category.slice(1);
 }
 
+function connectionStatusText(connection: NonNullable<SourceView["connection"]>): string {
+  const count = connection.lastCount ?? 0;
+  if (connection.lastStatus === "partial") {
+    return `Collected ${count}; ${connection.lastFailedScopes ?? 0} account scope${connection.lastFailedScopes === 1 ? "" : "s"} need attention`;
+  }
+  if (connection.lastStatus === "rate_limited") {
+    return `Supplier asked Ratatosk to wait · resumes ${relTime(connection.nextEligibleRunAt)}`;
+  }
+  if (connection.lastStatus === "error") {
+    const failure = connection.lastError ? `Couldn’t sync — ${connection.lastError}` : "Couldn’t sync";
+    return connection.nextEligibleRunAt ? `${failure} · retry ${relTime(connection.nextEligibleRunAt)}` : `${failure} — try again`;
+  }
+  return count > 0 ? `${count} collected · synced ${relTime(connection.lastRunAt)}` : `Connected · synced ${relTime(connection.lastRunAt)}`;
+}
+
 const getConfig = () => send({ type: "getConfig" }).then((response) => (
   response.ok && "config" in response ? response.config : null
 ));
@@ -228,14 +243,7 @@ function renderVendors(): void {
       sub = "Session expired — sign in, then reconnect";
       action = `<button type="button" class="btn warn sm" data-action="connect" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}" ${isBusy ? "disabled" : ""}>${isBusy ? "Connecting…" : "Reconnect"}</button>`;
     } else if (connection) {
-      const count = connection.lastCount ?? 0;
-      sub = connection.lastStatus === "partial"
-        ? `Collected ${count}; ${connection.lastFailedScopes ?? 0} account scope${connection.lastFailedScopes === 1 ? "" : "s"} need attention`
-        : connection.lastStatus === "rate_limited"
-          ? `Supplier asked Ratatosk to wait · resumes ${relTime(connection.nextEligibleRunAt)}`
-          : connection.lastStatus === "error"
-        ? connection.lastError ? `Couldn’t sync — ${connection.lastError}` : "Couldn’t sync — try again"
-        : count > 0 ? `${count} collected · synced ${relTime(connection.lastRunAt)}` : `Connected · synced ${relTime(connection.lastRunAt)}`;
+      sub = connectionStatusText(connection);
       action = `<button type="button" class="btn outline sm" data-action="sync" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}">Sync</button>`;
       secondaryAction = `<button type="button" class="icon-btn danger" data-action="disconnect" data-id="${esc(source.id)}" aria-label="Disconnect ${esc(source.name)}">${xIcon()}</button>`;
     }

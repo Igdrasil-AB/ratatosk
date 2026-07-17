@@ -45,7 +45,9 @@ that extension's manifest at the ZIP root.
 ## Data flow (one sync)
 
 ```
-alarm → service-worker → collector.runAllConnected()
+alarm | startup | manual action → sync-coordinator
+  └─ scheduled trigger claims versioned local lease + selects due vendors
+  └─ collector.runVendorById() joins overlapping triggers per vendor
   └─ per vendor: engine.runVendor(recipe, ctx, strategies)
         1. auth-probe        recipe.auth.check → alive? (else AuthExpired)
         2. resolveScopes     recipe.config → [{}] or one scope per workspace
@@ -55,6 +57,31 @@ alarm → service-worker → collector.runAllConnected()
   └─ sink.send(doc) per new document
   └─ seen.add(key) ONLY after the sink accepts  ← failed ingest retries next run
 ```
+
+## Scheduling and recovery
+
+Collector deliberately has no external job-system dependency. `chrome.alarms`
+is a wake-up hint; the user's cadence and a versioned runtime record in
+`chrome.storage.local` are authoritative. Installation, browser startup, alarm,
+manual sync, and connection flows all enter through one coordinator.
+
+- A persisted ten-minute lease prevents a restarted service worker from
+  duplicating an active scheduled sweep. An expired lease makes interrupted work
+  eligible again.
+- The normal cadence and per-vendor retries share one one-shot alarm. Retry-only
+  wakes run only due vendors; full wakes remain sequential and gentle.
+- Unknown network and destination failures retry after 5 minutes, 30 minutes,
+  then at most 2 hours. Rate limits use the supplier's bounded retry time.
+- Manual checks may bypass transient backoff, but never a supplier rate limit.
+- Authentication failures stay paused until an explicit reconnect or manual
+  check, avoiding repeated login traffic and notifications.
+- Local scheduler and vendor-run state contain identifiers, timestamps, outcome
+  codes, and counters only—never credentials, captured responses, invoice
+  values, or document bytes.
+
+The execution model is at-least-once. Existing stable document idempotency keys
+and sink contracts make its effects effectively exactly-once without pretending
+that browser alarms themselves provide exactly-once delivery.
 
 ## Why recipes are data, not functions
 

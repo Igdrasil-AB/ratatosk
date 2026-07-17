@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   recordCollected: vi.fn(async () => undefined),
   recordRun: vi.fn(async () => undefined),
   notifyReconnect: vi.fn(),
+  getConnections: vi.fn(),
   getNextEligibleRunAt: vi.fn(),
   boundedNextEligibleRunAt: vi.fn(() => 1_800_000),
 }));
@@ -23,7 +24,7 @@ vi.mock("../../collector/src/platform/runtime", () => ({
   buildSink: mocks.buildSink,
 }));
 vi.mock("../../collector/src/platform/storage", () => ({
-  getConnections: vi.fn(async () => ({})),
+  getConnections: mocks.getConnections,
   getSinkConfig: mocks.getSinkConfig,
   recordCollected: mocks.recordCollected,
   recordRun: mocks.recordRun,
@@ -44,6 +45,7 @@ describe("Collector per-vendor run coordinator", () => {
     vi.clearAllMocks();
     mocks.getVendor.mockImplementation((id: string) => ({ id, name: id }));
     mocks.getSinkConfig.mockResolvedValue({ kind: "filesystem", rootFolder: "Invoices", dateMode: "invoice" });
+    mocks.getConnections.mockResolvedValue({});
     mocks.getNextEligibleRunAt.mockResolvedValue(null);
     mocks.buildRunContext.mockReturnValue({ ctx: { seen: { add: seenAdd } }, dispose });
     mocks.buildSink.mockResolvedValue({ send: sinkSend });
@@ -109,6 +111,58 @@ describe("Collector per-vendor run coordinator", () => {
     });
     expect(mocks.runVendor).not.toHaveBeenCalled();
     expect(mocks.buildSink).not.toHaveBeenCalled();
+  });
+
+  it("lets a manual check bypass transient backoff while scheduled work respects it", async () => {
+    mocks.getConnections.mockResolvedValue({
+      "vendor-manual": { vendorId: "vendor-manual", connectedAt: 1, lastCode: "unknown" },
+      "vendor-scheduled": { vendorId: "vendor-scheduled", connectedAt: 1, lastCode: "destination_unavailable" },
+    });
+    mocks.getNextEligibleRunAt.mockResolvedValue(2_000_000);
+    mocks.runVendor.mockResolvedValue({ documents: [], scopes: scopes() });
+
+    await expect(runVendorById("vendor-manual", "manual")).resolves.toMatchObject({ status: "ok" });
+    await expect(runVendorById("vendor-scheduled", "scheduled")).resolves.toMatchObject({
+      status: "skipped",
+      code: "destination_unavailable",
+      nextEligibleRunAt: 2_000_000,
+    });
+    expect(mocks.runVendor).toHaveBeenCalledTimes(1);
+  });
+
+  it("schedules bounded retries only for transient operational failures", async () => {
+    const now = Date.parse("2026-07-17T08:00:00.000Z");
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    mocks.getConnections.mockResolvedValue({
+      "vendor-transient": { vendorId: "vendor-transient", connectedAt: 1, consecutiveFailures: 1 },
+    });
+    mocks.runVendor.mockRejectedValue(new Error("network unavailable"));
+
+    await expect(runVendorById("vendor-transient", "scheduled")).resolves.toMatchObject({
+      status: "error",
+      code: "unknown",
+      nextEligibleRunAt: now + 30 * 60_000,
+    });
+    expect(mocks.recordRun).toHaveBeenCalledWith(
+      "vendor-transient",
+      expect.objectContaining({ nextEligibleRunAt: now + 30 * 60_000 }),
+      now,
+    );
+  });
+
+  it("keeps expired sessions paused during background sweeps", async () => {
+    mocks.getConnections.mockResolvedValue({
+      "vendor-auth": { vendorId: "vendor-auth", connectedAt: 1, lastStatus: "auth_expired" },
+    });
+
+    await expect(runVendorById("vendor-auth", "scheduled")).resolves.toEqual({
+      vendorId: "vendor-auth",
+      status: "auth_expired",
+      count: 0,
+      code: "auth_expired",
+    });
+    expect(mocks.runVendor).not.toHaveBeenCalled();
+    expect(mocks.notifyReconnect).not.toHaveBeenCalled();
   });
 });
 

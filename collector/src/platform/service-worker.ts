@@ -3,15 +3,15 @@
  *
  * It does no business logic itself; it routes browser events to the collector
  * and the popup:
- *   - onInstalled / onStartup → make sure the sync alarm exists
- *   - onAlarm                 → run every connected vendor
+ *   - worker boot/startup     → reconcile persisted schedule and catch up
+ *   - onAlarm                 → run due connected vendors
  *   - onMessage               → handle popup commands
  *   - notifications.onClicked → open the vendor login on a "reconnect" nudge
  */
 import { getVendor, VENDORS, VENDOR_LIFECYCLE_BY_ID } from "../../../src/vendors";
 import { isLifecycleRunnable } from "../../../src/vendors/lifecycle";
-import { runAllConnected, runVendorById } from "./collector";
-import { ensureSyncAlarm, getScheduleInfo, isSyncAlarm, setSchedulePeriod } from "./scheduler";
+import { getScheduleInfo, isSyncAlarm, setSchedulePeriod } from "./scheduler";
+import { requestSync } from "./sync-coordinator";
 import { hasVendorPermissions, revokeVendorPermissions } from "./permissions";
 import { notifyReconnect, openLoginFor } from "./notifications";
 import {
@@ -38,14 +38,19 @@ import pkg from "../../../package.json";
 import { buildCollectorDiagnostic } from "./diagnostics";
 
 chrome.runtime.onInstalled.addListener(() => {
-  void ensureSyncAlarm();
+  void runBackgroundSync("startup");
 });
 chrome.runtime.onStartup.addListener(() => {
-  void ensureSyncAlarm();
+  void runBackgroundSync("startup");
 });
 
+// MV3 workers may be recreated without an install or browser-start event. Check
+// the persisted schedule on every worker boot so a missing alarm cannot strand
+// background collection.
+void runBackgroundSync("startup");
+
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (isSyncAlarm(alarm.name)) void runAllConnected();
+  if (isSyncAlarm(alarm.name)) void runBackgroundSync("alarm");
 });
 
 chrome.notifications.onClicked.addListener((id) => {
@@ -261,9 +266,9 @@ async function handle(message: Message): Promise<Response> {
         if (recipe && !(await hasVendorPermissions(recipe))) {
           return { ok: false, error: "vendor access changed; reconnect this vendor" };
         }
-        return { ok: true, summaries: [await runVendorById(message.vendorId)] };
+        return { ok: true, summaries: await requestSync({ trigger: "manual", vendorId: message.vendorId }) };
       }
-      return { ok: true, summaries: await runAllConnected() };
+      return { ok: true, summaries: await requestSync({ trigger: "manual" }) };
     }
 
     case "getVendorDiagnostic": {
@@ -322,13 +327,22 @@ function completeVendorConnect(vendorId: string): Promise<Response> {
     await clearPendingConnect(recipe.id);
     await upsertConnection({ vendorId: recipe.id, connectedAt: Date.now() });
 
-    const summary = await runVendorById(recipe.id);
+    const [summary] = await requestSync({ trigger: "connect", vendorId: recipe.id });
+    if (!summary) return { ok: false, error: "Vendor collection did not start." };
     if (summary.status === "auth_expired") notifyReconnect(recipe);
     return { ok: true, summaries: [summary] };
   })().finally(() => connectionInFlight.delete(vendorId));
 
   connectionInFlight.set(vendorId, task);
   return task;
+}
+
+async function runBackgroundSync(trigger: "alarm" | "startup"): Promise<void> {
+  try {
+    await requestSync({ trigger });
+  } catch (error) {
+    console.error("[collector] scheduled sync failed", error);
+  }
 }
 
 function sameOrigins(left: readonly string[], right: readonly string[]): boolean {

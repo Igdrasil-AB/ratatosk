@@ -3,6 +3,7 @@ import {
   boundedNextEligibleRunAt,
   getConnections,
   getNextEligibleRunAt,
+  recordRun,
   seenStore,
   upsertConnection,
 } from "../../collector/src/platform/storage";
@@ -68,5 +69,20 @@ describe("Collector storage mutation serialization", () => {
 
     (values.connections as any)["vendor-a"].nextEligibleRunAt = Number.NaN;
     await expect(getNextEligibleRunAt("vendor-a", now)).resolves.toBeNull();
+  });
+
+  it("tracks consecutive failures and resets them after a successful run", async () => {
+    await upsertConnection({ vendorId: "vendor-a", connectedAt: 1 });
+    await recordRun("vendor-a", { lastStatus: "error", lastCode: "unknown" }, 10);
+    await recordRun("vendor-a", { lastStatus: "error", lastCode: "destination_unavailable" }, 20);
+
+    await expect(getConnections()).resolves.toMatchObject({
+      "vendor-a": { lastRunAt: 20, consecutiveFailures: 2 },
+    });
+
+    await recordRun("vendor-a", { lastStatus: "ok", lastCode: undefined, lastError: undefined }, 30);
+    await expect(getConnections()).resolves.toMatchObject({
+      "vendor-a": { lastRunAt: 30, lastSuccessAt: 30, consecutiveFailures: 0, lastStatus: "ok" },
+    });
   });
 });

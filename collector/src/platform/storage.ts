@@ -25,7 +25,10 @@ export type ConnectionStatus = "ok" | "partial" | "auth_expired" | "rate_limited
 export interface Connection {
   vendorId: string;
   connectedAt: number;
+  /** Most recent completed attempt, whether successful or not. */
   lastRunAt?: number;
+  lastSuccessAt?: number;
+  consecutiveFailures?: number;
   lastStatus?: ConnectionStatus;
   lastError?: string;
   lastCount?: number;
@@ -73,13 +76,19 @@ export async function removeConnection(vendorId: string): Promise<void> {
 export async function recordRun(
   vendorId: string,
   patch: Partial<Omit<Connection, "vendorId" | "connectedAt">>,
+  now = Date.now(),
 ): Promise<void> {
   await mutate<Record<string, Connection>>(KEY.connections, {}, (all) => {
     const existing = all[vendorId];
+    const successful = patch.lastStatus === "ok" || patch.lastStatus === "partial";
+    const failed = patch.lastStatus === "auth_expired" || patch.lastStatus === "rate_limited" || patch.lastStatus === "error";
     const next: Connection = {
       vendorId,
-      connectedAt: existing?.connectedAt ?? Date.now(),
-      lastRunAt: Date.now(),
+      connectedAt: existing?.connectedAt ?? now,
+      lastRunAt: now,
+      lastSuccessAt: successful ? now : existing?.lastSuccessAt,
+      ...(successful ? { consecutiveFailures: 0 } : {}),
+      ...(failed ? { consecutiveFailures: (existing?.consecutiveFailures ?? 0) + 1 } : {}),
       ...patch,
     };
     for (const [key, value] of Object.entries(next)) {

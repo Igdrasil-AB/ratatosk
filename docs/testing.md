@@ -64,6 +64,14 @@ issue.
   popup says `partial`, including only bounded failed/empty scope counts.
 - Simulate HTTP 429 and confirm automatic and manual runs remain skipped until
   the persisted per-vendor eligibility time; another vendor must still run.
+- Simulate a transient network or destination failure and confirm scheduled work
+  uses the bounded 5 minute, 30 minute, then 2 hour retry policy while a manual
+  check can retry immediately.
+- Close and restart Chrome after a schedule becomes overdue and confirm exactly
+  one catch-up sweep starts. Interrupt a scheduled sweep and confirm it becomes
+  eligible again after its bounded lease rather than remaining stuck.
+- Trigger a manual check while an alarm sweep is active and confirm the vendor
+  request and destination write occur once.
 - Use **Copy diagnostic** on a non-OK vendor and inspect the JSON. It may contain
   only vendor ID, Collector/lifecycle revisions, stable outcome code, timestamps,
   and counts—never URLs, headers, bodies, invoice/company IDs, or tokens.
