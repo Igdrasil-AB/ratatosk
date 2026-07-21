@@ -113,7 +113,7 @@ describe("agent report — captured personal data", () => {
       }],
     };
     const report = buildAgentReport({
-      version: "0.8.29",
+      version: "0.8.30",
       session,
       draft: null,
       docLinks: ["https://vendor.example/customers/alice-smith/receipts/invoice.pdf"],

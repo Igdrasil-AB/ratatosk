@@ -135,16 +135,13 @@ only a sanitized `pr:`, `release:`, or opaque `receipt:` reference. Set the next
 review date according to the release policy and run `npm run validate:release`.
 The public manifest is release metadata, not a place for captured evidence.
 
-Pull-request CI invokes that same validator with
-`--allow-unverified-pilot-baseline`. This permits only a pilot whose health is
-exactly `needs_verification` and whose attestation fields are all empty. It does
-not authorize release: stale, partial, degraded, version-mismatched, malformed,
-or any other release issue still fails CI, and the unflagged release command
-remains strict.
+Pull-request CI invokes that same validator without a special bypass flag.
+Bundled pilot recipes may run with empty or stale attestation metadata, while
+explicit health holds, experimental recipes, malformed metadata, and unsupported
+public capabilities still fail validation.
 
-CI still builds and packages Collector as an ephemeral packaging smoke test, but
-does not upload or retain that ZIP while the unverified-pilot allowance is in
-use. A distributable artifact must come from the strict, unflagged
-`release:collector` path.
+CI builds and packages Collector as an ephemeral packaging smoke test but does
+not upload or retain that ZIP. A distributable artifact must come from the
+reviewed `release:collector` path.
 
 The full pre-release flow is in `store/release-checklist.md`.

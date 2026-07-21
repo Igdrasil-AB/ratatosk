@@ -17,16 +17,16 @@ describe("Collector release artifact verification", () => {
   it("verifies only the explicit version when stale releases coexist", () => {
     const directory = mkdtempSync(join(tmpdir(), "ratatosk-collector-artifact-"));
     writeArtifact(directory, "0.8.28", "stale release", false);
-    writeArtifact(directory, "0.8.29", "reviewed release", true);
+    writeArtifact(directory, "0.8.30", "reviewed release", true);
 
-    expect(collectorArtifactIssues("0.8.29", directory)).toEqual([]);
+    expect(collectorArtifactIssues("0.8.30", directory)).toEqual([]);
   });
 
   it("fails closed when the exact checksum names another artifact", () => {
     const directory = mkdtempSync(join(tmpdir(), "ratatosk-collector-artifact-"));
-    writeArtifact(directory, "0.8.29", "reviewed release", false);
+    writeArtifact(directory, "0.8.30", "reviewed release", false);
 
-    expect(collectorArtifactIssues("0.8.29", directory)).toEqual([
+    expect(collectorArtifactIssues("0.8.30", directory)).toEqual([
       expect.stringMatching(/must contain exactly one SHA-256 entry/),
     ]);
   });

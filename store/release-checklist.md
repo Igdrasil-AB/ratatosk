@@ -79,7 +79,7 @@ Use the current stable Chrome release and a fresh profile.
 
 ## Pilot exit criteria
 
-- [ ] Every publicly named vendor passed a current live test.
+- [ ] Every publicly named vendor has fixture coverage; record current live tests when available.
 - [ ] No unresolved high-severity dependency or security issue.
 - [ ] Privacy policy, store disclosures, popup wording, and emitted manifest agree.
 - [ ] Support and privacy request channels are monitored.

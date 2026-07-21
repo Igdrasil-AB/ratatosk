@@ -22,10 +22,10 @@ describe("Igdrasil connect bridge", () => {
       addEventListener: (_type, callback) => { listener = callback; },
     };
     sendMessage = vi.fn((_payload: unknown, callback: (response: unknown) => void) => callback({ ok: true })) as typeof sendMessage;
-    runtime = { getManifest: () => ({ version: "0.8.29" }), sendMessage };
+    runtime = { getManifest: () => ({ version: "0.8.30" }), sendMessage };
     installConnectBridge(bridgeWindow, runtime);
     expect(posts).toEqual([{
-      message: { __ic: "invoice-collector", kind: "present", version: "0.8.29" },
+      message: { __ic: "invoice-collector", kind: "present", version: "0.8.30" },
       origin: ORIGIN,
     }]);
   });
@@ -49,7 +49,7 @@ describe("Igdrasil connect bridge", () => {
 
     expect(sendMessage).not.toHaveBeenCalled();
     expect(posts.slice(1).map(({ message }) => message)).toEqual([
-      { __ic: "invoice-collector", kind: "response", requestId: "ping", result: { ok: true, present: true, version: "0.8.29" } },
+      { __ic: "invoice-collector", kind: "response", requestId: "ping", result: { ok: true, present: true, version: "0.8.30" } },
       { __ic: "invoice-collector", kind: "response", requestId: "bad", result: { ok: false, error: "unsupported request" } },
     ]);
   });
@@ -73,7 +73,7 @@ describe("Igdrasil connect bridge", () => {
 
   it("returns the runtime error to the originating request", () => {
     runtime = {
-      getManifest: () => ({ version: "0.8.29" }),
+      getManifest: () => ({ version: "0.8.30" }),
       get lastError() { return { message: "worker unavailable" }; },
       sendMessage: (_message, callback) => callback(undefined),
     };

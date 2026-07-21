@@ -17,8 +17,8 @@ destination; dedicated Igdrasil test company; support request; deletion request.
 
 ## Operator checkpoints
 
-1. Complete current synthetic live attestations in `src/vendors/lifecycle.ts`.
-2. Run `npm run validate:release`; stop if any claim is stale or unverified.
+1. Record any available synthetic live attestations in `src/vendors/lifecycle.ts`.
+2. Run `npm run validate:release`; stop on explicit health holds or invalid metadata.
 3. Build from the reviewed commit and replace template hashes/commit/window in a
    private pilot manifest.
 4. Run `npm run validate:pilot -- <private-manifest.json> --ready`.

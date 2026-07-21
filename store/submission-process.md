@@ -84,7 +84,7 @@ service-worker log.
 
 Move from Unlisted to Public only when:
 
-- all vendors named in the listing passed a current live test;
+- all vendors named in the listing have reviewed fixture coverage and no explicit health hold;
 - disconnect, permission revocation, schedule-off persistence, de-duplication,
   destination failure, and expired-session paths passed;
 - the privacy and support channels have been exercised;

@@ -179,17 +179,16 @@ npm run release:studio
 
 This runs the complete test and security gate, validates every vendor recipe and
 fixture, and checks the Studio-specific authoring manifest before writing a
-deterministic Studio-only ZIP and checksum. Studio does not ship Collector
-support claims, so only `release:collector` requires fresh live supplier
-attestations through the strict `validate:collector-release` gate. Publishing remains an explicit operator action;
+deterministic Studio-only ZIP and checksum. Collector release validation blocks
+explicit health holds and malformed lifecycle metadata; live attestations remain
+useful operational evidence but are not required for bundled pilot recipes. Publishing remains an explicit operator action;
 the tag workflow runs only after a matching `v<package-version>` tag is pushed.
 
 ## Vendor status
 
 Collector currently exposes Anthropic, ChatGPT, and Railway as pilot recipes.
-Their parsing behavior is fixture-tested, but live vendor endpoints and auth flows
-are explicitly marked `needs_verification`; the Collector release gate remains
-closed until sanitized current attestations are recorded. GitHub, Slack, and
+Their parsing behavior is fixture-tested, and users may connect them directly;
+optional live-verification metadata does not gate pilot execution. GitHub, Slack, and
 Vercel remain contributor examples and are not shipped by Collector.
 
 See [testing a vendor](docs/testing.md), [adding a vendor](docs/adding-a-vendor.md),

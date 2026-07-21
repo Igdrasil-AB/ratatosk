@@ -42,7 +42,7 @@ beforeEach(() => {
     },
     tabs: { reload },
     scripting: { executeScript: vi.fn(async () => []) },
-    runtime: { getManifest: () => ({ version: "0.8.29" }), lastError: undefined },
+    runtime: { getManifest: () => ({ version: "0.8.30" }), lastError: undefined },
   });
 });
 
