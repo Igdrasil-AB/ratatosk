@@ -100,3 +100,26 @@ describe("agent report — no draft stays bounded and omits HTML", () => {
     expect(report.length).toBeLessThanOrEqual(14_100); // MAX_REPORT_CHARS + truncation marker
   });
 });
+
+describe("agent report — captured personal data", () => {
+  it("never includes customer-scoped path values from captured URLs or links", () => {
+    const session: CaptureSession = {
+      origin: "https://vendor.example",
+      entries: [{
+        url: "https://vendor.example/customers/alice-smith/receipts",
+        method: "GET",
+        status: 200,
+        contentType: "application/json",
+      }],
+    };
+    const report = buildAgentReport({
+      version: "0.8.29",
+      session,
+      draft: null,
+      docLinks: ["https://vendor.example/customers/alice-smith/receipts/invoice.pdf"],
+    });
+
+    expect(report).not.toContain("alice-smith");
+    expect(report).toContain("/customers/REDACTED/receipts");
+  });
+});

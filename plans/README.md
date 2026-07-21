@@ -22,7 +22,7 @@ public repository.
 | [007](007-deliver-fingerprints-to-svala.md) | Approved fingerprints reach Svala through scoped, idempotent delivery | P1 | L | 001, 002 | DONE |
 | [008](008-build-supplier-intelligence-workbench.md) | Svala clusters fingerprints and supports human recipe-candidate triage | P1 | L | 007 | DONE |
 | [009](009-launch-guided-capture-missions.md) | Authorized contributors receive bounded capture missions and receipts | P2 | L | 007, 008 | REJECTED — removed in favor of Collector linking to the public GitHub contribution path |
-| [010](010-orchestrate-vendor-health-with-temporal.md) | Temporal TypeScript schedules supplier-health evaluation and follow-up | P1 | L | 004, 008 | BLOCKED — the app, schema, and worker manifest are deployed, but production has no operational EKS/Temporal platform; the schedule remains unregistered and paused under the plan's STOP condition |
+| [010](010-orchestrate-vendor-health-with-temporal.md) | Temporal TypeScript schedules supplier-health evaluation and follow-up | P1 | L | 004, 005, 008 | BLOCKED — the app, schema, and worker manifest are deployed, but production has no operational EKS/Temporal platform; the schedule remains unregistered and paused under the plan's STOP condition |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or
 `REJECTED — <reason>`.
@@ -62,16 +62,17 @@ Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or
                                       │          |
 003 Collector integrity ─> 004 lifecycle        v
           |               └──────────────> 008 intelligence workbench
-          └────────────> 005 failures              |
+          └────────────> 005 failures ─────────────┤
                          |                          v
-001 + 003 + 004 + 005 -> 006 pilot             009 capture missions
-                                                   |
-004 + 008 ----------------------------------------> 010 Temporal vendor health
+001 + 003 + 004 + 005 -> 006 pilot       010 Temporal vendor health
+
+009 guided capture missions: REJECTED, historical only, no downstream dependency
 ```
 
 Plans 001–003 may run in parallel. Plan 006 is deliberately gated on the local
-correctness work. Plans 007–009 span Ratatosk and Svala and must use separate
-clean worktrees and PRs per repository. Plan 010 extends Svala's existing
+correctness work. Plans 007–008 span Ratatosk and Svala and must use separate
+clean worktrees and PRs per repository. Plan 009 is retained only as rejected
+historical context and must not be implemented or consumed. Plan 010 extends Svala's existing
 Temporal TypeScript foundation; it must not create another SDK stack.
 
 ## Program invariants

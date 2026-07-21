@@ -76,7 +76,11 @@ export default defineVendor({
         currency: { path: "currency", transforms: [{ kind: "trim" }] },
         documentUrl: "invoice_pdf", // if the list already gives a direct PDF link, use it
       },
-      // paginate: { cursor: "next_cursor", maxPages: 20 },
+      // paginate: { cursor: "pageInfo.endCursor", hasMore: "pageInfo.hasNextPage", maxPages: 20 },
+      // Or: { kind: "next-url", nextUrl: "links.next", maxPages: 20 }
+      // Or: { kind: "link-header", maxPages: 20 }
+      // Or: { kind: "page", hasMore: "has_more", pageSize: 50, maxPages: 20 }
+      // Or: { kind: "offset", step: 50, hasMore: "has_more", pageSize: 50, maxPages: 20 }
     },
 
     // How to fetch the PDF for one invoice. If the list exposed `documentUrl`,

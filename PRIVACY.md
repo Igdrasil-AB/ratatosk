@@ -1,6 +1,6 @@
 # Privacy Policy — Ratatosk Invoice Collector
 
-**Effective date:** 2026-07-15
+**Effective date:** 2026-07-19
 
 **Provided by:** Igdrasil AB
 
@@ -42,12 +42,56 @@ Collector handles only the data required for that purpose:
    90 days, is rotated on reconnect, and is revoked and removed on disconnect.
 4. **Extension settings and operational history.** Collector stores the selected
    destination, schedule, connected vendors, last-run status, a bounded set of up
-   to 5,000 de-duplication keys, and a bounded recent ledger of up to 100 collected
-   documents in `chrome.storage.local`.
+   to 20,000 de-duplication keys, and a bounded recent ledger of up to 1,000 collected
+   documents in `chrome.storage.local`. If the user connects an unsupported
+   supplier through Find Invoices, Collector also stores that supplier's name,
+   exact origins, entry page without query/fragment data, and a strict declarative
+   extraction profile. An entry-page path may include one bounded non-secret
+   supplier account identifier when it is required to return to an explicit
+   billing route. It stores no page body, API response, cookie, or header.
+
+During Find Invoices, Collector temporarily inspects the active page and up to
+fourteen additional same-origin pages with strong billing or invoice intent, to depth
+three. It uses at most two inactive temporary tabs, performs only page navigation
+and bounded same-origin GET probes, never clicks controls or submits forms, and
+closes the tabs when the search ends. On those temporary pages, a packaged
+exact-origin observer may temporarily inspect bounded JSON fetch/XHR responses
+and the sanitized request structure needed to recognize an explicit read-only
+GraphQL query. It does not initiate the page's POST requests. Bounded rendered-page snapshots and JSON
+evidence stay in memory, are not logged or uploaded, and are discarded after the
+packaged adapters produce up to three proof-ranked structural candidates. A
+failed search or verification may retain a redacted diagnostic in session storage
+for up to 24 hours; it contains only hostnames, counts, candidate numbers,
+packaged adapter names, stable outcome codes, and privacy-safe route templates.
+Those templates keep recognized billing/navigation words while replacing opaque
+tenant, account, workspace, and document segments with `:id` or `:segment`.
+They never contain origins, raw paths, queries, fragments, page content, headers,
+response bodies, tokens, account or invoice identifiers, or financial values.
+
+After the user confirms **Connect & Collect**, Collector verifies the ranked
+candidates by fetching and validating an actual PDF, falling through only when a
+candidate shape is invalid or empty. A locally discovered supplier may activate
+visible, enabled controls explicitly labelled as invoice/receipt downloads and
+may enumerate additional invoice results using the supplier's returned API
+cursor or next-page URL, numbered/offset pages, a localized visible recognized
+Next or Load More control outside forms, or bounded scrolling. Payment, purchase,
+cancellation, deletion, logout, disabled, and form mutation controls are excluded.
+These actions use the same exact-origin permission and existing browser session.
+When a shared invoice provider such as Stripe moves a document to a new regional
+storage origin, Ratatosk may retain that exact origin for permission recovery.
+It does not retain the signed document path, query token, redirect headers, or
+response body.
+Cursor values remain in memory for that collection run and are not stored or
+logged. A supplier-generated PDF exposed only through a temporary `blob:` URL is
+held in memory for that run, capped at 8 MiB, and replaced with an internal hash
+handle before collection; its data URL and request credentials are never stored
+or logged.
 
 Collector does not collect analytics, advertising identifiers, precise location,
 or general browsing history. It does not ask for vendor passwords or two-factor
-codes. It does not include the Studio recorder or record browser traffic.
+codes. It does not include the Studio recorder or retain general browser traffic;
+the temporary discovery observation described above is limited to the explicit
+Find Invoices run and is discarded when that run ends.
 
 ## Where data goes
 
@@ -95,14 +139,27 @@ creditworthiness or for lending.
 ## Permissions
 
 Collector uses `storage` for settings and history, `alarms` for the schedule,
-`notifications` for expired-session notices, `downloads` for local files, and
+`notifications` for expired-session notices, `downloads` for local files,
+observation-only `webRequest` to recognize a changed exact redirect origin for a
+user-approved shared invoice-provider URL, and
 `scripting` for a first-party request on vendors that require their billing page
-context. Vendor host access is optional and requested separately when the user
-connects a vendor. The only always-on page integration is the content script on
+context, and `activeTab` to identify the supplier app from which the user selects
+Find Invoices. Users may separately enable the optional `tabs` metadata
+permission so the persistent side panel can identify the active tab after tab
+switches. Ratatosk reads only the current tab URL for this UI context, does not
+store a browsing history, and this permission does not authorize page inspection.
+After exact-origin approval, the bounded search may inspect up
+to fourteen additional same-origin billing-related pages. HTTPS supplier access is optional and Chrome
+asks for the exact origin when the user connects or tests it. During that explicit
+search, `scripting` also installs and removes the bounded exact-origin page-load
+observer described above. The optional
+manifest pattern allows this explicit flow for previously unknown suppliers but
+grants no site access at installation. The only always-on page integration is the content script on
 `https://accounting.igdrasil.se/*`, used for the Igdrasil connect/disconnect
 handshake and the service worker's HTTPS invoice uploads.
 
-Collector does not request `debugger`, `tabs`, `activeTab`, or `<all_urls>`.
+Collector does not request `debugger`, cookies, or `<all_urls>`. The optional
+`tabs` metadata permission is disabled until the user enables tab switching.
 
 ## Security
 
@@ -113,8 +170,9 @@ executable logic with the extension.
 
 ## User choices and rights
 
-Users can disconnect a vendor to revoke its optional host access and clear that
-vendor's collection history. Users can disconnect Igdrasil to revoke and remove
+Users can disconnect a vendor to revoke its optional host access while retaining
+duplicate protection, or separately choose Forget History to clear that vendor's
+local collection history. Users can disconnect Igdrasil to revoke and remove
 its upload token and destination configuration, select local Downloads instead,
 disable the schedule, or uninstall Collector to remove its local extension data.
 

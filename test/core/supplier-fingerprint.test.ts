@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { inferRecipe } from "../../src/core/recorder/infer";
-import { buildEntry } from "../../src/core/recorder/cdp";
+import { buildEntry, createCaptureRedactionContext } from "../../src/core/recorder/cdp";
 import {
   approveSupplierFingerprint,
   buildSupplierFingerprint,
@@ -17,6 +17,7 @@ const contractFixture = JSON.parse(readFileSync(
 ));
 
 function capturedSession(): CaptureSession {
+  const redactionContext = createCaptureRedactionContext();
   return {
     origin: "https://billing.example.com",
     entries: [
@@ -29,24 +30,31 @@ function capturedSession(): CaptureSession {
           user: { email: "owner@example.com", accessToken: TOKEN },
           organization: { id: ACCOUNT },
         }),
+        redactionContext,
       }),
       buildEntry({
-        url: `https://billing.example.com/api/organizations/${ACCOUNT}/invoices?limit=100&page=secret-cursor`,
+        url: `https://billing.example.com/api/organizations/${ACCOUNT}/invoices?limit=100&page=1`,
         method: "POST",
         status: 200,
         contentType: "application/json",
         requestHeaders: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        requestBody: JSON.stringify({ operationName: "BillingInvoices", variables: { organizationId: ACCOUNT } }),
+        requestBody: JSON.stringify({
+          operationName: "BillingInvoices",
+          query: "query BillingInvoices($organizationId: ID!) { invoices { id amount currency issuedAt pdfUrl } }",
+          variables: { organizationId: ACCOUNT },
+        }),
         body: JSON.stringify({
           invoices: [{ id: "invoice-secret-123", amount: 9000, currency: "sek", issuedAt: "2026-07-01", pdfUrl: `https://files.example.com/invoices/${ACCOUNT}/invoice-secret-123.pdf` }],
           next_cursor: "secret-next-page",
         }),
+        redactionContext,
       }),
       buildEntry({
         url: `https://files.example.com/invoices/${ACCOUNT}/invoice-secret-123.pdf?signature=secret`,
         method: "GET",
         status: 200,
         contentType: "application/pdf",
+        redactionContext,
       }),
     ],
   };
@@ -65,12 +73,15 @@ describe("shareable supplier fingerprint", () => {
 
   it("keeps structural evidence while excluding captured values and raw payloads", () => {
     const session = capturedSession();
+    const draft = inferRecipe(session);
+    expect(draft).not.toBeNull();
+    expect(JSON.stringify(draft!.recipe)).not.toContain("REDACTED");
     const fingerprint = buildSupplierFingerprint({
       fingerprintId: "fp_0123456789abcdef0123456789abcdef",
       capturedAt: "2026-07-16T10:00:00.000Z",
       studioVersion: "0.7.0",
       session,
-      draft: inferRecipe(session),
+      draft,
     });
 
     expect(parseSupplierFingerprint(fingerprint)).toEqual(fingerprint);
@@ -87,7 +98,7 @@ describe("shareable supplier fingerprint", () => {
     ]));
 
     const serialized = JSON.stringify(fingerprint);
-    for (const forbidden of [ACCOUNT, TOKEN, "owner@example.com", "invoice-secret-123", "secret-cursor", "secret-next-page", "9000", "2026-07-01"]) {
+    for (const forbidden of [ACCOUNT, TOKEN, "owner@example.com", "invoice-secret-123", "secret-next-page", "9000", "2026-07-01"]) {
       expect(serialized).not.toContain(forbidden);
     }
     for (const forbiddenKey of ['"requestBody":', '"responseBody":', '"requestHeaders":', '"fixture":', '"recipe":']) {
@@ -139,6 +150,85 @@ describe("shareable supplier fingerprint", () => {
       expect.objectContaining({ role: "invoice_list", pathPattern: "/billing/invoices" }),
       expect.objectContaining({ role: "document", pathPattern: "/billing/invoices/{id}/pdf" }),
     ]));
+  });
+
+  it("does not let unrelated GraphQL operations evict the inferred invoice request", () => {
+    const entries = Array.from({ length: 45 }, (_, index) => buildEntry({
+      url: "https://api.example.com/graphql",
+      method: "POST",
+      status: 200,
+      contentType: "application/json",
+      requestHeaders: { "content-type": "application/json" },
+      requestBody: JSON.stringify({
+        operationName: `UnrelatedOperation${index}`,
+        query: `query UnrelatedOperation${index} { viewer { id } }`,
+      }),
+      body: '{"viewer":{"id":"user_1"}}',
+    }));
+    entries.push(buildEntry({
+      url: "https://api.example.com/graphql",
+      method: "POST",
+      status: 200,
+      contentType: "application/json",
+      requestHeaders: { "content-type": "application/json" },
+      requestBody: JSON.stringify({
+        operationName: "BillingInvoices",
+        query: "query BillingInvoices { invoices { id date amount } }",
+      }),
+      body: '{"invoices":[{"id":"invoice-1","date":"2026-07-01","amount":1000}]}',
+    }));
+    entries.push(buildEntry({
+      url: "https://api.example.com/invoices/invoice-1/pdf",
+      method: "GET",
+      status: 200,
+      contentType: "application/pdf",
+    }));
+
+    const session: CaptureSession = { origin: "https://app.example.com", entries };
+    const draft = inferRecipe(session);
+    expect(draft).not.toBeNull();
+    const fingerprint = buildSupplierFingerprint({
+      fingerprintId: "fp_0123456789abcdef0123456789abcdef",
+      capturedAt: "2026-07-16T10:00:00.000Z",
+      studioVersion: "0.7.0",
+      session,
+      draft,
+    });
+
+    expect(fingerprint.evidence.requests).toHaveLength(40);
+    expect(fingerprint.evidence.requests.filter((request) => request.role === "invoice_list")).toEqual([
+      expect.objectContaining({ method: "POST", pathPattern: "/graphql", operationName: "BillingInvoices" }),
+    ]);
+    expect(fingerprint.evidence.requests).toContainEqual(
+      expect.objectContaining({ role: "document", pathPattern: "/invoices/{id}/pdf" }),
+    );
+  });
+
+  it("resolves relative captured request URLs against the session origin", () => {
+    const session: CaptureSession = {
+      origin: "https://billing.example.com",
+      entries: [buildEntry({
+        url: "/api/invoices?limit=100",
+        method: "GET",
+        status: 200,
+        contentType: "application/json",
+        body: '{"items":[]}',
+      })],
+    };
+
+    const fingerprint = buildSupplierFingerprint({
+      fingerprintId: "fp_0123456789abcdef0123456789abcdef",
+      capturedAt: "2026-07-16T10:00:00.000Z",
+      studioVersion: "0.7.0",
+      session,
+      draft: null,
+    });
+
+    expect(fingerprint.evidence.requests).toContainEqual(expect.objectContaining({
+      origin: "https://billing.example.com",
+      pathPattern: "/api/invoices",
+      queryKeys: ["limit"],
+    }));
   });
 
   it("requires affirmative authority and share approval before creating a Svala outbox item", () => {

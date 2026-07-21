@@ -1,5 +1,7 @@
 import type { OperationalOutcomeCode } from "../../../src/core/errors";
 import type { SeenStore } from "../../../src/core/types";
+import { isExactDocumentProviderOriginPattern } from "../../../src/core/document-provider";
+import { normalizeIgdrasilApiBase } from "../../../src/ingest/igdrasil-sink";
 
 /**
  * Typed wrapper over `chrome.storage.local`.
@@ -25,7 +27,14 @@ export type ConnectionStatus = "ok" | "partial" | "auth_expired" | "rate_limited
 export interface Connection {
   vendorId: string;
   connectedAt: number;
+  /** Legacy alias retained for diagnostics and older extension builds. */
   lastRunAt?: number;
+  /** Most recent attempt, including failed and rate-limited runs. */
+  lastAttemptAt?: number;
+  /** Most recent run that completely traversed every available scope. */
+  lastCompleteSyncAt?: number;
+  /** Most recent run that committed at least one new document. */
+  lastNewInvoiceAt?: number;
   lastStatus?: ConnectionStatus;
   lastError?: string;
   lastCount?: number;
@@ -33,14 +42,18 @@ export interface Connection {
   lastFailedScopes?: number;
   lastEmptyScopes?: number;
   nextEligibleRunAt?: number;
+  /** Exact provider redirect origins approved for this connection. Capability
+   * paths and signed query values are never persisted. */
+  documentOrigins?: string[];
 }
 
 const KEY = { config: "config", connections: "connections", seen: "seen", ledger: "ledger" } as const;
-const SEEN_CAP = 5000;
-const LEDGER_CAP = 100;
+const SEEN_CAP = 20_000;
+const LEDGER_CAP = 1_000;
 const MAX_RATE_LIMIT_DELAY_MS = 24 * 60 * 60 * 1_000;
 const MIN_RATE_LIMIT_DELAY_MS = 5_000;
 const CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1_000;
+const SEEN_RESERVATION_LEASE_MS = 5 * 60 * 1_000;
 const writeChains = new Map<string, Promise<void>>();
 
 // ---- sink config ----------------------------------------------------------
@@ -57,7 +70,10 @@ export async function getConnections(): Promise<Record<string, Connection>> {
 
 export async function upsertConnection(conn: Connection): Promise<void> {
   await mutate<Record<string, Connection>>(KEY.connections, {}, (all) => {
-    all[conn.vendorId] = conn;
+    all[conn.vendorId] = {
+      ...conn,
+      ...(conn.documentOrigins ? { documentOrigins: safeDocumentOrigins(conn.documentOrigins) } : {}),
+    };
     return all;
   });
 }
@@ -76,18 +92,37 @@ export async function recordRun(
 ): Promise<void> {
   await mutate<Record<string, Connection>>(KEY.connections, {}, (all) => {
     const existing = all[vendorId];
+    // Connection removal is a user-controlled lifecycle boundary. A stale
+    // collection completion may report telemetry only while its original
+    // connection still exists; it must never resurrect a disconnected vendor.
+    if (!existing) return all;
+    const attemptedAt = Date.now();
     const next: Connection = {
       vendorId,
-      connectedAt: existing?.connectedAt ?? Date.now(),
-      lastRunAt: Date.now(),
+      connectedAt: existing.connectedAt,
+      documentOrigins: existing.documentOrigins,
+      lastRunAt: attemptedAt,
+      lastAttemptAt: attemptedAt,
+      lastCompleteSyncAt: patch.lastStatus === "ok" ? attemptedAt : existing.lastCompleteSyncAt,
+      lastNewInvoiceAt: typeof patch.lastCount === "number" && patch.lastCount > 0
+        ? attemptedAt
+        : existing.lastNewInvoiceAt,
       ...patch,
     };
     for (const [key, value] of Object.entries(next)) {
       if (value === undefined) delete (next as unknown as Record<string, unknown>)[key];
     }
+    if (next.documentOrigins) next.documentOrigins = safeDocumentOrigins(next.documentOrigins);
     all[vendorId] = next;
     return all;
   });
+}
+
+function safeDocumentOrigins(values: readonly string[]): string[] {
+  if (values.length > 8 || values.some((value) => !isExactDocumentProviderOriginPattern(value))) {
+    throw new Error("invalid document provider origins");
+  }
+  return [...new Set(values)];
 }
 
 export function boundedNextEligibleRunAt(retryAfterMs: number, now = Date.now()): number {
@@ -114,25 +149,93 @@ export function seenStore(): SeenStore {
   return {
     async has(key) {
       const map = (await get<Record<string, unknown>>(KEY.seen)) ?? {};
-      return key in map;
+      return isAcceptedSeenRecord(map[key]) || isActiveSeenReservation(map[key]);
+    },
+    async isAccepted(key) {
+      const map = (await get<Record<string, unknown>>(KEY.seen)) ?? {};
+      return isAcceptedSeenRecord(map[key]);
+    },
+    async claimIfAbsent(key, source) {
+      const reservationId = crypto.randomUUID();
+      let claimed: string | undefined;
+      await mutate<Record<string, unknown>>(KEY.seen, {}, (map) => {
+        if (isAcceptedSeenRecord(map[key]) || isActiveSeenReservation(map[key])) return map;
+        map[key] = { source: source ?? "", reservedAt: Date.now(), reservationId } satisfies SeenReservation;
+        claimed = reservationId;
+        return map;
+      });
+      return claimed;
+    },
+    async release(key, reservationId) {
+      await mutate<Record<string, unknown>>(KEY.seen, {}, (map) => {
+        if (isSeenReservation(map[key]) && map[key].reservationId === reservationId) delete map[key];
+        return map;
+      });
     },
     async add(key, source) {
       await mutate<Record<string, unknown>>(KEY.seen, {}, (map) => {
-        map[key] = source ?? ""; // value tags the vendor so history is clearable
-        const keys = Object.keys(map);
-        if (keys.length > SEEN_CAP) for (const k of keys.slice(0, keys.length - SEEN_CAP)) delete map[k];
+        map[key] = { source: source ?? "", acceptedAt: Date.now() } satisfies SeenRecord;
+        const entries = Object.entries(map);
+        if (entries.length > SEEN_CAP) {
+          entries
+            .filter(([, value]) => !isSeenReservation(value))
+            .sort((left, right) => seenAcceptedAt(left[1]) - seenAcceptedAt(right[1]))
+            .slice(0, entries.length - SEEN_CAP)
+            .forEach(([oldestKey]) => delete map[oldestKey]);
+        }
         return map;
       });
     },
   };
 }
 
-/** Forget a vendor's download history (so a reconnect re-fetches). Also clears
- * legacy untagged entries from before keys carried a source. */
+interface SeenRecord {
+  source: string;
+  acceptedAt: number;
+}
+
+interface SeenReservation {
+  source: string;
+  reservedAt: number;
+  reservationId: string;
+}
+
+function isSeenReservation(value: unknown): value is SeenReservation {
+  return Boolean(
+    value && typeof value === "object"
+    && typeof (value as SeenReservation).reservedAt === "number"
+    && typeof (value as SeenReservation).reservationId === "string",
+  );
+}
+
+function isActiveSeenReservation(value: unknown, now = Date.now()): boolean {
+  return isSeenReservation(value) && Number.isFinite(value.reservedAt) && value.reservedAt > now - SEEN_RESERVATION_LEASE_MS;
+}
+
+function isAcceptedSeenRecord(value: unknown): boolean {
+  return value !== undefined && !isSeenReservation(value);
+}
+
+function seenSource(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return undefined;
+  const source = (value as { source?: unknown }).source;
+  return typeof source === "string" ? source : undefined;
+}
+
+function seenAcceptedAt(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (!value || typeof value !== "object") return 0;
+  const acceptedAt = (value as { acceptedAt?: unknown }).acceptedAt;
+  return typeof acceptedAt === "number" && Number.isFinite(acceptedAt) ? acceptedAt : 0;
+}
+
+/** Explicitly forget one vendor's download history. Legacy values remain
+ * readable, while only entries that can be safely attributed are removed. */
 export async function clearSeenForSource(source: string): Promise<void> {
   await mutate<Record<string, unknown>>(KEY.seen, {}, (map) => {
     for (const [k, v] of Object.entries(map)) {
-      if (v === source || typeof v === "number") delete map[k];
+      if (seenSource(v) === source) delete map[k];
     }
     return map;
   });
@@ -166,7 +269,7 @@ export async function recordCollected(entries: LedgerEntry[]): Promise<void> {
   });
 }
 
-/** Remove a disconnected vendor's user-facing collection history. */
+/** Remove a vendor's user-facing history only after an explicit reset. */
 export async function clearLedgerForVendor(vendorId: string): Promise<void> {
   await mutate<LedgerEntry[]>(KEY.ledger, [], (existing) => existing.filter((entry) => entry.vendorId !== vendorId));
 }
@@ -191,7 +294,10 @@ function validateSinkConfig(cfg: SinkConfig): SinkConfig {
     const isLocal = endpoint.hostname === "localhost" || endpoint.hostname === "127.0.0.1";
     if (endpoint.protocol !== "https:" && !isLocal) throw new Error("destination must use HTTPS");
     if (!cfg.companyId.trim() || cfg.companyId.length > 200) throw new Error("invalid company id");
-    return { kind: cfg.kind, endpoint: endpoint.toString().replace(/\/$/, ""), companyId: cfg.companyId.trim() };
+    const normalizedEndpoint = cfg.kind === "igdrasil"
+      ? normalizeIgdrasilApiBase(cfg.endpoint)
+      : endpoint.toString().replace(/\/$/, "");
+    return { kind: cfg.kind, endpoint: normalizedEndpoint, companyId: cfg.companyId.trim() };
   }
   throw new Error("unsupported destination");
 }

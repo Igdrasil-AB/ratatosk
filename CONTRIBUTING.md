@@ -15,8 +15,10 @@ fixture test, register it in `src/vendors/index.ts`.
   the schema is missing a primitive — extend `core/schema.ts` (+ `core/types.ts`
   + the engine) rather than special-casing a vendor. The engine has no per-vendor
   branches and should stay that way.
-- **Keep `chrome.*` in `collector/` or `studio/`.** Nothing in shared `src/core/`,
-  `src/vendors/`, or `src/ingest/` may import a browser extension API.
+- **Keep platform globals in `collector/` or `studio/`.** Nothing in shared
+  `src/core/`, `src/vendors/`, or `src/ingest/` may import platform code or use
+  Chrome/page globals. `npm run typecheck` compiles shared code without Chrome
+  ambient types, and `npm run check:boundaries` enforces import/global direction.
 - **Respect the product boundary.** Collector cannot import Studio, recorder, or
   `debugger` functionality. Studio is never a consumer release artifact.
 - **No remotely loaded recipes or code.** Vendor changes ship only through a

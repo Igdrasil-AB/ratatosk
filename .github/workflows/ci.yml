@@ -5,33 +5,39 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build:
+    name: Build and test (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20.19.0", "24"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.0
         with:
-          node-version: 22
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
       - name: Audit dependencies
         run: npm audit --audit-level=high
       - name: Typecheck
         run: npm run typecheck
+      - name: Enforce architecture boundaries
+        run: npm run check:boundaries
       - name: Validate recipes (schema + test coverage)
         run: npm run validate
+      - name: Validate release metadata (allow only explicit unverified pilot baseline)
+        run: npm run validate:release -- --allow-unverified-pilot-baseline
       - name: Test
         run: npm test
       - name: Build Collector and Studio independently
         run: npm run build
       - name: Package public Collector
         run: npm run package:collector
-      - name: Upload reviewed Collector artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ratatosk-collector-${{ github.sha }}
-          path: |
-            artifacts/ratatosk-collector-*.zip
-            artifacts/ratatosk-collector-*.sha256
-          if-no-files-found: error

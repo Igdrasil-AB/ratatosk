@@ -34,4 +34,17 @@ describe("filesystem path — traversal is neutralized", () => {
     expect(path).not.toMatch(/[\\\0]/);
     expect(path.split("/")).toHaveLength(4);
   });
+
+  it.each([".", "..", " . ", " .. "])("replaces bare navigation filename %j with a safe fallback", (filename) => {
+    const path = buildInvoicePath(cfg, {
+      vendorId: "acme",
+      issuedAt: "2026-01-01",
+      filename,
+    });
+    const segments = path.split("/");
+    expect(segments).toHaveLength(4);
+    expect(segments).not.toContain(".");
+    expect(segments).not.toContain("..");
+    expect(segments.at(-1)).toBe("invoice.pdf");
+  });
 });

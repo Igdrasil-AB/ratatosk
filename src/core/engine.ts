@@ -15,17 +15,33 @@
  */
 import type {
   FetchedDocument,
-  HttpResponse,
+  InvoiceListResult,
   InvoiceRef,
+  RetrievalCompleteness,
+  RetrievalProof,
   RunContext,
   RunResult,
   VendorRecipe,
-  Predicate,
 } from "./types";
-import { AuthExpired, operationalCodeForError, RateLimited } from "./errors";
-import { idempotencyKey } from "./dedup";
+import {
+  AuthExpired,
+  DocumentPermissionRequired,
+  operationalCodeForError,
+  RateLimited,
+  RetrievalIncomplete,
+  UnexpectedResponse,
+} from "./errors";
+import { assertAuthenticated, resolveAuthToken } from "./auth";
+import { contentIdempotencyKey, idempotencyKey } from "./dedup";
 import { extract } from "./extract";
 import { get, getArray } from "./jsonpath";
+import { DEFAULT_SAFE_CONCURRENCY, mapConcurrentOrdered } from "./concurrency";
+import { isBoundedTenantIdentifierSegment } from "./discovery";
+
+/** Hard runtime limits complement recipe validation: runtime responses are
+ * untrusted and config dimensions multiply one another. */
+export const MAX_CONFIG_VALUES_PER_OPTION = 50;
+export const MAX_EXPANDED_SCOPES = 100;
 
 /** Raw bytes a strategy produces before the engine wraps them as a FetchedDocument. */
 export interface RawDocument {
@@ -36,16 +52,37 @@ export interface RawDocument {
 
 /** A fetch strategy (network-replay or DOM). Strategies are stateless and pure-ish. */
 export interface Strategy {
-  list(recipe: VendorRecipe, scopeVars: Record<string, unknown>, ctx: RunContext): Promise<InvoiceRef[]>;
+  list(recipe: VendorRecipe, scopeVars: Record<string, unknown>, ctx: RunContext): Promise<InvoiceListResult>;
   fetchDocument(
     recipe: VendorRecipe,
     ref: InvoiceRef,
     scopeVars: Record<string, unknown>,
     ctx: RunContext,
+    signal?: AbortSignal,
   ): Promise<RawDocument>;
 }
 
 export type StrategyMap = Record<"network" | "dom" | "html", Strategy>;
+
+export interface StreamRunResult {
+  vendorId: string;
+  documentCount: number;
+  retrieval: RetrievalCompleteness;
+  /** Every proof returned by listing, in deterministic scope traversal order. */
+  retrievalProofs: RetrievalProof[];
+  /** Exact single-scope traversal evidence for local candidate diagnostics. */
+  retrievalProof?: InvoiceListResult["retrieval"];
+  scopes: RunResult["scopes"];
+}
+
+export interface StreamVendorOptions {
+  /** Candidate verification must not deliver from a path whose traversal could
+   * not be exhausted; another retained candidate should be tried first. */
+  requireCompleteRetrieval?: boolean;
+}
+
+/** Keeps memory bounded to at most three materialized PDFs per vendor run. */
+export const DOCUMENT_FETCH_CONCURRENCY = DEFAULT_SAFE_CONCURRENCY.documentFetches;
 
 /**
  * Run one vendor end to end and return the new documents. The engine does NOT
@@ -57,33 +94,141 @@ export async function runVendor(
   ctx: RunContext,
   strategies: StrategyMap,
 ): Promise<RunResult> {
+  const documents: FetchedDocument[] = [];
+  const result = await executeVendor(recipe, ctx, strategies, async (document) => {
+    documents.push(document);
+  });
+  return {
+    vendorId: result.vendorId,
+    documents,
+    retrieval: result.retrieval,
+    retrievalProofs: result.retrievalProofs,
+    scopes: result.scopes,
+  };
+}
+
+/**
+ * Fetch documents in small bounded batches, then emit them one at a time in
+ * source order. The emitter runs outside the per-scope recovery boundary: a
+ * destination failure must abort the run rather than being mistaken for a
+ * supplier-scope failure. This keeps the irreversible destination commit lane
+ * exclusive while allowing the read-only network work to overlap.
+ */
+export function streamVendor(
+  recipe: VendorRecipe,
+  ctx: RunContext,
+  strategies: StrategyMap,
+  emit: (document: FetchedDocument) => Promise<void>,
+  options: StreamVendorOptions = {},
+): Promise<StreamRunResult> {
+  return executeVendor(recipe, ctx, strategies, emit, options);
+}
+
+async function executeVendor(
+  recipe: VendorRecipe,
+  ctx: RunContext,
+  strategies: StrategyMap,
+  emit: (document: FetchedDocument) => Promise<void>,
+  options: StreamVendorOptions = {},
+): Promise<StreamRunResult> {
   await resolveAuthToken(recipe, ctx);
-  await assertAuthenticated(recipe, ctx);
+  // A rendered-list strategy proves authentication by finding its document
+  // structure in the exact supplier tab. A second scripted GET is weaker and
+  // is commonly challenged even when the visible session is valid.
+  if (recipe.invoices.strategy !== "dom") await assertAuthenticated(recipe, ctx);
 
   const strategy = strategies[recipe.invoices.strategy];
   const source = `ext:${recipe.id}`;
   const scopes = await resolveScopes(recipe, ctx);
 
-  const documents: FetchedDocument[] = [];
   const emittedThisRun = new Set<string>();
   const scopeErrors: unknown[] = [];
+  let retrievalErrorCount = 0;
   let succeededScopes = 0;
   let emptyScopes = 0;
+  let documentCount = 0;
+  const retrievalProofs: RetrievalProof[] = [];
+
+  const plans: Array<{ vars: Record<string, unknown>; list: InvoiceListResult; identityScope?: string }> = [];
 
   for (const scopeVars of scopes) {
     const vars = { ...ctx.vars, ...scopeVars };
     try {
-      const refs = await strategy.list(recipe, vars, ctx);
+      const list = await strategy.list(recipe, vars, ctx);
+      retrievalProofs.push(list.retrieval);
+      if (list.retrieval.completeness !== "complete") {
+        retrievalErrorCount += 1;
+        scopeErrors.push(new RetrievalIncomplete(
+          `retrieval ended at ${list.retrieval.termination} with ${list.retrieval.unresolvedItems} unresolved item(s)`,
+          recipe.id,
+          list.retrieval,
+        ));
+        continue;
+      }
       succeededScopes++;
-      if (refs.length === 0) emptyScopes++;
+      if (list.refs.length === 0) emptyScopes++;
+      plans.push({ vars, list, identityScope: configIdentityScope(recipe, scopeVars) });
+    } catch (err) {
+      // A dead session or missing document-provider permission is vendor-wide,
+      // so abort. Any other per-scope failure
+      // (e.g. one org with no billing 404s) must NOT sink the sibling scopes.
+      if (err instanceof AuthExpired || err instanceof RateLimited || err instanceof DocumentPermissionRequired) throw err;
+      retrievalErrorCount += 1;
+      scopeErrors.push(err);
+    }
+  }
 
-      for (const ref of refs) {
-        const key = await idempotencyKey(ctx.companyId, source, ref.vendorInvoiceId);
-        if (emittedThisRun.has(key) || (await ctx.seen.has(key))) continue;
+  if (options.requireCompleteRetrieval && scopeErrors.length > 0) throw scopeErrors[0];
+  if (plans.length === 0 && scopeErrors.length === scopes.length && scopeErrors.length > 0) throw scopeErrors[0];
 
-        const raw = await strategy.fetchDocument(recipe, ref, vars, ctx);
-        emittedThisRun.add(key);
-        documents.push({
+  // Reserve every equivalent supplier identity across all scopes before any
+  // bounded concurrent fetch begins. A supplier can surface the same invoice
+  // under a legacy and a current identity (including from two workspaces).
+  // Reserving only the primary key would allow both aliases into `pending`.
+  const scheduled = new Set<string>();
+  for (const { vars, list, identityScope } of plans) {
+    const refs = list.refs;
+    const pending: Array<{ ref: InvoiceRef; vars: Record<string, unknown>; key: string; identityClaims: SeenClaim[] }> = [];
+    for (const ref of refs) {
+      const scopedIdentity = (identity: string) => identityScope ? `${identityScope}\u0000${identity}` : identity;
+      const key = await idempotencyKey(ctx.companyId, source, scopedIdentity(ref.vendorInvoiceId));
+      const aliasIdentities = (ref.identityAliases ?? []).slice(0, 4);
+      const scopedAliases = aliasIdentities.map(scopedIdentity);
+      // A single-scope recipe can safely recognize its pre-scope identity. For
+      // multiple scopes that legacy key is ambiguous and exact-content dedup is
+      // the safe migration path after fetching.
+      const legacyAliases = identityScope && scopes.length === 1
+        ? [ref.vendorInvoiceId, ...aliasIdentities]
+        : [];
+      const aliases = await Promise.all([...scopedAliases, ...legacyAliases].map((identity) =>
+        idempotencyKey(ctx.companyId, source, identity)
+      ));
+      const seenKey = [key, ...aliases].find((candidate) => emittedThisRun.has(candidate) || scheduled.has(candidate)) ??
+        await firstSeenKey(ctx, [key, ...aliases]);
+      if (seenKey) {
+        // Migrate an accepted legacy URL identity to the stable signed-URL
+        // identity without delivering the document again.
+        if (seenKey !== key) await ctx.seen.add(key, source);
+        continue;
+      }
+      const identityClaims = await claimKeys(ctx, [key, ...aliases], source);
+      if (!identityClaims) continue;
+      for (const identityKey of [key, ...aliases]) scheduled.add(identityKey);
+      pending.push({ ref, vars, key, identityClaims });
+    }
+
+    let firstScopeError: unknown;
+    try {
+    for (let offset = 0; offset < pending.length; offset += DOCUMENT_FETCH_CONCURRENCY) {
+      const batch = pending.slice(offset, offset + DOCUMENT_FETCH_CONCURRENCY);
+      const outcomes = await mapConcurrentOrdered(batch, {
+        limit: DOCUMENT_FETCH_CONCURRENCY,
+        stopOnError: (error) =>
+          error instanceof AuthExpired || error instanceof RateLimited || error instanceof DocumentPermissionRequired,
+      }, async ({ ref, vars: documentVars, key }, _index, signal) => {
+        const raw = await strategy.fetchDocument(recipe, ref, documentVars, ctx, signal);
+        const contentKey = await contentIdempotencyKey(ctx.companyId, source, raw.bytes);
+        return {
           source,
           vendorId: recipe.id,
           vendorName: recipe.name,
@@ -95,25 +240,88 @@ export async function runVendor(
           contentType: raw.contentType,
           bytes: raw.bytes,
           idempotencyKey: key,
-        });
+          contentIdempotencyKey: contentKey,
+        } satisfies FetchedDocument;
+      });
+
+      for (const [outcomeIndex, outcome] of outcomes.entries()) {
+        const { identityClaims } = batch[outcomeIndex];
+        if (outcome.status === "cancelled") {
+          await releaseClaims(ctx, identityClaims);
+          continue;
+        }
+        if (outcome.status === "rejected") {
+          await releaseClaims(ctx, identityClaims);
+          if (
+            outcome.error instanceof AuthExpired || outcome.error instanceof RateLimited ||
+            outcome.error instanceof DocumentPermissionRequired
+          ) throw outcome.error;
+          firstScopeError ??= outcome.error;
+          continue;
+        }
+        const document = outcome.value;
+        const repeatedThisRun = emittedThisRun.has(document.contentIdempotencyKey);
+        if (repeatedThisRun) {
+          await releaseClaims(ctx, identityClaims);
+          continue;
+        }
+        const contentReservation = await ctx.seen.claimIfAbsent(document.contentIdempotencyKey, document.source);
+        if (!contentReservation) {
+          try {
+            // A durable content acceptance proves delivery completed even when
+            // the final primary-key commit failed. Repair that retry guard now.
+            // A competing reservation alone is not proof, so it remains untouched.
+            if (await ctx.seen.isAccepted?.(document.contentIdempotencyKey)) {
+              await ctx.seen.add(document.idempotencyKey, document.source);
+            }
+          } finally {
+            await releaseClaims(ctx, identityClaims);
+          }
+          continue;
+        }
+        try {
+          await emit(document);
+          emittedThisRun.add(document.idempotencyKey);
+          emittedThisRun.add(document.contentIdempotencyKey);
+          documentCount++;
+        } finally {
+          // A successful production emitter promotes both reservations via
+          // SeenStore.add after durable destination acceptance. On failure,
+          // releasing them makes the invoice retryable.
+          await ctx.seen.release(document.contentIdempotencyKey, contentReservation);
+          await releaseClaims(ctx, identityClaims);
+        }
       }
-    } catch (err) {
-      // A dead session is vendor-wide, so abort. Any other per-scope failure
-      // (e.g. one org with no billing 404s) must NOT sink the sibling scopes.
-      if (err instanceof AuthExpired || err instanceof RateLimited) throw err;
-      scopeErrors.push(err);
+    }
+    } catch (error) {
+      // Claims are acquired before bounded fetches begin. A fatal supplier or
+      // destination error can abandon this and later batches, so release every
+      // still-owned reservation immediately instead of waiting for lease expiry.
+      for (const item of pending) await releaseClaims(ctx, item.identityClaims);
+      throw error;
+    }
+    if (firstScopeError !== undefined) {
+      // A scope is successful only when its list and every eligible document
+      // retrieval completed. Do not expose contradictory run telemetry where
+      // the same scope appears in both the successful and failed counts.
+      succeededScopes--;
+      scopeErrors.push(firstScopeError);
     }
   }
 
-  // Only surface an error if EVERY scope failed and nothing was collected;
-  // partial success (some scopes empty or failed) still returns what we have.
-  if (documents.length === 0 && scopeErrors.length === scopes.length && scopeErrors.length > 0) {
-    throw scopeErrors[0];
-  }
+  // Listing success is not final scope success. If materialization left no
+  // successful/empty sibling and produced no document, surface the real first
+  // failure instead of a contradictory zero-document partial result.
+  if (documentCount === 0 && succeededScopes === 0 && scopeErrors.length > 0) throw scopeErrors[0];
 
   return {
     vendorId: recipe.id,
-    documents,
+    documentCount,
+    // Document materialization/delivery failures are reported through scopes,
+    // but they do not change whether the list path itself was exhausted.
+    retrieval: retrievalErrorCount === 0 ? "complete" : "partial",
+    retrievalProofs,
+    ...(retrievalProofs.length === 1 ? { retrievalProof: retrievalProofs[0] } : {}),
     scopes: {
       total: scopes.length,
       succeeded: succeededScopes,
@@ -124,60 +332,38 @@ export async function runVendor(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Auth
-// ---------------------------------------------------------------------------
-
-async function assertAuthenticated(recipe: VendorRecipe, ctx: RunContext): Promise<void> {
-  const { request, expect } = recipe.auth.check;
-  const res = await ctx.fetch(request, ctx.vars);
-  const alive = await evaluatePredicate(expect, new ResponseView(res));
-  if (!alive) throw new AuthExpired(recipe.id);
+function configIdentityScope(recipe: VendorRecipe, scopeVars: Record<string, unknown>): string | undefined {
+  const entries = (recipe.config ?? []).flatMap((option) =>
+    Object.hasOwn(scopeVars, option.id) ? [[option.id, scopeVars[option.id]]] : []
+  );
+  return entries.length ? JSON.stringify(entries) : undefined;
 }
 
-/**
- * Exchange the session cookie for a bearer token (for SPAs whose API needs
- * `Authorization: Bearer …`). Runs first so every later request — auth probe,
- * list, config — can template `{token}` into its headers. A missing token means
- * the session can't authorize the API, i.e. reconnect.
- */
-async function resolveAuthToken(recipe: VendorRecipe, ctx: RunContext): Promise<void> {
-  const spec = recipe.auth.token;
-  if (!spec) return;
-  const res = await ctx.fetch(spec.request, ctx.vars);
-  if (!res.ok) throw new AuthExpired(recipe.id);
-  const value = extract(await res.json().catch(() => undefined), spec.value);
-  if (value === undefined || value === null || value === "") throw new AuthExpired(recipe.id);
-  Object.assign(ctx.vars, { [spec.as ?? "token"]: value });
+async function firstSeenKey(ctx: RunContext, keys: readonly string[]): Promise<string | undefined> {
+  for (const key of keys) if (await ctx.seen.has(key)) return key;
+  return undefined;
 }
 
-/** Lazily-parsed view so a predicate can inspect status and/or JSON body once. */
-class ResponseView {
-  private parsed: Promise<unknown> | undefined;
-  constructor(private readonly res: HttpResponse) {}
-  get status(): number {
-    return this.res.status;
-  }
-  json(): Promise<unknown> {
-    return (this.parsed ??= this.res.json().catch(() => undefined));
-  }
+interface SeenClaim {
+  key: string;
+  reservationId: string;
 }
 
-async function evaluatePredicate(pred: Predicate, view: ResponseView): Promise<boolean> {
-  if ("statusIn" in pred) return pred.statusIn.includes(view.status);
-  if ("jsonPath" in pred) {
-    const value = get(await view.json(), pred.jsonPath);
-    if (pred.exists !== undefined) return pred.exists ? value !== undefined : value === undefined;
-    if ("equals" in pred) return value === pred.equals;
-    return value !== undefined;
+async function claimKeys(ctx: RunContext, keys: readonly string[], source: string): Promise<SeenClaim[] | undefined> {
+  const claimed: SeenClaim[] = [];
+  for (const key of [...new Set(keys)].sort()) {
+    const reservationId = await ctx.seen.claimIfAbsent(key, source);
+    if (!reservationId) {
+      await releaseClaims(ctx, claimed);
+      return undefined;
+    }
+    claimed.push({ key, reservationId });
   }
-  if ("and" in pred) {
-    for (const p of pred.and) if (!(await evaluatePredicate(p, view))) return false;
-    return true;
-  }
-  // "or"
-  for (const p of pred.or) if (await evaluatePredicate(p, view)) return true;
-  return false;
+  return claimed;
+}
+
+async function releaseClaims(ctx: RunContext, claims: readonly SeenClaim[]): Promise<void> {
+  for (const claim of claims) await ctx.seen.release(claim.key, claim.reservationId);
 }
 
 // ---------------------------------------------------------------------------
@@ -192,20 +378,65 @@ async function resolveScopes(
 
   let scopes: Record<string, unknown>[] = [{}];
   for (const option of recipe.config) {
-    const res = await ctx.fetch(option.discover.request, ctx.vars);
-    const root = await res.json();
-    // With `items` it's a list (one scope per element); without, a single scalar
-    // read off the root (e.g. `account_id` for a single-account API).
-    const raw = option.discover.items
-      ? getArray(root, option.discover.items).map((item) => extract(item, option.discover.value))
-      : [extract(root, option.discover.value)];
+    const raw: unknown[] = [];
+    const paginate = option.discover.paginate;
+    if (paginate && !option.discover.items) {
+      throw new UnexpectedResponse(200, `configuration pagination requires items for "${option.id}"`, recipe.id);
+    }
+    const cursorVariable = paginate?.variable ?? "cursor";
+    let cursor = "";
+    const cursors = new Set<string>();
+    const maxPages = paginate?.maxPages ?? 20;
+    for (let page = 0; page < (paginate ? maxPages : 1); page++) {
+      const res = await ctx.fetch(option.discover.request, { ...ctx.vars, ...(paginate ? { [cursorVariable]: cursor } : {}) });
+      if (res.status === 401) throw new AuthExpired(recipe.id);
+      if (!res.ok) throw new UnexpectedResponse(res.status, `configuration discovery failed for "${option.id}"`, recipe.id);
+      const root = await res.json();
+      // With `items` it's a list (one scope per element); without, a single scalar
+      // read off the root (e.g. `account_id` for a single-account API).
+      const items = option.discover.items ? getArray(root, option.discover.items) : undefined;
+      raw.push(...(items
+        ? items.map((item) => extract(item, option.discover.value))
+        : [extract(root, option.discover.value)]));
+      if (raw.length > MAX_CONFIG_VALUES_PER_OPTION) {
+        throw new UnexpectedResponse(200, `configuration discovery exceeded ${MAX_CONFIG_VALUES_PER_OPTION} values for "${option.id}"`, recipe.id);
+      }
+      if (!paginate) break;
+      const hasMore = paginate.hasMore ? Boolean(get(root, paginate.hasMore)) : true;
+      if (!hasMore) break;
+      const nextValue = get(root, paginate.cursor);
+      if (nextValue === undefined || nextValue === null || nextValue === "") {
+        if (paginate.hasMore) throw new UnexpectedResponse(200, `configuration discovery continuation failed for "${option.id}"`, recipe.id);
+        break;
+      }
+      if ((typeof nextValue !== "string" && typeof nextValue !== "number") || String(nextValue).length > 2_048) {
+        throw new UnexpectedResponse(200, `configuration discovery cursor is invalid for "${option.id}"`, recipe.id);
+      }
+      const nextCursor = String(nextValue);
+      if (cursors.has(nextCursor)) throw new UnexpectedResponse(200, `configuration discovery cursor repeated for "${option.id}"`, recipe.id);
+      if (page + 1 >= maxPages) throw new UnexpectedResponse(200, `configuration discovery reached its page cap for "${option.id}"`, recipe.id);
+      cursors.add(nextCursor);
+      cursor = nextCursor;
+    }
     const values = raw.filter((v) => v !== undefined && v !== null && v !== "");
+    if (values.length === 0) {
+      throw new UnexpectedResponse(200, `configuration discovery yielded no value for "${option.id}"`, recipe.id);
+    }
+    if (recipe.id.startsWith("discovered-") && values.some((value) => !isBoundedTenantIdentifierSegment(String(value)))) {
+      throw new UnexpectedResponse(200, `discovered configuration scope "${option.id}" is not a bounded tenant identifier`, recipe.id);
+    }
 
+    if (scopes.length > Math.floor(MAX_EXPANDED_SCOPES / values.length)) {
+      throw new UnexpectedResponse(200, `configuration discovery exceeded ${MAX_EXPANDED_SCOPES} expanded scopes`, recipe.id);
+    }
     const next: Record<string, unknown>[] = [];
     for (const scope of scopes) {
       for (const value of values) next.push({ ...scope, [option.id]: value });
     }
-    scopes = next.length ? next : scopes;
+    if (next.length === 0) {
+      throw new UnexpectedResponse(200, `configuration discovery yielded no scopes for "${option.id}"`, recipe.id);
+    }
+    scopes = next;
   }
   return scopes;
 }

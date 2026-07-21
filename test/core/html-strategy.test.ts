@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractEmbeddedJson, extractRows, htmlStrategy } from "../../src/core/strategies/html";
+import { extractEmbeddedJson, extractRows, htmlStrategy, MAX_ROW_REGEX_INPUT_CHARS } from "../../src/core/strategies/html";
 import { mapListResponse } from "../../src/core/strategies/network";
 import type { HttpResponse, RequestSpec, RunContext, VendorRecipe } from "../../src/core/types";
 import type { HtmlListSpec } from "../../src/core/types";
@@ -61,6 +61,18 @@ describe("html strategy — embedded JSON extraction", () => {
   });
 });
 
+describe("html strategy — bounded row regex extraction", () => {
+  it("rejects an oversized supplier page before running the recipe regex", () => {
+    const spec: HtmlListSpec = {
+      request: { url: "https://vendor.example/billing" },
+      rowRegex: 'href="(?<documentUrl>[^"]+)"',
+      map: { id: "documentUrl", documentUrl: "documentUrl" },
+    };
+
+    expect(() => extractRows(spec, "a".repeat(MAX_ROW_REGEX_INPUT_CHARS + 1))).toThrow(/response exceeds/i);
+  });
+});
+
 describe("html strategy — row regex fallback", () => {
   it("turns each regex match's named groups into a row", () => {
     const html = `
@@ -104,17 +116,73 @@ describe("html strategy — full list run resolves relative links", () => {
         arrayBuffer: async () => new TextEncoder().encode(page).buffer,
         headers: { get: () => "text/html" },
       });
-    return { companyId: "co", vars: {}, seen: { has: async () => false, add: async () => {} }, fetch };
+    return { companyId: "co", vars: {}, seen: { has: async () => false, claimIfAbsent: async () => "test-reservation", release: async () => undefined, add: async () => {} }, fetch };
   }
 
   it("extracts unique receipts and makes their URLs absolute against the page", async () => {
-    const refs = await htmlStrategy.list(recipe, {}, ctx());
-    expect(refs.map((r) => r.documentUrl)).toEqual([
+    const result = await htmlStrategy.list(recipe, {}, ctx());
+    expect(result.refs.map((r) => r.documentUrl)).toEqual([
       "https://github.com/account/receipt/ch_AAA", // relative → absolute, deduped
       "https://github.com/account/receipt/ch_BBB",
     ]);
     // The dedup id is the raw href — stable & unique per receipt.
-    expect(refs[0].vendorInvoiceId).toBe("/account/receipt/ch_AAA");
-    expect(refs).toHaveLength(2); // the duplicate ch_AAA anchor collapsed
+    expect(result.refs[0].vendorInvoiceId).toBe("/account/receipt/ch_AAA");
+    expect(result.refs).toHaveLength(2); // the duplicate ch_AAA anchor collapsed
+    expect(result.retrieval).toMatchObject({ completeness: "complete", termination: "explicit_end" });
+  });
+
+  it("rejects rows without stable IDs instead of deduplicating them as undefined", async () => {
+    const invalidRecipe = {
+      ...recipe,
+      invoices: {
+        ...recipe.invoices,
+        list: {
+          ...recipe.invoices.list,
+          rowRegex: 'href="(?<documentUrl>[^\"]*/account/receipt/[^\"]*)"',
+          map: { id: "id", documentUrl: "documentUrl" },
+        },
+      },
+    } as VendorRecipe;
+
+    await expect(htmlStrategy.list(invalidRecipe, {}, ctx())).rejects.toThrow(/stable invoice id/i);
+  });
+
+  it("uses the rendered request URL or final redirect URL as the relative-link base", async () => {
+    const nestedRecipe = {
+      id: "nested-html",
+      invoices: {
+        strategy: "html",
+        list: {
+          request: { url: "https://vendor.example/{account}/billing/history/" },
+          rowRegex: 'href="(?<documentUrl>[^"]+)"',
+          map: { id: "documentUrl", documentUrl: "documentUrl" },
+        },
+        document: { contentType: "application/pdf" },
+      },
+    } as unknown as VendorRecipe;
+    const context = (url?: string): RunContext => ({
+      companyId: "co",
+      vars: {},
+      seen: { has: async () => false, claimIfAbsent: async () => "test-reservation", release: async () => undefined, add: async () => undefined },
+      fetch: async () => ({
+        status: 200,
+        ok: true,
+        url,
+        redirected: Boolean(url),
+        json: async () => ({}),
+        arrayBuffer: async () => new TextEncoder().encode('<a href="receipt.pdf">invoice</a>').buffer,
+        headers: { get: () => "text/html" },
+      }),
+    });
+
+    const rendered = await htmlStrategy.list(nestedRecipe, { account: "acme" }, context());
+    expect(rendered.refs[0].documentUrl).toBe("https://vendor.example/acme/billing/history/receipt.pdf");
+
+    const redirected = await htmlStrategy.list(
+      nestedRecipe,
+      { account: "acme" },
+      context("https://vendor.example/acme/billing/archive/"),
+    );
+    expect(redirected.refs[0].documentUrl).toBe("https://vendor.example/acme/billing/archive/receipt.pdf");
   });
 });

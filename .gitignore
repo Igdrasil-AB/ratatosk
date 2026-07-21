@@ -5,6 +5,7 @@ artifacts/
 .DS_Store
 .vite/
 coverage/
+.clawpatch/
 
 # local skills tooling (npx skills add) — not part of the project
 .claude/

@@ -1,4 +1,5 @@
 import { defineVendor } from "./define";
+import { STRIPE_KNOWN_DOCUMENT_HOSTS } from "../core/document-provider";
 
 /**
  * Anthropic (Claude) — subscription invoices from claude.ai.
@@ -37,9 +38,7 @@ export default defineVendor({
   icon: "anthropic",
   hosts: [
     "https://claude.ai/*",
-    "https://pay.stripe.com/*",
-    "https://invoice.stripe.com/*",
-    "https://files.stripe.com/*",
+    ...STRIPE_KNOWN_DOCUMENT_HOSTS,
   ],
   notes:
     "claude.ai subscription invoices; PDFs are Stripe capability URLs. claude.ai is behind Cloudflare, so requests run first-party via fetchContext: page.",
@@ -75,9 +74,11 @@ export default defineVendor({
       request: { url: "https://claude.ai/api/stripe/{org}/invoices?limit=100&page={cursor}" },
       items: "invoices",
       map: {
-        // The payload has no explicit invoice id, but `created_ts` is stable and
-        // unique per invoice, so it is the dedup key. (The Stripe URL is re-signed
-        // on every fetch and must NOT be used for identity.)
+        // The payload has no explicit invoice id, so `created_ts` is the stable
+        // semantic input. The engine namespaces it by the discovered org and,
+        // when one org contains same-second rows, adds a stable hash of their
+        // distinct document references. The Stripe URL itself is re-signed and
+        // must never be the sole cross-run identity.
         id: { path: "created_ts" },
         issuedAt: { path: "created_ts", transforms: [{ kind: "date", epoch: "s" }] },
         total: { path: "total", transforms: [{ kind: "divide", by: 100 }] },

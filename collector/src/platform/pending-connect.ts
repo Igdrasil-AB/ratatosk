@@ -9,6 +9,7 @@
 
 const KEY = "pendingVendorConnect";
 const MAX_AGE_MS = 5 * 60_000;
+let operationTail: Promise<void> = Promise.resolve();
 
 export interface PendingConnect {
   vendorId: string;
@@ -21,12 +22,18 @@ export async function setPendingConnect(
   origins: readonly string[],
   startedAt = Date.now(),
 ): Promise<void> {
-  await chrome.storage.session.set({
-    [KEY]: { vendorId, origins: [...origins], startedAt } satisfies PendingConnect,
+  return serializeOperation(async () => {
+    await chrome.storage.session.set({
+      [KEY]: { vendorId, origins: [...origins], startedAt } satisfies PendingConnect,
+    });
   });
 }
 
-export async function getPendingConnect(now = Date.now()): Promise<PendingConnect | null> {
+export function getPendingConnect(now = Date.now()): Promise<PendingConnect | null> {
+  return serializeOperation(() => getPendingConnectRaw(now));
+}
+
+async function getPendingConnectRaw(now: number): Promise<PendingConnect | null> {
   const value = (await chrome.storage.session.get(KEY))[KEY] as Partial<PendingConnect> | undefined;
   if (!isPendingConnect(value) || now - value.startedAt > MAX_AGE_MS || value.startedAt > now + 60_000) {
     if (value !== undefined) await chrome.storage.session.remove(KEY);
@@ -36,11 +43,19 @@ export async function getPendingConnect(now = Date.now()): Promise<PendingConnec
 }
 
 export async function clearPendingConnect(vendorId?: string): Promise<void> {
-  if (vendorId) {
-    const pending = await getPendingConnect();
-    if (!pending || pending.vendorId !== vendorId) return;
-  }
-  await chrome.storage.session.remove(KEY);
+  return serializeOperation(async () => {
+    if (vendorId) {
+      const pending = await getPendingConnectRaw(Date.now());
+      if (!pending || pending.vendorId !== vendorId) return;
+    }
+    await chrome.storage.session.remove(KEY);
+  });
+}
+
+function serializeOperation<T>(work: () => Promise<T>): Promise<T> {
+  const run = operationTail.then(work, work);
+  operationTail = run.then(() => undefined, () => undefined);
+  return run;
 }
 
 function isPendingConnect(value: Partial<PendingConnect> | undefined): value is PendingConnect {

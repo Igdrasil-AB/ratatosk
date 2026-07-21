@@ -24,18 +24,22 @@ import { isLifecycleRunnable, VENDOR_LIFECYCLE_BY_ID } from "./lifecycle";
  * belong here. Illustrative recipes stay available to contributors, but cannot
  * appear as working integrations in the consumer extension.
  */
-export const VENDORS: readonly VendorRecipe[] = [anthropic, chatgpt, railway];
+export const VENDORS: readonly VendorRecipe[] = Object.freeze([anthropic, chatgpt, railway]);
 
 /** Recipes retained as authoring examples; never shipped by Collector. */
-export const EXPERIMENTAL_VENDORS: readonly VendorRecipe[] = [github, slack, vercel];
+export const EXPERIMENTAL_VENDORS: readonly VendorRecipe[] = Object.freeze([github, slack, vercel]);
 
 /** CI validates both production and experimental recipes. */
-export const ALL_VENDORS: readonly VendorRecipe[] = [...VENDORS, ...EXPERIMENTAL_VENDORS];
+export const ALL_VENDORS: readonly VendorRecipe[] = Object.freeze([...VENDORS, ...EXPERIMENTAL_VENDORS]);
 
-/** Look up a recipe by its id. */
-export function getVendor(id: string): VendorRecipe | undefined {
+/** Look up an execution-ready recipe by its id. The optional lifecycle map is
+ * retained for callers that load a reviewed manifest independently. */
+export function getVendor(
+  id: string,
+  lifecycleById: Readonly<Record<string, import("./lifecycle").VendorLifecycleEntry>> = VENDOR_LIFECYCLE_BY_ID,
+): VendorRecipe | undefined {
   const recipe = VENDORS.find((v) => v.id === id);
-  const lifecycle = VENDOR_LIFECYCLE_BY_ID[id];
+  const lifecycle = lifecycleById[id];
   return recipe && lifecycle && isLifecycleRunnable(lifecycle) ? recipe : undefined;
 }
 

@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import railway from "../../src/vendors/railway";
 import { mapListResponse } from "../../src/core/strategies/network";
-import type { NetworkInvoices } from "../../src/core/types";
+import { runVendor, type StrategyMap } from "../../src/core/engine";
+import { createInvoiceListResult } from "../../src/core/retrieval";
+import { AuthFailure } from "../../src/core/errors";
+import type { HttpResponse, NetworkInvoices, RequestSpec, RunContext } from "../../src/core/types";
 import fixture from "./fixtures/railway.invoices.json";
 
 /**
@@ -35,15 +38,85 @@ describe("railway recipe", () => {
     expect((railway.auth.check.request as { method?: string }).method).toBe("POST");
   });
 
-  it("is multi-tenant: workspaceId is discovered from `me`, not hardcoded", () => {
+  it.each([
+    ["GraphQL errors", { errors: [{ message: "not authenticated" }], data: { me: null } }],
+    ["missing user data", { data: {} }],
+    ["empty application response", {}],
+  ])("rejects a status-200 auth response with %s", async (_label, body) => {
+    const strategy = {
+      list: async () => { throw new Error("listing must not run"); },
+      fetchDocument: async () => { throw new Error("document fetch must not run"); },
+    };
+    const ctx: RunContext = {
+      companyId: "company",
+      vars: {},
+      seen: { has: async () => false, claimIfAbsent: async () => "reservation", release: async () => undefined, add: async () => undefined },
+      fetch: async () => response(body),
+    };
+
+    await expect(runVendor(railway, ctx, {
+      network: strategy,
+      html: strategy,
+      dom: strategy,
+    } as unknown as StrategyMap)).rejects.toBeInstanceOf(AuthFailure);
+  });
+
+  it("is multi-tenant: workspaceId is discovered from every `me` workspace, not hardcoded", () => {
     // No workspace uuid baked anywhere in the recipe.
     expect(JSON.stringify(railway)).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/i);
     // The list body templates the discovered id…
     expect(list.request.body).toContain('"workspaceId":"{workspaceId}"');
-    // …resolved from the `me` query at the workspaces path.
+    // …resolved from every workspace in the `me` query.
     const opt = railway.config?.[0];
     expect(opt?.id).toBe("workspaceId");
-    expect(opt?.discover.value).toBe("data.me.workspaces.0.id");
+    expect(opt?.discover.items).toBe("data.me.workspaces");
+    expect(opt?.discover.value).toBe("id");
     expect(opt?.discover.request.body).toContain('"me"');
   });
+
+  it("executes a list traversal for each discovered billed workspace", async () => {
+    const listedScopes: string[] = [];
+    const strategy = {
+      list: async (_recipe: typeof railway, vars: Record<string, unknown>) => {
+        listedScopes.push(String(vars.workspaceId));
+        return createInvoiceListResult([], {
+          termination: "explicit_end",
+          pagesVisited: 1,
+          observedItems: 0,
+          resolvedItems: 0,
+          unresolvedItems: 0,
+        });
+      },
+      fetchDocument: async () => {
+        throw new Error("no documents should be fetched for empty workspace fixtures");
+      },
+    };
+    const strategies = { network: strategy, html: strategy, dom: strategy } as unknown as StrategyMap;
+    const ctx: RunContext = {
+      companyId: "company",
+      vars: {},
+      seen: { has: async () => false, claimIfAbsent: async () => "test-reservation", release: async () => undefined, add: async () => undefined },
+      fetch: async (request: RequestSpec): Promise<HttpResponse> => {
+        if (request.body?.includes('"operationName":"me"')) {
+          return response({ data: { me: { workspaces: [{ id: "workspace-a" }, { id: "workspace-b" }] } } });
+        }
+        return response({}); // Railway auth probe
+      },
+    };
+
+    const result = await runVendor(railway, ctx, strategies);
+
+    expect(listedScopes).toEqual(["workspace-a", "workspace-b"]);
+    expect(result.scopes).toMatchObject({ total: 2, succeeded: 2, empty: 2, failed: 0 });
+  });
 });
+
+function response(body: unknown): HttpResponse {
+  return {
+    status: 200,
+    ok: true,
+    json: async () => body,
+    arrayBuffer: async () => new ArrayBuffer(0),
+    headers: { get: () => "application/json" },
+  };
+}

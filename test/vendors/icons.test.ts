@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { brandIcon, iconSlugs } from "../../src/vendors/icons";
-import { VENDORS } from "../../src/vendors";
+import { ALL_VENDORS } from "../../src/vendors";
 
 /**
  * The logo pipeline: every vendor that declares an `icon` resolves to real SVG
@@ -8,8 +8,8 @@ import { VENDORS } from "../../src/vendors";
  * common vendors ready for future integrations.
  */
 describe("brand icons", () => {
-  it("resolves every vendor's declared icon to path data", () => {
-    for (const v of VENDORS) {
+  it("resolves every production and experimental vendor's declared icon to path data", () => {
+    for (const v of ALL_VENDORS) {
       if (!v.icon) continue; // no icon → letter avatar, that's fine
       const icon = brandIcon(v.icon);
       expect(icon, `${v.id} icon "${v.icon}"`).toBeDefined();
@@ -27,6 +27,9 @@ describe("brand icons", () => {
   it("falls back (undefined) for unknown or unset slugs", () => {
     expect(brandIcon(undefined)).toBeUndefined();
     expect(brandIcon("not-a-real-brand")).toBeUndefined();
+    expect(brandIcon("toString")).toBeUndefined();
+    expect(brandIcon("constructor")).toBeUndefined();
+    expect(brandIcon("__proto__")).toBeUndefined();
   });
 
   it("uses icon-overrides for brands simple-icons dropped (OpenAI, Slack)", () => {

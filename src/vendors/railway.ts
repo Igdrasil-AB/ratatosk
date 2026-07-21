@@ -1,4 +1,5 @@
 import { defineVendor } from "./define";
+import { STRIPE_KNOWN_DOCUMENT_HOSTS } from "../core/document-provider";
 
 /**
  * Railway — recorder-authored and now MULTI-TENANT. Billing is a GraphQL POST to
@@ -16,9 +17,9 @@ import { defineVendor } from "./define";
  *   • no `currency` field exists in the payload (Railway bills USD); the pipeline
  *     reads currency from the PDF.
  *
- * NOTE: discovery picks the FIRST workspace (`workspaces.0`). A user with several
- * billed workspaces would need array-config to enumerate them all (like the
- * Anthropic org handling); single-workspace is the common case.
+ * Workspace discovery enumerates every workspace, so the engine executes one
+ * bounded invoice traversal per billed workspace and deduplicates any invoice
+ * identity repeated across scopes.
  */
 const GRAPHQL = "https://backboard.railway.com/graphql/internal";
 const JSON_HEADERS = { "content-type": "application/json" };
@@ -46,9 +47,7 @@ export default defineVendor({
   hosts: [
     "https://railway.com/*",
     "https://backboard.railway.com/*",
-    "https://invoice.stripe.com/*",
-    "https://pay.stripe.com/*", // the actual PDF lives here
-    "https://files.stripe.com/*",
+    ...STRIPE_KNOWN_DOCUMENT_HOSTS,
   ],
   notes: "Recorder-authored, multi-tenant. workspaceId discovered from `me`; billing via enrichCustomer GraphQL; PDF = Stripe hosted URL rewritten to /pdf.",
 
@@ -56,18 +55,26 @@ export default defineVendor({
     // The `me` query is the login check — a 200 with workspaces means we're in.
     check: {
       request: { url: `${GRAPHQL}?q=me`, method: "POST", headers: JSON_HEADERS, body: ME_WORKSPACES },
-      expect: { statusIn: [200] },
+      expect: {
+        and: [
+          { statusIn: [200] },
+          { jsonPath: "data.me.workspaces", exists: true },
+          { jsonPath: "errors", exists: false },
+        ],
+      },
     },
     loginUrl: "https://railway.com/login",
   },
 
-  // Discover THIS user's workspace id so nothing is tied to one account.
+  // Discover every workspace id so a multi-workspace account cannot silently
+  // omit invoices after the first entry in the `me` response.
   config: [
     {
       id: "workspaceId",
       discover: {
         request: { url: `${GRAPHQL}?q=me`, method: "POST", headers: JSON_HEADERS, body: ME_WORKSPACES },
-        value: "data.me.workspaces.0.id",
+        items: "data.me.workspaces",
+        value: "id",
       },
     },
   ],
@@ -86,7 +93,7 @@ export default defineVendor({
         documentUrl: {
           path: "hostedURL",
           transforms: [
-            { kind: "replace", pattern: "^https://invoice\\.stripe\\.com/i/(.+?)(\\?.*)?$", with: "https://pay.stripe.com/invoice/$1/pdf$2" },
+            { kind: "replace", pattern: "^https://invoice\\.stripe\\.com/i/([^/?#]+)/([^/?#]+)(\\?.*)?$", with: "https://pay.stripe.com/invoice/$1/$2/pdf$3" },
           ],
         },
       },

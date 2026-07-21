@@ -9,6 +9,7 @@ describe("Igdrasil Collector credential storage", () => {
     vi.stubGlobal("chrome", {
       storage: {
         local: {
+          setAccessLevel: vi.fn(async () => undefined),
           get: vi.fn(async (key: string) => ({ [key]: values[key] })),
           set: vi.fn(async (next: Record<string, unknown>) => Object.assign(values, next)),
           remove: vi.fn(async (key: string) => { delete values[key]; }),
@@ -25,6 +26,9 @@ describe("Igdrasil Collector credential storage", () => {
     await setHostToken(token);
 
     await expect(getHostToken()).resolves.toBe(token);
+    expect(chrome.storage.local.setAccessLevel).toHaveBeenCalledWith({ accessLevel: "TRUSTED_CONTEXTS" });
+    expect(vi.mocked(chrome.storage.local.setAccessLevel).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(chrome.storage.local.set).mock.invocationCallOrder[0]);
   });
 
   it("rejects a general user session token", async () => {
@@ -32,5 +36,35 @@ describe("Igdrasil Collector credential storage", () => {
       "invalid backend token",
     );
     await expect(getHostToken()).resolves.toBeUndefined();
+  });
+
+  it.each(["eyJhbGciOiJSUzI1NiJ9.session.jwt", "rat_short", 42])(
+    "fails closed and clears an invalid persisted host credential",
+    async (invalidToken) => {
+      values.hostToken = invalidToken;
+
+      await expect(getHostToken()).resolves.toBeUndefined();
+      expect(values.hostToken).toBeUndefined();
+      expect(chrome.storage.local.remove).toHaveBeenCalledWith("hostToken");
+    },
+  );
+
+  it("fails closed when Chrome cannot restrict credential storage", async () => {
+    vi.resetModules();
+    const set = vi.fn(async () => undefined);
+    vi.stubGlobal("chrome", {
+      storage: {
+        local: {
+          setAccessLevel: vi.fn(async () => { throw new Error("unsupported"); }),
+          get: vi.fn(async () => ({})),
+          set,
+          remove: vi.fn(async () => undefined),
+        },
+      },
+    });
+    const auth = await import("../../collector/src/platform/auth");
+
+    await expect(auth.setHostToken(`rat_${"b".repeat(64)}`)).rejects.toThrow(/restrict Collector credential storage/);
+    expect(set).not.toHaveBeenCalled();
   });
 });

@@ -77,14 +77,16 @@ not infer a token source merely because any field name contains `token`.
 path while the synthetic token value is absent from the entry, report, draft,
 fingerprint, and snapshots.
 
-### 3. Make both capture backends use the same boundary
+### 3. Keep one private capture backend behind the shared boundary
 
-Rebuild page-relayed entries in the service worker exactly as today, but pass
-only raw input into the shared sanitizer. Do not let the MAIN-world interceptor
-declare data “safe.” Keep size limits and active-tab/session checks unchanged.
+The page-visible relay was retired because any page script could observe its
+messages before extension-side sanitization. Accept no `recorder:entry` runtime
+messages and keep silent capture fail-closed. Pass raw CDP input through the
+shared sanitizer before session persistence, with the existing size and session
+limits unchanged.
 
-**Verify**: debugger and page-relay fixture inputs produce equivalent sanitized
-entry shapes.
+**Verify**: an executable hostile CDP fixture reaches session storage only in
+sanitized form, while silent capture rejects and no page-relay intake exists.
 
 ### 4. Align disclosures and invariants
 
@@ -121,4 +123,3 @@ shows consistent language.
 
 Every new header retained in the allowlist requires a security review and a test
 proving why its value is necessary and non-sensitive.
-

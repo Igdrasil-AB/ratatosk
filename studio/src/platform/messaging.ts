@@ -20,11 +20,18 @@ export interface RecorderProgress {
   captured: number;
   documents: number;
   detected: boolean;
+  /** True when an accepted capture entry could not be persisted. */
+  storageFailed?: boolean;
+  /** True when a worker restart lost the intentionally ephemeral alias map. */
+  recoveryFailed?: boolean;
 }
 
 export interface RecorderStopResult {
   draft: DraftRecipe | null;
   captured: number;
+  requestCount: number;
+  artifactCount: number;
+  evidenceCount: number;
   samples: string[];
   docLinks: string[];
   report: string;

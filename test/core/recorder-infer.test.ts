@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { inferRecipe } from "../../src/core/recorder/infer";
-import { buildEntry } from "../../src/core/recorder/cdp";
+import { buildEntry, createCaptureRedactionContext } from "../../src/core/recorder/cdp";
 import type { CaptureSession } from "../../src/core/recorder/types";
 
 /**
@@ -75,7 +75,7 @@ describe("recorder inference — reconstructs the anthropic recipe from captured
     expect(list.map.total).toEqual({ path: "total", transforms: [{ kind: "divide", by: 100 }] });
     expect(list.map.currency).toEqual({ path: "currency", transforms: [{ kind: "upper" }] });
     expect(list.map.documentUrl).toBe("invoice_pdf_url"); // the /pdf one, not hosted_invoice_url
-    expect(list.paginate).toEqual({ cursor: "next_page" });
+    expect(list.paginate).toEqual({ cursor: "next_page", hasMore: "has_more" });
     expect(list.request.url).toBe(
       "https://claude.ai/api/stripe/org-11111111-2222-4333-8444-555555555555/invoices?limit=100&page={cursor}",
     );
@@ -419,6 +419,200 @@ describe("recorder inference — multi-tenant id discovery (ChatGPT-style)", () 
       },
     });
     expect(draft!.notes.some((n) => /Multi-tenant/.test(n))).toBe(true);
+  });
+});
+
+describe("recorder inference — sanitized multi-tenant capture", () => {
+  it("correlates session-local aliases without persisting the account identifier", () => {
+    const accountId = "00000000-0000-4000-8000-000000000092";
+    const context = createCaptureRedactionContext();
+    const draft = inferRecipe({
+      origin: "https://vendor.example",
+      entries: [
+        buildEntry({
+          url: "https://vendor.example/api/accounts/default",
+          method: "GET",
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ account: { account_id: accountId } }),
+          redactionContext: context,
+        }),
+        buildEntry({
+          url: `https://vendor.example/api/invoices?limit=100&account_id=${accountId}`,
+          method: "GET",
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ invoices: [{ id: "inv_1", created: "2026-07-01", amount: 1000 }] }),
+          redactionContext: context,
+        }),
+      ],
+    });
+
+    expect(draft).not.toBeNull();
+    const recipe = draft!.recipe as any;
+    expect(recipe.invoices.list.request.url).toBe("https://vendor.example/api/invoices?limit=100&account_id={account_id}");
+    expect(recipe.config).toEqual([{
+      id: "account_id",
+      discover: { request: { url: "https://vendor.example/api/accounts/default" }, value: "account.account_id" },
+    }]);
+    expect(JSON.stringify(draft)).not.toContain(accountId);
+    expect(JSON.stringify(draft)).not.toContain("REDACTED");
+  });
+
+  it("parameterizes one alias everywhere it scopes a URL and JSON request body", () => {
+    const organizationId = "00000000-0000-4000-8000-000000000094";
+    const context = createCaptureRedactionContext();
+    const draft = inferRecipe({
+      origin: "https://vendor.example",
+      entries: [
+        buildEntry({
+          url: "https://vendor.example/api/organizations/current",
+          method: "GET",
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ organization: { id: organizationId } }),
+          redactionContext: context,
+        }),
+        buildEntry({
+          url: `https://vendor.example/api/organizations/${organizationId}/invoices`,
+          method: "POST",
+          status: 200,
+          contentType: "application/json",
+          requestHeaders: { "content-type": "application/json" },
+          requestBody: JSON.stringify({ variables: { organizationId } }),
+          body: JSON.stringify({ invoices: [{ id: "inv_1", created: "2026-07-01", amount: 1000 }] }),
+          redactionContext: context,
+        }),
+      ],
+    });
+
+    expect(draft).not.toBeNull();
+    const recipe = draft!.recipe as any;
+    expect(recipe.config).toEqual([{
+      id: "organizationId",
+      discover: { request: { url: "https://vendor.example/api/organizations/current" }, value: "organization.id" },
+    }]);
+    expect(recipe.invoices.list.request).toMatchObject({
+      url: "https://vendor.example/api/organizations/{organizationId}/invoices",
+      body: JSON.stringify({ variables: { organizationId: "{organizationId}" } }),
+    });
+    expect(JSON.stringify(recipe)).not.toMatch(/(?:REDACTED|__ratatosk_ref_\d+__)/);
+  });
+
+  it("traces a sanitized identifier used only in a JSON request body", () => {
+    const workspaceId = "00000000-0000-4000-8000-000000000095";
+    const context = createCaptureRedactionContext();
+    const draft = inferRecipe({
+      origin: "https://vendor.example",
+      entries: [
+        buildEntry({
+          url: "https://vendor.example/api/workspaces/current",
+          method: "GET",
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ workspace: { id: workspaceId } }),
+          redactionContext: context,
+        }),
+        buildEntry({
+          url: "https://vendor.example/graphql",
+          method: "POST",
+          status: 200,
+          contentType: "application/json",
+          requestHeaders: { "content-type": "application/json" },
+          requestBody: JSON.stringify({
+            operationName: "BillingInvoices",
+            query: "query BillingInvoices($workspaceId: ID!) { invoices { id created amount } }",
+            variables: { workspaceId },
+          }),
+          body: JSON.stringify({ invoices: [{ id: "inv_1", created: "2026-07-01", amount: 1000 }] }),
+          redactionContext: context,
+        }),
+      ],
+    });
+
+    expect(draft).not.toBeNull();
+    const recipe = draft!.recipe as any;
+    expect(recipe.config).toEqual([{
+      id: "workspaceId",
+      discover: { request: { url: "https://vendor.example/api/workspaces/current" }, value: "workspace.id" },
+    }]);
+    expect(recipe.invoices.list.request.body).toContain('"workspaceId":"{workspaceId}"');
+    expect(JSON.stringify(recipe)).not.toMatch(new RegExp(`${workspaceId}|ref_\\d+|REDACTED`));
+  });
+
+  it("does not emit a replay recipe with an unbound redacted URL value", () => {
+    const draft = inferRecipe({
+      origin: "https://vendor.example",
+      entries: [buildEntry({
+        url: "https://vendor.example/api/invoices?account_id=00000000-0000-4000-8000-000000000093",
+        method: "GET",
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ invoices: [{ id: "inv_1", created: "2026-07-01", amount: 1000 }] }),
+      })],
+    });
+
+    expect(draft).toBeNull();
+  });
+
+  it("does not emit a recipe when a redacted value survives in its auth/config request", () => {
+    const draft = inferRecipe({
+      origin: "https://vendor.example",
+      entries: [
+        {
+          url: "https://vendor.example/api/session?account=REDACTED",
+          method: "GET",
+          status: 200,
+          contentType: "application/json",
+          responseBody: JSON.stringify({ accessToken: "REDACTED" }),
+          redactedResponsePaths: ["accessToken"],
+        },
+        {
+          url: "https://vendor.example/api/invoices?limit=100",
+          method: "GET",
+          status: 200,
+          contentType: "application/json",
+          requestAuth: { scheme: "bearer", headerName: "authorization" },
+          responseBody: JSON.stringify({ invoices: [{ id: "inv_1", created: "2026-07-01", amount: 1000 }] }),
+        },
+      ],
+    });
+    expect(draft).toBeNull();
+  });
+
+  it("does not persist an untraced GraphQL variable into an inferred recipe", () => {
+    const workspaceId = "00000000-0000-4000-8000-000000000096";
+    const privateFilter = "Jane Example's confidential invoices";
+    const context = createCaptureRedactionContext();
+    const draft = inferRecipe({
+      origin: "https://vendor.example",
+      entries: [
+        buildEntry({
+          url: "https://vendor.example/api/workspaces/current",
+          method: "GET",
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ workspace: { id: workspaceId } }),
+          redactionContext: context,
+        }),
+        buildEntry({
+          url: "https://vendor.example/graphql",
+          method: "POST",
+          status: 200,
+          contentType: "application/json",
+          requestHeaders: { "content-type": "application/json" },
+          requestBody: JSON.stringify({
+            operationName: "BillingInvoices",
+            query: "query BillingInvoices($workspaceId: ID!, $status: String!, $filter: String!) { invoices { id created amount } }",
+            variables: { workspaceId, status: "paid", filter: privateFilter },
+          }),
+          body: JSON.stringify({ invoices: [{ id: "inv_1", created: "2026-07-01", amount: 1000 }] }),
+          redactionContext: context,
+        }),
+      ],
+    });
+
+    expect(draft).toBeNull();
   });
 });
 

@@ -6,6 +6,7 @@ import {
   type RecorderProgress,
   type RecorderStopResult,
 } from "../../platform/messaging";
+import { exclusiveAction } from "../exclusive-action";
 
 const app = document.getElementById("app") as HTMLElement;
 const error = document.getElementById("error") as HTMLElement;
@@ -36,20 +37,34 @@ function showConsent(): void {
   const consent = document.getElementById("consent") as HTMLInputElement;
   const start = document.getElementById("start") as HTMLButtonElement;
   consent.addEventListener("change", () => { start.disabled = !consent.checked; });
-  start.addEventListener("click", () => void startRecording());
+  const startOnce = exclusiveAction(startRecording);
+  start.addEventListener("click", () => void startOnce());
   void refreshOutbox();
 }
 
 async function startRecording(): Promise<void> {
   error.textContent = "";
+  const start = document.getElementById("start") as HTMLButtonElement | null;
+  if (start) {
+    start.disabled = true;
+    start.textContent = "Starting…";
+  }
   const response = await send({ type: "recorderStart" });
-  if (!response.ok) { error.textContent = response.error; return; }
+  if (!response.ok) {
+    error.textContent = response.error;
+    if (start) {
+      start.disabled = false;
+      start.textContent = "Start recording this page";
+    }
+    return;
+  }
   showRecording();
 }
 
 function showRecording(): void {
   app.innerHTML = `<section class="card"><div class="live"><span class="dot"></span><b>Recording</b><span id="progress">Waiting for billing traffic…</span></div><button id="stop">Stop and analyze</button></section>`;
-  document.getElementById("stop")?.addEventListener("click", () => void stopRecording());
+  const stopOnce = exclusiveAction(stopRecording);
+  document.getElementById("stop")?.addEventListener("click", () => void stopOnce());
   stopPolling();
   timer = setInterval(() => void poll(), 1200);
   void poll();
@@ -60,11 +75,18 @@ async function poll(): Promise<void> {
   if (!response.ok || !("progress" in response)) return;
   const p: RecorderProgress = response.progress;
   const el = document.getElementById("progress");
-  if (el) el.textContent = `${p.captured} captured${p.documents ? ` · ${p.documents} documents` : ""}${p.detected ? " · enough to analyze" : ""}`;
+  if (el) el.textContent = p.storageFailed || p.recoveryFailed
+    ? `${p.storageFailed ? "Capture storage failed" : "Recorder restarted"} · stop and retry the recording`
+    : `${p.captured} captured${p.documents ? ` · ${p.documents} documents` : ""}${p.detected ? " · enough to analyze" : ""}`;
 }
 
 async function stopRecording(): Promise<void> {
   stopPolling();
+  const stop = document.getElementById("stop") as HTMLButtonElement | null;
+  if (stop) {
+    stop.disabled = true;
+    stop.textContent = "Stopping…";
+  }
   const response = await send({ type: "recorderStop" });
   if (!response.ok || !("report" in response)) { error.textContent = response.ok ? "No report was produced" : response.error; return showConsent(); }
   showResult(response);
@@ -76,7 +98,7 @@ function showResult(result: RecorderStopResult): void {
   const preview = fingerprint ? JSON.stringify(fingerprint, null, 2) : "No structural fingerprint was produced.";
   app.innerHTML = `<section class="card result">
     <b>${esc(summary)}</b>
-    <span>${result.captured} captured entries analyzed.</span>
+    <span>${result.requestCount} network requests and ${result.artifactCount} rendered-page artifacts analyzed (${result.evidenceCount} total evidence entries).</span>
     <details><summary>Agent report</summary><pre>${esc(result.report.slice(0, 5000))}</pre></details>
     <button id="copy">Copy redacted report</button>
     <button class="secondary" id="download-report">Download redacted agent report</button>

@@ -9,7 +9,7 @@ Do not upload `dist/studio`, a repository archive, or the combined build output.
 
 **Summary (132 characters or fewer):**
 
-Collect your own supplier invoices from supported billing portals using your existing browser session—no passwords stored.
+Collect your own supplier invoices from billing portals using your existing browser session—no passwords stored.
 
 **Category:** Workflow & Planning
 
@@ -17,12 +17,18 @@ Collect your own supplier invoices from supported billing portals using your exi
 
 ## Detailed description
 
-Ratatosk collects your own supplier invoices and receipts from supported vendor
+Ratatosk collects your own supplier invoices and receipts from vendor
 billing portals and saves them to the destination you choose.
 
-Choose Igdrasil or a local Downloads folder, connect a supported vendor, and
+Choose Igdrasil or a local Downloads folder, connect a listed vendor, and
 select your schedule. Ratatosk then uses the session already open in Chrome to
 request that vendor's billing data, download new documents, and de-duplicate them.
+If a supplier is not listed, Find Invoices can check the page you opened and a
+small set of same-origin billing-related pages using packaged, read-only adapters.
+Ratatosk shows the detected name, domain, candidate count, and exact sites before
+it downloads anything. A local provisional supplier is kept only after a valid
+PDF is collected. After Connect & Collect, packaged bounded continuation can
+enumerate cursor, numbered, Next/Load More, and infinite-scroll invoice lists.
 
 Your vendor passwords and two-factor codes are never requested or stored.
 Ratatosk asks Chrome to use your existing vendor session; it does not read cookie
@@ -59,7 +65,7 @@ Ratatosk is open source: https://github.com/Igdrasil-AB/ratatosk
 - Does not ask for or store vendor passwords or 2FA codes
 - Does not read cookie values
 - Does not record network traffic or include developer recording tools
-- Does not request all-sites access
+- Does not receive access to every site at install time
 - Does not download remote code or remote vendor recipes
 - Does not track general browsing activity
 
@@ -91,9 +97,34 @@ own tab when that vendor rejects an extension service-worker request. It is used
 only for the invoice-collection feature and only after the user grants that
 vendor's optional host access.
 
+**activeTab** — Lets Ratatosk identify the current HTTPS supplier app after the
+user explicitly selects Find Invoices. After exact-origin approval, Ratatosk
+checks the active page and at most fourteen additional same-origin billing-related
+pages (fifteen total), to depth three. It is not used
+to monitor browsing.
+
+**sidePanel** — Keeps the Ratatosk Collector UI open in Chrome's side panel while
+the user reviews suppliers, grants access, or downloads invoices. It does not
+grant access to page contents or browsing history.
+
+**Optional tabs metadata** — When the user enables tab switching, lets the
+persistent side panel identify the current tab URL after moving between tabs.
+Ratatosk does not store a browsing history, and this permission does not grant
+access to page contents; every supplier origin is still approved separately.
+
+**webRequest** — Observes only the redirect URL and request ID for a document
+provider capability URL Ratatosk is already authorized to fetch. This detects
+when Stripe moves a PDF to a new exact regional origin so Ratatosk can ask the
+user to approve that origin and retry. It does not read request headers, cookies,
+or response bodies and cannot block or modify traffic; `webRequestBlocking` is
+not requested.
+
 **Optional host permissions** — Requested separately when the user connects a
-vendor. They cover only that recipe's billing and document hosts and are revoked
-on disconnect. Ratatosk does not request `<all_urls>`.
+vendor or selects Find Invoices. The manifest declares an optional HTTPS
+envelope so previously unknown suppliers are eligible, but it grants no access at
+installation. Runtime prompts request the exact billing and document origins,
+which are shown before collection and revoked on disconnect. Ratatosk does not
+request `<all_urls>`.
 
 **Content script on `https://accounting.igdrasil.se/*`** — Enables the user to
 connect, check, or disconnect Ratatosk from the Igdrasil web application. The
@@ -101,7 +132,8 @@ service worker re-validates the exact sender origin and accepts only HTTPS
 Igdrasil backend URLs. The same exact-host permission lets the service worker
 upload collected invoices; no broader Igdrasil or all-sites pattern is used.
 
-Ratatosk Collector does not request `debugger`, `tabs`, `activeTab`, or `cookies`.
+Ratatosk Collector does not request `debugger` or `cookies`. Optional `tabs`
+metadata access remains disabled unless the user enables tab switching.
 
 ## Data-use disclosures
 
@@ -125,8 +157,8 @@ to the destination the user selected. Data is not sold, used for advertising,
 used for creditworthiness or lending, or transferred for an unrelated purpose.
 
 **Privacy policy URL:**
-`https://github.com/Igdrasil-AB/ratatosk/blob/main/PRIVACY.md` (confirm the
-merged public page contains this exact policy before submission).
+`https://igdrasil.se/en/privacy/ratatosk/` (confirm the published page contains
+this exact policy before submission).
 
 ## Submission checklist
 
@@ -135,8 +167,10 @@ merged public page contains this exact policy before submission).
 - [ ] Run `npm run release:collector` from a clean, reviewed commit.
 - [ ] Confirm `npm audit --audit-level=high` reports no vulnerabilities.
 - [ ] Verify the ZIP checksum and archive contents.
-- [ ] Inspect the ZIP-root `manifest.json`: no Studio entries, `debugger`, `tabs`,
-      `activeTab`, `<all_urls>`, source maps, or remote scripts.
+- [ ] Inspect the ZIP-root `manifest.json`: no Studio entries, `debugger`,
+      cookies, `<all_urls>`, `webRequestBlocking`, source maps, or remote scripts;
+      `activeTab`, optional `tabs`, and observation-only `webRequest` are present
+      only for their documented flows.
 - [ ] Load the unpacked `dist/collector` in stable Chrome and complete the manual
       smoke test in `store/release-checklist.md`.
 - [ ] Live-test every vendor named in the description with a dedicated pilot

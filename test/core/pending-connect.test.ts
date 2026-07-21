@@ -48,6 +48,46 @@ describe("pending vendor connection handoff", () => {
     await expect(getPendingConnect(now + 1)).resolves.toMatchObject({ vendorId: "anthropic" });
   });
 
+  it("serializes a replacement handoff behind a vendor-scoped clear", async () => {
+    const now = Date.now();
+    await setPendingConnect("anthropic", ["https://claude.ai/*"], now);
+    let releaseRead: (() => void) | undefined;
+    const readBarrier = new Promise<void>((resolve) => { releaseRead = resolve; });
+    (chrome.storage.session.get as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(async (key: string) => {
+      const snapshot = { [key]: structuredClone(values[key]) };
+      await readBarrier;
+      return snapshot;
+    });
+
+    const clearing = clearPendingConnect("anthropic");
+    await vi.waitFor(() => expect(chrome.storage.session.get).toHaveBeenCalled());
+    const replacing = setPendingConnect("railway", ["https://railway.com/*"], now + 1);
+    releaseRead?.();
+    await Promise.all([clearing, replacing]);
+
+    await expect(getPendingConnect(now + 2)).resolves.toMatchObject({ vendorId: "railway" });
+  });
+
+  it("serializes a replacement handoff behind stale-record cleanup", async () => {
+    await setPendingConnect("anthropic", ["https://claude.ai/*"], 1_000);
+    let releaseRead: (() => void) | undefined;
+    const readBarrier = new Promise<void>((resolve) => { releaseRead = resolve; });
+    (chrome.storage.session.get as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(async (key: string) => {
+      const snapshot = { [key]: structuredClone(values[key]) };
+      await readBarrier;
+      return snapshot;
+    });
+
+    const expiring = getPendingConnect(1_000 + 5 * 60_000 + 1);
+    await vi.waitFor(() => expect(chrome.storage.session.get).toHaveBeenCalled());
+    const replacing = setPendingConnect("railway", ["https://railway.com/*"], 1_000 + 5 * 60_000 + 2);
+    releaseRead?.();
+    await expect(expiring).resolves.toBeNull();
+    await replacing;
+
+    await expect(getPendingConnect(1_000 + 5 * 60_000 + 3)).resolves.toMatchObject({ vendorId: "railway" });
+  });
+
   it("rejects malformed or non-HTTPS handoffs from session storage", async () => {
     values.pendingVendorConnect = {
       vendorId: "anthropic",

@@ -1,0 +1,1376 @@
+import {
+  createDiscoveredSupplierCandidateSet,
+  createDiscoveredSupplierProfile,
+  deriveSupplierDisplayName,
+  exactOriginPattern,
+  MAX_DISCOVERY_CANDIDATES,
+  safeEntryUrl,
+  reuseDiscoveredSupplierIdentity,
+  type DiscoveryAdapterId,
+  type DiscoveredSupplierCandidateSetV1,
+  type DiscoveredSupplierProfileV1,
+} from "../../../src/core/discovery";
+import { extract } from "../../../src/core/extract";
+import { assertAuthenticated } from "../../../src/core/auth";
+import { AuthExpired, AuthFailure } from "../../../src/core/errors";
+import { getArray } from "../../../src/core/jsonpath";
+import { inferRecipe } from "../../../src/core/recorder/infer";
+import type { CapturedEntry, DraftRecipe } from "../../../src/core/recorder/types";
+import { validateRecipe } from "../../../src/core/schema";
+import type { InvoiceRef, VendorRecipe } from "../../../src/core/types";
+import { DEFAULT_SAFE_CONCURRENCY, mapConcurrentOrdered } from "../../../src/core/concurrency";
+import {
+  canonicalDocumentProviderUrl,
+  documentProviderForUrl,
+  STRIPE_KNOWN_DOCUMENT_HOSTS,
+} from "../../../src/core/document-provider";
+import { buildRunContext, buildStrategies } from "./runtime";
+import {
+  DISCOVERY_DIAGNOSTIC_SCHEMA,
+  parseDiscoveryDiagnostic,
+  toDiagnosticRoute,
+  type DiscoveryAttemptEvidence,
+  type DiscoveryAttemptResult,
+  type DiscoveryDiagnosticV1,
+} from "./discovery-diagnostic";
+import {
+  EXPLORATION_DEADLINE_MS,
+  EXPLORATION_ROUTE_POLICY,
+  capExplorationProbeOptions,
+  explorationProbeOptions,
+  MAX_EXPLORATION_DEPTH,
+  MAX_EXPLORATION_PAGES,
+  planExplorationTargets,
+  rankExplorationQueue,
+  runWithinExplorationBudget,
+  safeExplorationUrl,
+  type ExplorationLinkEvidence,
+  type ExplorationPageSource,
+  type ExplorationTarget,
+} from "./discovery-explorer";
+import { COLLECTOR_RUNTIME_IDENTITY, formatCollectorRuntimeIdentity } from "./collector-runtime-identity";
+import discoveryPageObserverScript from "./discovery-page-observer?script&iife";
+import { getDiscoveredSuppliers } from "./discovered-suppliers";
+
+const DOM_LINK_SELECTOR = [
+  'a[href$=".pdf" i]',
+  'a[href*=".pdf?" i]',
+  'a[href*="/download" i]',
+  'a[href*="/pdf" i]',
+  'a[href*="/account/receipt/" i]',
+  'a[href*="invoice.stripe.com/i/" i]',
+  'a[aria-label*="download" i][href]',
+  'a[title*="download" i][href]',
+  "a[download]",
+].join(",");
+export const DISCOVERY_OBSERVER_REGISTRATION_ID = "ratatosk_discovery_observer";
+
+type ProbedResource = {
+  url: string;
+  method?: "GET" | "POST";
+  status: number;
+  contentType: string;
+  body: string;
+  requestBody?: string;
+  requestHeaders?: Record<string, string>;
+  source?: "observed" | "replayed";
+  hasLinkNext?: boolean;
+};
+
+export interface PageEvidence {
+  url: string;
+  origin: string;
+  title?: string;
+  applicationName?: string;
+  siteName?: string;
+  html: string;
+  resources: ProbedResource[];
+  navigationUrls: (string | ExplorationLinkEvidence)[];
+  crossOriginHosts: string[];
+  stats: {
+    documentLinks: number;
+    structuredData: number;
+    semanticControls: number;
+  };
+}
+
+type Candidate = { adapterId: DiscoveryAdapterId; recipe: VendorRecipe; previewCount?: number };
+
+export interface SupplierDiscoveryResult {
+  candidates: DiscoveredSupplierCandidateSetV1;
+  diagnostic: DiscoveryDiagnosticV1;
+}
+
+export class SupplierDiscoveryError extends Error {
+  constructor(readonly diagnostic: DiscoveryDiagnosticV1) {
+    super("no reusable invoice path was found after bounded same-origin exploration");
+    this.name = "SupplierDiscoveryError";
+  }
+}
+
+class CandidatePreviewError extends Error {
+  constructor(readonly code: DiscoveryAttemptResult) {
+    super(code);
+    this.name = "CandidatePreviewError";
+  }
+}
+
+export async function discoverSupplierInTab(
+  tabId: number,
+  expectedOrigin: string,
+  options: { shouldContinue?: () => Promise<boolean> } = {},
+): Promise<SupplierDiscoveryResult> {
+  console.info(`[collector] discovery started ${formatCollectorRuntimeIdentity()}`);
+  const startedAt = Date.now();
+  const explorationDeadline = startedAt + EXPLORATION_DEADLINE_MS;
+  const firstTab = await chrome.tabs.get(tabId);
+  const firstUrl = firstTab.url ? canonicalPageUrl(firstTab.url, expectedOrigin) : undefined;
+  if (!firstUrl) throw new Error("the supplier tab changed before discovery started");
+  const queue: ExplorationTarget[] = [{ url: firstUrl, depth: 0, source: "entry", score: Number.MAX_SAFE_INTEGER }];
+  const known = new Set([firstUrl]);
+  const pageObserver = new DiscoveryPageObserverRegistration(expectedOrigin);
+  await pageObserver.start();
+  const explorers = Array.from(
+    { length: DEFAULT_SAFE_CONCURRENCY.routeProbes },
+    () => new BackgroundExplorationTab(expectedOrigin),
+  );
+  const diagnostic = emptyDiagnostic(expectedOrigin);
+  let display: ReturnType<typeof deriveSupplierDisplayName> | undefined;
+  const retained: Array<{ profile: DiscoveredSupplierProfileV1; score: number }> = [];
+
+  try {
+    while (queue.length && diagnostic.pages.attempted < MAX_EXPLORATION_PAGES && Date.now() < explorationDeadline) {
+      if (options.shouldContinue && !(await options.shouldContinue())) throw new Error("supplier discovery was cancelled");
+      const remainingPages = MAX_EXPLORATION_PAGES - diagnostic.pages.attempted;
+      // The user's active entry tab is a unique trust boundary. Probe it alone,
+      // then explore independent read-only GET routes in deterministic waves.
+      const width = queue[0].source === "entry"
+        ? 1
+        : Math.min(DEFAULT_SAFE_CONCURRENCY.routeProbes, remainingPages);
+      const scheduled = queue.splice(0, Math.min(width, remainingPages)).map((target) => {
+        const page = diagnostic.pages.attempted + 1;
+        diagnostic.pages.attempted = page;
+        if (target.source === "linked") diagnostic.pages.linked += 1;
+        if (target.source === "common_route") diagnostic.pages.commonRoutes += 1;
+        return { target, page, pageStartedAt: Date.now() };
+      });
+      const probes = await mapConcurrentOrdered(scheduled, {
+        limit: DEFAULT_SAFE_CONCURRENCY.routeProbes,
+      }, async ({ target }, index) => {
+        const remainingMs = explorationDeadline - Date.now();
+        if (remainingMs <= 0) throw new Error("supplier exploration deadline exceeded");
+        const baseOptions = target.source === "entry"
+          ? { settleMs: 350, maxResources: 2, deadlineMs: 3_000 }
+          : explorationProbeOptions(target);
+        const probeOptions = capExplorationProbeOptions(baseOptions, remainingMs);
+        const probe = target.source === "entry"
+          ? probeSupplierTab(tabId, expectedOrigin, probeOptions)
+          : explorers[index].probe(target.url, probeOptions);
+        return runWithinExplorationBudget(probe, remainingMs);
+      });
+
+      for (const probe of probes) {
+        const { target, page, pageStartedAt } = scheduled[probe.index];
+        if (probe.status !== "fulfilled") {
+          recordAttempt(diagnostic, page, target.source, undefined, "probe_failed", Date.now() - pageStartedAt, {
+            route: target.url,
+          });
+          if (target.source === "entry") {
+            enqueueTargets(queue, known, planExplorationTargets({
+              origin: expectedOrigin,
+              contextUrl: target.url,
+              links: [],
+              visited: known,
+              nextDepth: 1,
+              includeCommonRoutes: true,
+            }));
+          }
+          continue;
+        }
+
+        const evidence = probe.value;
+        display ??= deriveSupplierDisplayName({
+          origin: evidence.origin,
+          applicationName: evidence.applicationName,
+          siteName: evidence.siteName,
+          title: evidence.title,
+        });
+        const resolvedPage = canonicalPageUrl(evidence.url, expectedOrigin);
+        if (resolvedPage && resolvedPage !== target.url) {
+          known.add(resolvedPage);
+          for (let index = queue.length - 1; index >= 0; index -= 1) {
+            if (queue[index].url === resolvedPage) queue.splice(index, 1);
+          }
+        }
+        diagnostic.evidence.jsonResources += evidence.resources.length;
+        diagnostic.evidence.observedRequests += evidence.resources.filter((resource) => resource.source === "observed").length;
+        diagnostic.evidence.replayedRequests += evidence.resources.filter((resource) => resource.source === "replayed").length;
+        diagnostic.evidence.documentLinks += evidence.stats.documentLinks;
+        if (evidence.stats.structuredData > 0) diagnostic.evidence.structuredDataPages += 1;
+        for (const host of evidence.crossOriginHosts) {
+          if (diagnostic.evidence.crossOriginHosts.length >= 8) break;
+          if (!diagnostic.evidence.crossOriginHosts.includes(host)) diagnostic.evidence.crossOriginHosts.push(host);
+        }
+
+        const entryUrl = safeEntryUrl(evidence.url);
+        const candidates = compileCandidates(evidence, entryUrl, display.name);
+        diagnostic.candidates.compiled += candidates.length;
+        const routeEvidence = diagnosticEvidence(evidence);
+        if (!candidates.length) recordAttempt(diagnostic, page, target.source, undefined, "no_candidate", Date.now() - pageStartedAt, {
+          route: target.url,
+          resolvedRoute: evidence.url,
+          evidence: routeEvidence,
+        });
+
+        const evaluations = await mapConcurrentOrdered(candidates, {
+          limit: DEFAULT_SAFE_CONCURRENCY.candidatePreviews,
+        }, async (candidate) => {
+          const candidateCount = candidate.previewCount ?? await (async () => {
+            diagnostic.candidates.previewed += 1;
+            return previewCandidate(candidate.recipe);
+          })();
+          return { candidate, candidateCount };
+        });
+        for (const evaluation of evaluations) {
+          if (evaluation.status === "cancelled") continue;
+          if (evaluation.status === "rejected") {
+            const candidate = candidates[evaluation.index];
+            recordAttempt(diagnostic, page, target.source, candidate.adapterId, previewResult(evaluation.error), Date.now() - pageStartedAt, {
+              route: target.url,
+              resolvedRoute: evidence.url,
+              evidence: routeEvidence,
+            });
+            continue;
+          }
+          const { candidate, candidateCount } = evaluation.value;
+          try {
+            console.info(
+              `[collector] discovery page ${page}/${MAX_EXPLORATION_PAGES} (${target.source}) ${candidate.adapterId} -> ${candidate.previewCount ? "deferred-canary" : "previewed"}`,
+            );
+            retainCandidate(retained, {
+              score: candidateScore(candidate.adapterId, candidateCount, target.score),
+              profile: createDiscoveredSupplierProfile({
+                primaryOrigin: evidence.origin,
+                entryUrl,
+                displayName: display.name,
+                nameSource: display.source,
+                nameConfidence: display.confidence,
+                adapterId: candidate.adapterId,
+                candidateCount,
+                recipe: candidate.recipe,
+              }),
+            });
+            recordAttempt(diagnostic, page, target.source, candidate.adapterId, "candidate_compiled", Date.now() - pageStartedAt, {
+              route: target.url,
+              resolvedRoute: evidence.url,
+              evidence: routeEvidence,
+            });
+          } catch {
+            recordAttempt(diagnostic, page, target.source, candidate.adapterId, "policy_rejected", Date.now() - pageStartedAt, {
+              route: target.url,
+              resolvedRoute: evidence.url,
+              evidence: routeEvidence,
+            });
+          }
+        }
+
+        if (target.depth < MAX_EXPLORATION_DEPTH) {
+          const planned = planExplorationTargets({
+            origin: expectedOrigin,
+            contextUrl: evidence.url,
+            links: evidence.navigationUrls,
+            visited: known,
+            nextDepth: target.depth + 1,
+            includeCommonRoutes: target.source === "entry",
+          });
+          enqueueTargets(queue, known, planned);
+        }
+      }
+      if (hasEnoughStrongCandidates(retained)) break;
+    }
+  } finally {
+    await disposeDiscoveryResources(explorers, pageObserver, [tabId]);
+  }
+
+  if (retained.length) {
+    retained.sort((left, right) => right.score - left.score || left.profile.entryUrl.localeCompare(right.profile.entryUrl));
+    diagnostic.timing.elapsedMs = Math.min(120_000, Math.max(0, Date.now() - startedAt));
+    diagnostic.candidates.retained = retained.length;
+    diagnostic.termination = "candidate_set_complete";
+    diagnostic.result = "candidates_found";
+    const existing = Object.values(await getDiscoveredSuppliers())
+      .find((profile) => profile.primaryOrigin === new URL(expectedOrigin).origin);
+    const profiles = retained.map((candidate) => reuseDiscoveredSupplierIdentity(candidate.profile, existing));
+    return {
+      candidates: createDiscoveredSupplierCandidateSet(profiles),
+      diagnostic: parseDiscoveryDiagnostic(diagnostic),
+    };
+  }
+
+  diagnostic.timing.elapsedMs = Math.min(120_000, Math.max(0, Date.now() - startedAt));
+  diagnostic.termination = queue.length && diagnostic.pages.attempted >= MAX_EXPLORATION_PAGES
+    ? "page_cap"
+    : Date.now() - startedAt >= EXPLORATION_DEADLINE_MS ? "time_cap" : "queue_exhausted";
+  diagnostic.result = diagnostic.termination === "queue_exhausted" ? "not_found" : "limit_reached";
+  throw new SupplierDiscoveryError(parseDiscoveryDiagnostic(diagnostic));
+}
+
+export async function disposeDiscoveryResources(
+  explorers: ReadonlyArray<{ dispose(): Promise<void> }>,
+  observer: { dispose(tabIds: readonly number[]): Promise<void> },
+  observedTabIds: readonly number[],
+  warn: (message: string, error: unknown) => void = (message, error) => console.warn(message, error),
+): Promise<void> {
+  const explorerResults = await Promise.allSettled(explorers.map((explorer) => explorer.dispose()));
+  // Observer cleanup is independent and must run even when closing a temporary
+  // exploration tab fails. Cleanup errors are diagnostic, never a replacement
+  // for the discovery result or its primary exception.
+  const [observerResult] = await Promise.allSettled([observer.dispose(observedTabIds)]);
+  for (const result of explorerResults) {
+    if (result.status === "rejected") warn("[collector] exploration-tab cleanup failed", result.reason);
+  }
+  if (observerResult.status === "rejected") {
+    warn("[collector] discovery-observer cleanup failed", observerResult.reason);
+  }
+}
+
+export async function previewCandidate(recipe: VendorRecipe): Promise<number> {
+  let run: ReturnType<typeof buildRunContext>;
+  try {
+    run = buildRunContext("discovery-preview", recipe);
+  } catch {
+    throw new CandidatePreviewError("policy_rejected");
+  }
+  const { ctx, dispose } = run;
+  try {
+    // A DOM candidate's list operation inspects the exact authenticated page
+    // that produced the evidence. That is stronger than issuing a second page
+    // GET, and avoids rejecting sites that allow navigation but block scripted
+    // document fetches. Non-DOM candidates still require the explicit auth probe.
+    if (recipe.invoices.strategy !== "dom") {
+      try {
+        await assertAuthenticated(recipe, ctx);
+      } catch (error) {
+        if (error instanceof AuthExpired) throw new CandidatePreviewError("auth_expired");
+        if (error instanceof AuthFailure) {
+          const code = error.kind === "insufficient_scope"
+            ? "auth_scope_denied"
+            : error.kind === "transport_failed" ? "transport_failed" : "auth_blocked";
+          throw new CandidatePreviewError(code);
+        }
+        throw new CandidatePreviewError("auth_failed");
+      }
+    }
+
+    let scopes: Record<string, unknown>[];
+    try {
+      scopes = await resolvePreviewScopes(recipe, ctx);
+    } catch {
+      throw new CandidatePreviewError("scope_failed");
+    }
+    // Discovery verifies one source page only. Full pagination is deliberately
+    // deferred until Connect & Collect so search stays fast and side effects
+    // remain bounded to the user's collection action.
+    const previewRecipe = recipeForPreview(recipe);
+    const strategy = buildStrategies(previewRecipe)[previewRecipe.invoices.strategy];
+    const refs: InvoiceRef[] = [];
+    for (const scope of scopes.slice(0, 20)) {
+      try {
+        refs.push(...(await strategy.list(previewRecipe, { ...ctx.vars, ...scope }, ctx)).refs);
+      } catch {
+        throw new CandidatePreviewError("list_failed");
+      }
+      if (refs.length > 500) throw new CandidatePreviewError("too_many_documents");
+    }
+    const allowedOrigins = new Set(recipe.hosts.map((host) => new URL(host.slice(0, -2)).origin));
+    const ids = new Set<string>();
+    for (const ref of refs) {
+      if (!ref.vendorInvoiceId || ref.vendorInvoiceId === "undefined" || ref.vendorInvoiceId === "null") {
+        throw new CandidatePreviewError("invalid_identity");
+      }
+      if (ids.has(ref.vendorInvoiceId)) continue;
+      ids.add(ref.vendorInvoiceId);
+      if (!ref.documentUrl && !recipe.invoices.document.request) throw new CandidatePreviewError("invalid_document_path");
+      if (ref.documentUrl) {
+        let document: URL;
+        try { document = new URL(ref.documentUrl); } catch { throw new CandidatePreviewError("invalid_document_path"); }
+        if (document.protocol !== "https:" || document.username || document.password || !allowedOrigins.has(document.origin)) {
+          throw new CandidatePreviewError("unapproved_document_origin");
+        }
+      }
+    }
+    if (!ids.size) throw new CandidatePreviewError("no_documents");
+    return ids.size;
+  } finally {
+    await dispose();
+  }
+}
+
+function recipeForPreview(recipe: VendorRecipe): VendorRecipe {
+  const preview = structuredClone(recipe);
+  if (preview.invoices.strategy === "network" && preview.invoices.list.paginate) {
+    preview.invoices.list.paginate.maxPages = 1;
+  }
+  if (preview.invoices.strategy === "dom") delete preview.invoices.list.continuation;
+  return preview;
+}
+
+export function compileCandidates(evidence: PageEvidence, entryUrl: string, displayName: string): Candidate[] {
+  const candidates: Candidate[] = [];
+  const resourceEntries: CapturedEntry[] = evidence.resources.map((resource) => ({
+    url: resource.url,
+    method: resource.method ?? "GET",
+    status: resource.status,
+    contentType: resource.contentType,
+    requestBody: resource.requestBody,
+    requestHeaders: resource.requestHeaders,
+    responseBody: resource.body,
+  }));
+  const networkDraft = resourceEntries.length
+    ? inferRecipe({ origin: evidence.origin, entries: resourceEntries })
+    : null;
+  if (
+    networkDraft && networkDraft.identity.kind !== "date_fallback" &&
+    (networkDraft.recipe.invoices as { strategy?: string })?.strategy === "network"
+  ) {
+    const list = (networkDraft.recipe.invoices as { list?: { request?: { url?: string }; paginate?: unknown } }).list;
+    const matchingResource = evidence.resources.find((resource) => resource.url === list?.request?.url);
+    if (matchingResource?.hasLinkNext && list && !list.paginate) list.paginate = { kind: "link-header" };
+    const candidate = recipeFromDraft(networkDraft, evidence.origin, entryUrl, displayName);
+    if (candidate) candidates.push({ adapterId: "network-json", recipe: candidate });
+  }
+
+  const domEntry: CapturedEntry = {
+    url: evidence.url,
+    method: "DOM",
+    status: 200,
+    contentType: "text/html",
+    responseBody: evidence.html,
+  };
+  const embeddedDraft = inferRecipe({ origin: evidence.origin, entries: [domEntry] });
+  if (
+    embeddedDraft && embeddedDraft.identity.kind !== "date_fallback" &&
+    (embeddedDraft.recipe.invoices as { strategy?: string })?.strategy === "html"
+  ) {
+    const invoices = embeddedDraft.recipe.invoices as { list?: { embeddedJson?: boolean } };
+    if (invoices.list?.embeddedJson) {
+      const candidate = recipeFromDraft(embeddedDraft, evidence.origin, entryUrl, displayName);
+      if (candidate) candidates.push({ adapterId: "embedded-json", recipe: candidate });
+    }
+  }
+
+  const links = findLikelyDocumentLinks(evidence.html, entryUrl, evidence.title);
+  const domCandidate = links.length ? directDomRecipe(evidence.origin, entryUrl, displayName, links) : undefined;
+  if (domCandidate) candidates.push({ adapterId: "dom-links", recipe: domCandidate, previewCount: Math.min(500, links.length) });
+  const semanticCandidate = evidence.stats.semanticControls > 0
+    ? semanticDomRecipe(evidence.origin, entryUrl, displayName, evidence.crossOriginHosts)
+    : undefined;
+  if (semanticCandidate) {
+    candidates.push({
+      adapterId: "dom-actions",
+      recipe: semanticCandidate,
+      // Search remains read-only. The action is verified only after the user
+      // explicitly chooses Connect & Collect.
+      previewCount: Math.min(500, evidence.stats.semanticControls),
+    });
+  }
+  return candidates;
+}
+
+type ProbeOptions = { settleMs: number; maxResources: number; deadlineMs: number };
+
+export async function probeSupplierTab(
+  tabId: number,
+  expectedOrigin: string,
+  options: ProbeOptions = { settleMs: 350, maxResources: 2, deadlineMs: 3_000 },
+): Promise<PageEvidence> {
+  const tab = await chrome.tabs.get(tabId);
+  const currentUrl = tab.url ? new URL(tab.url) : undefined;
+  if (!currentUrl || currentUrl.protocol !== "https:" || currentUrl.origin !== expectedOrigin) {
+    throw new Error("the supplier tab changed before discovery started");
+  }
+  const [injection] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: collectPageEvidenceInPage,
+    args: [options, { ...EXPLORATION_ROUTE_POLICY, documentSelector: DOM_LINK_SELECTOR }],
+  });
+  return parsePageEvidence(injection?.result, expectedOrigin, options);
+}
+
+export function parsePageEvidence(value: unknown, expectedOrigin: string, options: ProbeOptions): PageEvidence {
+  const invalid = (): never => { throw new Error("supplier page evidence is invalid"); };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return invalid();
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.origin !== "string" || raw.origin !== expectedOrigin || typeof raw.url !== "string" || raw.url.length > 2_048) return invalid();
+  let page: URL;
+  try { page = new URL(raw.url); } catch { return invalid(); }
+  if (page.protocol !== "https:" || page.origin !== expectedOrigin || page.username || page.password) return invalid();
+  const boundedText = (item: unknown, maximum: number): item is string | undefined => item === undefined || (typeof item === "string" && item.length <= maximum);
+  if (!boundedText(raw.title, 160) || !boundedText(raw.applicationName, 160) || !boundedText(raw.siteName, 160)) return invalid();
+  if (typeof raw.html !== "string" || raw.html.length > 750_000) return invalid();
+  if (!Array.isArray(raw.resources) || raw.resources.length > options.maxResources) return invalid();
+  const observedHosts = Array.isArray(raw.crossOriginHosts) ? raw.crossOriginHosts : [];
+  const allowedResourceOrigins = new Set([expectedOrigin]);
+  for (const item of observedHosts) {
+    if (typeof item !== "string" || item.length > 253 || item.includes(":")) return invalid();
+    try {
+      exactOriginPattern(`https://${item}`);
+      allowedResourceOrigins.add(`https://${item}`);
+    } catch { return invalid(); }
+  }
+  const resources: ProbedResource[] = [];
+  let totalBody = 0;
+  for (const item of raw.resources) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return invalid();
+    const resource = item as Record<string, unknown>;
+    if (
+      typeof resource.url !== "string" || resource.url.length > 2_048 ||
+      !Number.isInteger(resource.status) || Number(resource.status) < 0 || Number(resource.status) > 599 ||
+      typeof resource.contentType !== "string" || resource.contentType.length > 256 ||
+      typeof resource.body !== "string" || resource.body.length > 256_000 ||
+      (resource.method !== undefined && resource.method !== "GET" && resource.method !== "POST") ||
+      (resource.requestBody !== undefined && (typeof resource.requestBody !== "string" || resource.requestBody.length > 65_536)) ||
+      (resource.requestHeaders !== undefined && !isSafeObservedRequestHeaders(resource.requestHeaders)) ||
+      (resource.source !== undefined && resource.source !== "observed" && resource.source !== "replayed") ||
+      (resource.hasLinkNext !== undefined && typeof resource.hasLinkNext !== "boolean")
+    ) return invalid();
+    let url: URL;
+    try { url = new URL(resource.url); } catch { return invalid(); }
+    if (url.protocol !== "https:" || !allowedResourceOrigins.has(url.origin) || url.username || url.password || url.hash) return invalid();
+    totalBody += resource.body.length;
+    if (totalBody > 768_000) return invalid();
+    resources.push({
+      url: url.toString(),
+      status: Number(resource.status),
+      contentType: resource.contentType,
+      body: resource.body,
+      ...(resource.method ? { method: resource.method } : {}),
+      ...(typeof resource.requestBody === "string" ? { requestBody: resource.requestBody } : {}),
+      ...(resource.requestHeaders ? { requestHeaders: resource.requestHeaders as Record<string, string> } : {}),
+      ...(resource.source ? { source: resource.source } : {}),
+      hasLinkNext: resource.hasLinkNext === true,
+    });
+  }
+  if (!Array.isArray(raw.navigationUrls) || raw.navigationUrls.length > 80) return invalid();
+  const navigationUrls: (string | ExplorationLinkEvidence)[] = [];
+  for (const item of raw.navigationUrls) {
+    if (typeof item === "string") {
+      if (item.length > 2_048) return invalid();
+      const safe = safeExplorationUrl(item, expectedOrigin);
+      if (!safe) return invalid();
+      navigationUrls.push(safe);
+      continue;
+    }
+    if (!item || typeof item !== "object" || Array.isArray(item)) return invalid();
+    const evidence = item as Record<string, unknown>;
+    if (
+      typeof evidence.url !== "string" || evidence.url.length > 2_048 ||
+      (evidence.label !== undefined && (typeof evidence.label !== "string" || evidence.label.length > 160)) ||
+      (evidence.context !== undefined && (typeof evidence.context !== "string" || evidence.context.length > 240))
+    ) return invalid();
+    const label = typeof evidence.label === "string" ? evidence.label.replace(/\s+/g, " ").trim() : undefined;
+    const context = typeof evidence.context === "string" ? evidence.context.replace(/\s+/g, " ").trim() : undefined;
+    const semantic = `${label ?? ""} ${context ?? ""}`.trim();
+    const safe = safeExplorationUrl(evidence.url, expectedOrigin, semantic, { allowBridgeIntent: true });
+    if (!safe) return invalid();
+    navigationUrls.push(label || context ? { url: safe, ...(label ? { label } : {}), ...(context ? { context } : {}) } : safe);
+  }
+  if (!Array.isArray(raw.crossOriginHosts) || raw.crossOriginHosts.length > 8) return invalid();
+  const crossOriginHosts: string[] = [];
+  for (const item of raw.crossOriginHosts) {
+    if (typeof item !== "string" || item.length > 253 || item.includes(":")) return invalid();
+    try { exactOriginPattern(`https://${item}`); } catch { return invalid(); }
+    crossOriginHosts.push(item);
+  }
+  if (!raw.stats || typeof raw.stats !== "object" || Array.isArray(raw.stats)) return invalid();
+  const stats = raw.stats as Record<string, unknown>;
+  const boundedCount = (item: unknown) => Number.isInteger(item) && Number(item) >= 0 && Number(item) <= 1_000;
+  if (!boundedCount(stats.documentLinks) || !boundedCount(stats.structuredData) || !boundedCount(stats.semanticControls)) return invalid();
+  return {
+    url: page.toString(),
+    origin: expectedOrigin,
+    title: raw.title as string | undefined,
+    applicationName: raw.applicationName as string | undefined,
+    siteName: raw.siteName as string | undefined,
+    html: raw.html,
+    resources,
+    navigationUrls,
+    crossOriginHosts: [...new Set(crossOriginHosts)],
+    stats: {
+      documentLinks: Number(stats.documentLinks),
+      structuredData: Number(stats.structuredData),
+      semanticControls: Number(stats.semanticControls),
+    },
+  };
+}
+
+function isSafeObservedRequestHeaders(value: unknown): value is Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const entries = Object.entries(value as Record<string, unknown>);
+  return entries.length <= 1 && entries.every(([key, item]) => (
+    key.toLowerCase() === "content-type" && typeof item === "string" && item.length <= 128 &&
+    item.toLowerCase() === "application/json"
+  ));
+}
+
+/** Self-contained, bounded and read-only. No result from this function is persisted. */
+async function collectPageEvidenceInPage(
+  options: ProbeOptions,
+  routePolicy: typeof EXPLORATION_ROUTE_POLICY & { documentSelector: string },
+): Promise<PageEvidence> {
+  const MAX_HTML = 750_000;
+  const MAX_BODY = 256_000;
+  const MAX_TOTAL = 768_000;
+  const MAX_RESOURCES = Math.max(1, Math.min(12, options.maxResources));
+  const deadline = Date.now() + Math.max(1, Math.min(12_000, options.deadlineMs));
+  const interesting = /invoice|billing|receipt|statement|transaction|charge|payment|subscription|plan|account|session|organization|workspace|team/i;
+  const billingPath = new RegExp(routePolicy.intent, "i");
+  const bridgePath = new RegExp(routePolicy.bridgeIntent, "i");
+  const unsafePath = new RegExp(routePolicy.unsafe, "i");
+  const unsafeSegment = new RegExp(routePolicy.unsafeSegment, "i");
+  const directDocumentPath = new RegExp(routePolicy.directDocument, "i");
+  const ignored = /\.(?:css|js|mjs|png|jpe?g|gif|svg|webp|woff2?|ttf|ico)(?:\?|$)/i;
+  // Candidate readiness must use the same action threshold as collection.
+  // An "Invoices" tab or "View invoice" button proves route relevance, but it
+  // does not prove that a downloadable row has finished rendering.
+  const explicitDownloadAction = /(?:download|save|pdf|ladda\s*ner|hämta|herunterladen|télécharger|descargar|baixar|scarica|downloaden)/i;
+  const strongDocumentLabel = /(?:pdf|receipt|invoice|kvitto|faktura|beleg|rechnung|reçu|facture|recibo|factura|ricevuta|fattura)/i;
+  const unsafeLabel = /(?:delete|remove|cancel|pay|purchase|checkout|upgrade|downgrade|sign\s*out|log\s*out)/i;
+  const semanticMaterial = (element: Element): string => {
+    const icon = element.querySelector("[icon],[name]");
+    return [
+      element.getAttribute("aria-label"),
+      element.getAttribute("title"),
+      element.getAttribute("value"),
+      element.getAttribute("data-test"),
+      element.getAttribute("data-testid"),
+      element.getAttribute("class"),
+      icon?.getAttribute("icon"),
+      icon?.getAttribute("name"),
+      element.textContent,
+    ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim().slice(0, 320);
+  };
+  const semanticControls = (): Element[] => Array.from(document.querySelectorAll(
+    'button,a:not([href]),[role="button"],[role="menuitem"],input[type="button"],input[type="submit"],[data-href],[data-url]',
+  )).filter((element) => {
+    const label = semanticMaterial(element);
+    const context = (element.closest('tr,[role="row"],li,[role="listitem"],article,section')?.textContent || "")
+      .replace(/\s+/g, " ").trim().slice(0, 500);
+    return Boolean(
+      label && explicitDownloadAction.test(label) && !unsafeLabel.test(label) &&
+      (strongDocumentLabel.test(label) || billingPath.test(context) || billingPath.test(location.pathname)),
+    );
+  });
+  const usefulEvidencePresent = () => Boolean(
+    document.querySelector(routePolicy.documentSelector) ||
+    document.querySelector('script[type="application/json"],script[type="application/ld+json"]') ||
+    semanticControls().length,
+  );
+  const durableEvidencePresent = () => Boolean(
+    document.querySelector(routePolicy.documentSelector) ||
+    document.querySelector('script[type="application/json"],script[type="application/ld+json"]'),
+  );
+  if (!durableEvidencePresent() && options.settleMs > 0) {
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      let semanticQuietTimer: ReturnType<typeof setTimeout> | undefined;
+      let lastSemanticControlCount = -1;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (semanticQuietTimer) clearTimeout(semanticQuietTimer);
+        observer.disconnect();
+        resolve();
+      };
+      const considerEvidence = () => {
+        if (durableEvidencePresent()) {
+          finish();
+          return;
+        }
+        const count = semanticControls().length;
+        if (count <= 0 || count === lastSemanticControlCount) return;
+        lastSemanticControlCount = count;
+        if (semanticQuietTimer) clearTimeout(semanticQuietTimer);
+        semanticQuietTimer = setTimeout(finish, Math.min(400, Math.max(150, Math.trunc(options.settleMs / 4))));
+      };
+      const observer = new MutationObserver(considerEvidence);
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+      const timer = setTimeout(finish, Math.max(0, Math.min(5_000, options.settleMs)));
+      considerEvidence();
+    });
+  }
+  if (
+    !usefulEvidencePresent() && options.settleMs > 0 &&
+    document.documentElement.scrollHeight > window.innerHeight + 20
+  ) {
+    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "auto" });
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        observer.disconnect();
+        resolve();
+      };
+      const observer = new MutationObserver(() => {
+        if (usefulEvidencePresent()) finish();
+      });
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+      const timer = setTimeout(finish, Math.max(250, Math.min(2_000, Math.ceil(options.settleMs / 2))));
+    });
+  }
+  const structuredData = document.querySelectorAll('script[type="application/json"],script[type="application/ld+json"]').length;
+  const documentLinks = document.querySelectorAll(routePolicy.documentSelector).length;
+  const semanticControlCount = semanticControls().length;
+  const urls = new Set<string>();
+  const crossOriginHosts = new Set<string>();
+  for (const entry of performance.getEntriesByType("resource") as PerformanceResourceTiming[]) {
+    try {
+      const url = new URL(entry.name);
+      if (url.origin === location.origin && url.protocol === "https:" && interesting.test(`${url.pathname}${url.search}`) && !ignored.test(url.pathname)) {
+        urls.add(url.toString());
+      } else if (url.origin !== location.origin && url.protocol === "https:" && interesting.test(`${url.pathname}${url.search}`)) {
+        if (crossOriginHosts.size < 8) crossOriginHosts.add(url.hostname);
+      }
+    } catch {
+      // Ignore browser-internal or malformed performance entries.
+    }
+  }
+
+  const resourceScore = (value: string): number =>
+    (/invoice|receipt|statement/i.test(value) ? 100 : 0) +
+    (/billing|transaction|charge/i.test(value) ? 50 : 0) +
+    (/payment|subscription|plan/i.test(value) ? 25 : 0) +
+    (/account|session|organization|workspace|team/i.test(value) ? 5 : 0);
+  const resources: ProbedResource[] = [];
+  let total = 0;
+  try {
+    const pageObserver = (window as Window & {
+      __ratatoskDiscoveryObserverV1?: { snapshot?: () => Promise<CapturedEntry[]> };
+    }).__ratatoskDiscoveryObserverV1;
+    if (typeof pageObserver?.snapshot === "function") {
+      const observed = await Promise.race([
+        Promise.resolve(pageObserver.snapshot()),
+        new Promise<CapturedEntry[]>((resolve) => setTimeout(() => resolve([]), Math.min(1_000, Math.max(100, deadline - Date.now())))),
+      ]);
+      const ranked = Array.isArray(observed) ? observed
+        .filter((entry) => entry && typeof entry === "object")
+        .sort((left, right) => resourceScore(`${right.url} ${right.responseBody?.slice(0, 4_000) ?? ""}`) -
+          resourceScore(`${left.url} ${left.responseBody?.slice(0, 4_000) ?? ""}`))
+        .slice(0, MAX_RESOURCES) : [];
+      for (const entry of ranked) {
+        if (
+          (entry.method !== "GET" && entry.method !== "POST") ||
+          typeof entry.url !== "string" || entry.url.length > 2_048 ||
+          !Number.isInteger(entry.status) || entry.status < 0 || entry.status > 599 ||
+          typeof entry.contentType !== "string" || entry.contentType.length > 256 ||
+          typeof entry.responseBody !== "string" || entry.responseBody.length > MAX_BODY ||
+          (entry.requestBody !== undefined && entry.requestBody.length > 65_536)
+        ) continue;
+        let resourceUrl: URL;
+        try { resourceUrl = new URL(entry.url); } catch { continue; }
+        if (resourceUrl.protocol !== "https:" || resourceUrl.username || resourceUrl.password || resourceUrl.hash) continue;
+        if (resourceUrl.origin !== location.origin && crossOriginHosts.size < 8) crossOriginHosts.add(resourceUrl.hostname);
+        if (total + entry.responseBody.length > MAX_TOTAL) break;
+        const contentType = entry.requestHeaders?.["content-type"];
+        resources.push({
+          url: resourceUrl.toString(),
+          method: entry.method,
+          status: entry.status,
+          contentType: entry.contentType,
+          body: entry.responseBody,
+          ...(entry.requestBody !== undefined ? { requestBody: entry.requestBody } : {}),
+          ...(contentType === "application/json" ? { requestHeaders: { "content-type": contentType } } : {}),
+          source: "observed",
+        });
+        total += entry.responseBody.length;
+      }
+    }
+  } catch {
+    // The observer is an optional source. Legacy DOM and safe GET evidence still run.
+  }
+  const preferred = [...urls]
+    .sort((left, right) => resourceScore(right) - resourceScore(left) || left.localeCompare(right))
+    .filter((url) => !resources.some((resource) => resource.url === url && (resource.method ?? "GET") === "GET"))
+    .slice(0, Math.max(0, MAX_RESOURCES - resources.length));
+  for (const url of preferred) {
+    if (Date.now() >= deadline || total >= MAX_TOTAL) break;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.min(3_000, Math.max(250, deadline - Date.now())));
+    try {
+      const response = await fetch(url, { method: "GET", credentials: "include", signal: controller.signal });
+      const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+      if (!contentType.includes("json")) continue;
+      const declared = Number(response.headers.get("content-length") ?? "0");
+      if (declared > MAX_BODY) continue;
+      const reader = response.body?.getReader();
+      if (!reader) continue;
+      const chunks: Uint8Array[] = [];
+      let length = 0;
+      while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        length += next.value.length;
+        if (length > MAX_BODY || total + length > MAX_TOTAL) {
+          await reader.cancel();
+          length = 0;
+          break;
+        }
+        chunks.push(next.value);
+      }
+      if (!length) continue;
+      const bytes = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+      total += length;
+      resources.push({
+        url,
+        status: response.status,
+        contentType,
+        body: new TextDecoder().decode(bytes),
+        hasLinkNext: /(?:^|;)\s*rel\s*=\s*(?:"[^"]*\bnext\b[^"]*"|'[^']*\bnext\b[^']*'|next)(?:\s*;|\s*,|\s*$)/i
+          .test(`;${(response.headers.get("link") ?? "").slice(0, 4_096)}`),
+        source: "replayed",
+      });
+    } catch {
+      // A failed optional clue must not abort the other adapters.
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  const navigationUrls = new Map<string, { url: string; label?: string; context?: string }>();
+  const routeElements = document.querySelectorAll(
+    "a[href],area[href],[role=link][href],[data-href],[data-url],[data-route],[routerlink],[ng-reflect-router-link],iframe[src]",
+  );
+  const routeAttributes = ["href", "data-href", "data-url", "data-route", "routerlink", "ng-reflect-router-link", "src"];
+  let inspectedRoutes = 0;
+  for (const element of routeElements) {
+    if (inspectedRoutes >= 1_500 || navigationUrls.size >= 80) break;
+    inspectedRoutes += 1;
+    for (const attribute of routeAttributes) {
+      const raw = element.getAttribute(attribute);
+      if (!raw) continue;
+      try {
+        const url = new URL(raw, location.href);
+        if (url.protocol !== "https:" || url.origin !== location.origin || url.username || url.password) continue;
+        const label = (
+          element.getAttribute("aria-label") || element.getAttribute("title") || element.textContent || ""
+        ).replace(/\s+/g, " ").trim().slice(0, 160);
+        const contextElement = element.closest('li,[role="menuitem"],[role="option"]') || element.parentElement;
+        const context = (contextElement?.textContent || "")
+          .replace(/\s+/g, " ").trim().slice(0, 240);
+        const semantic = `${label} ${context}`.trim();
+        if (
+          (!billingPath.test(url.pathname) && !billingPath.test(semantic) && !bridgePath.test(`${url.pathname} ${semantic}`)) ||
+          unsafePath.test(url.pathname) || unsafeSegment.test(url.pathname) || unsafePath.test(semantic) || unsafeSegment.test(semantic) ||
+          directDocumentPath.test(url.pathname) || url.pathname.length > 320
+        ) continue;
+        for (const [key, queryValue] of [...url.searchParams.entries()]) {
+          if (!/^(?:page|p|offset|start|per_page|limit)$/i.test(key) || !/^\d{1,6}$/.test(queryValue)) {
+            url.searchParams.delete(key);
+          }
+        }
+        url.searchParams.sort();
+        url.hash = "";
+        const canonical = url.toString();
+        const current = navigationUrls.get(canonical);
+        if (!current || label.length + context.length > (current.label?.length ?? 0) + (current.context?.length ?? 0)) {
+          navigationUrls.set(canonical, {
+            url: canonical,
+            ...(label ? { label } : {}),
+            ...(context && context !== label ? { context } : {}),
+          });
+        }
+      } catch {
+        // Ignore malformed or non-web routes.
+      }
+    }
+  }
+
+  return {
+    url: `${location.origin}${location.pathname}`,
+    origin: location.origin,
+    title: document.title.slice(0, 160),
+    applicationName: document.querySelector<HTMLMetaElement>('meta[name="application-name"]')?.content.slice(0, 160),
+    siteName: document.querySelector<HTMLMetaElement>('meta[property="og:site_name"]')?.content.slice(0, 160),
+    html: boundedEvidenceHtml(MAX_HTML),
+    resources,
+    navigationUrls: [...navigationUrls.values()],
+    crossOriginHosts: [...crossOriginHosts],
+    stats: {
+      documentLinks: Math.min(1_000, documentLinks),
+      structuredData: Math.min(1_000, structuredData),
+      semanticControls: Math.min(1_000, semanticControlCount),
+    },
+  };
+
+  function boundedEvidenceHtml(limit: number): string {
+    const full = document.documentElement.outerHTML;
+    if (full.length <= limit) return full;
+    const structured = Array.from(document.querySelectorAll('script[type="application/json"],script[type="application/ld+json"]'))
+      .map((element) => element.outerHTML)
+      .join("")
+      .slice(0, Math.floor(limit * 0.72));
+    const links = Array.from(document.querySelectorAll(
+      'a[href$=".pdf" i],a[href*="/invoice" i],a[href*="/receipt" i],a[href*="/statement" i],a[href*="/download" i],a[download]',
+    ))
+      .slice(0, 500)
+      .map((element) => element.outerHTML)
+      .join("");
+    const controls = semanticControls().slice(0, 100).map((element) => element.outerHTML).join("");
+    return `<html><head>${structured}</head><body>${links}${controls}</body></html>`.slice(0, limit);
+  }
+}
+
+class DiscoveryPageObserverRegistration {
+  private registered = false;
+
+  constructor(private readonly expectedOrigin: string) {}
+
+  async start(): Promise<void> {
+    try {
+      // A fixed id makes a prior worker crash self-healing on the next search.
+      await removeStaleDiscoveryObserverRegistration();
+      await chrome.scripting.registerContentScripts([{
+        id: DISCOVERY_OBSERVER_REGISTRATION_ID,
+        matches: [exactOriginPattern(this.expectedOrigin)],
+        js: [discoveryPageObserverScript],
+        runAt: "document_start",
+        world: "MAIN",
+        allFrames: false,
+        persistAcrossSessions: false,
+      }]);
+      this.registered = true;
+    } catch (error) {
+      console.warn("[collector] early network observation unavailable; continuing with rendered-page discovery", error);
+    }
+  }
+
+  async dispose(possiblyObservedTabs: readonly number[]): Promise<void> {
+    if (!this.registered) return;
+    this.registered = false;
+    await removeStaleDiscoveryObserverRegistration();
+    await Promise.all(possiblyObservedTabs.map(async (tabId) => {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "MAIN",
+        func: () => {
+          const observer = (window as Window & {
+            __ratatoskDiscoveryObserverV1?: { stop?: () => void };
+          }).__ratatoskDiscoveryObserverV1;
+          if (typeof observer?.stop === "function") observer.stop();
+        },
+      }).catch(() => undefined);
+    }));
+  }
+}
+
+export async function removeStaleDiscoveryObserverRegistration(): Promise<void> {
+  await chrome.scripting.unregisterContentScripts({ ids: [DISCOVERY_OBSERVER_REGISTRATION_ID] }).catch(() => undefined);
+}
+
+class BackgroundExplorationTab {
+  private tabId: number | undefined;
+
+  constructor(private readonly expectedOrigin: string) {}
+
+  async probe(url: string, options: ProbeOptions): Promise<PageEvidence> {
+    const startedAt = Date.now();
+    const target = canonicalPageUrl(url, this.expectedOrigin);
+    if (!target) throw new Error("exploration target left the approved origin");
+    if (this.tabId === undefined) {
+      const tab = await chrome.tabs.create({ url: target, active: false });
+      if (tab.id === undefined) throw new Error("could not open a bounded exploration tab");
+      this.tabId = tab.id;
+      if (tab.status !== "complete") await waitForTabComplete(tab.id, Math.min(8_000, Math.max(1, options.deadlineMs)));
+    } else {
+      const tab = await chrome.tabs.update(this.tabId, { url: target, active: false });
+      if (tab.status !== "complete") {
+        await waitForTabComplete(this.tabId, Math.min(8_000, Math.max(1, options.deadlineMs - (Date.now() - startedAt))));
+      }
+    }
+    // Modern SPAs often finish navigation before their billing table renders.
+    // This is a condition-based wait and therefore exits immediately when any
+    // useful evidence appears; the extra allowance is paid only by slow pages.
+    return probeSupplierTab(
+      this.tabId,
+      this.expectedOrigin,
+      capExplorationProbeOptions(options, options.deadlineMs - (Date.now() - startedAt)),
+    );
+  }
+
+  async dispose(): Promise<void> {
+    if (this.tabId !== undefined) await chrome.tabs.remove(this.tabId).catch(() => undefined);
+    this.tabId = undefined;
+  }
+}
+
+function waitForTabComplete(tabId: number, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const done = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      error ? reject(error) : resolve();
+    };
+    const timer = setTimeout(() => done(new Error("supplier exploration page load timed out")), timeoutMs);
+    const onUpdated = (updatedId: number, info: chrome.tabs.TabChangeInfo) => {
+      if (updatedId === tabId && info.status === "complete") done();
+    };
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    void chrome.tabs.get(tabId).then((tab) => {
+      if (tab.status === "complete") done();
+    }).catch(() => undefined);
+  });
+}
+
+function canonicalPageUrl(value: string, expectedOrigin: string): string | undefined {
+  try {
+    exactOriginPattern(expectedOrigin);
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.origin !== expectedOrigin || url.username || url.password || url.pathname.length > 320) return undefined;
+    const exploration = safeExplorationUrl(url.toString(), expectedOrigin);
+    if (exploration) return exploration;
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function emptyDiagnostic(origin: string): DiscoveryDiagnosticV1 {
+  const site = new URL(origin).hostname;
+  return {
+    schema: DISCOVERY_DIAGNOSTIC_SCHEMA,
+    site,
+    runtime: {
+      collectorVersion: COLLECTOR_RUNTIME_IDENTITY.collectorVersion,
+      discoveryEngine: COLLECTOR_RUNTIME_IDENTITY.discoveryEngine,
+    },
+    limits: { pages: MAX_EXPLORATION_PAGES, depth: MAX_EXPLORATION_DEPTH, durationMs: EXPLORATION_DEADLINE_MS },
+    timing: { elapsedMs: 0 },
+    pages: { attempted: 0, linked: 0, commonRoutes: 0 },
+    evidence: { jsonResources: 0, observedRequests: 0, replayedRequests: 0, documentLinks: 0, structuredDataPages: 0, crossOriginHosts: [] },
+    candidates: { compiled: 0, previewed: 0, retained: 0 },
+    attempts: [],
+    termination: "queue_exhausted",
+    result: "not_found",
+  };
+}
+
+function recordAttempt(
+  diagnostic: DiscoveryDiagnosticV1,
+  page: number,
+  source: ExplorationPageSource,
+  adapter: DiscoveryAdapterId | undefined,
+  result: DiscoveryAttemptResult,
+  durationMs: number,
+  details: { route: string; resolvedRoute?: string; evidence?: DiscoveryAttemptEvidence },
+): void {
+  if (diagnostic.attempts.length < 40) {
+    const route = toDiagnosticRoute(details.route);
+    const resolvedRoute = details.resolvedRoute ? toDiagnosticRoute(details.resolvedRoute) : undefined;
+    diagnostic.attempts.push({
+      page,
+      source,
+      route,
+      ...(resolvedRoute && resolvedRoute !== route ? { resolvedRoute } : {}),
+      adapter,
+      result,
+      durationMs: Math.min(60_000, Math.max(0, Math.trunc(durationMs))),
+      ...(details.evidence ? { evidence: details.evidence } : {}),
+    });
+  }
+  console.info(`[collector] discovery page ${page}/${MAX_EXPLORATION_PAGES} (${source} ${toDiagnosticRoute(details.route)})${adapter ? ` ${adapter}` : ""} -> ${result} (${Math.trunc(durationMs)}ms)`);
+}
+
+function diagnosticEvidence(evidence: PageEvidence): DiscoveryAttemptEvidence {
+  return {
+    jsonResources: evidence.resources.length,
+    observedRequests: evidence.resources.filter((resource) => resource.source === "observed").length,
+    replayedRequests: evidence.resources.filter((resource) => resource.source === "replayed").length,
+    documentLinks: evidence.stats.documentLinks,
+    structuredData: evidence.stats.structuredData,
+    semanticControls: evidence.stats.semanticControls,
+  };
+}
+
+function previewResult(error: unknown): DiscoveryAttemptResult {
+  return error instanceof CandidatePreviewError ? error.code : "policy_rejected";
+}
+
+function candidateScore(adapter: DiscoveryAdapterId, count: number, routeScore: number): number {
+  const proof = adapter === "network-json" ? 300 : adapter === "embedded-json" ? 200 : adapter === "dom-links" ? 100 : 80;
+  const boundedRouteScore = Number.isFinite(routeScore) ? Math.max(0, Math.min(40, routeScore)) : 40;
+  return proof + boundedRouteScore + Math.min(25, Math.max(0, count));
+}
+
+/**
+ * A full fallback set is only an early-stop signal when every retained plan is
+ * backed by structured network or embedded data. Three DOM-shaped guesses are
+ * still weaker than a structured source that may exist on the next billing
+ * route, so the bounded frontier must keep exploring in that case.
+ */
+export function hasEnoughStrongCandidates(retained: readonly { score: number }[]): boolean {
+  const STRUCTURED_EVIDENCE_SCORE = 200;
+  return retained.length >= MAX_DISCOVERY_CANDIDATES &&
+    retained.every((candidate) => candidate.score >= STRUCTURED_EVIDENCE_SCORE);
+}
+
+function retainCandidate(
+  retained: Array<{ profile: DiscoveredSupplierProfileV1; score: number }>,
+  candidate: { profile: DiscoveredSupplierProfileV1; score: number },
+): void {
+  const invoices = candidate.profile.recipe.invoices;
+  const listIdentity = invoices.strategy === "dom" ? invoices.list.open : invoices.list.request.url;
+  const key = `${candidate.profile.adapter.id}|${invoices.strategy}|${listIdentity}`;
+  const existing = retained.findIndex(({ profile }) => {
+    const current = profile.recipe.invoices;
+    const currentList = current.strategy === "dom" ? current.list.open : current.list.request.url;
+    return `${profile.adapter.id}|${current.strategy}|${currentList}` === key;
+  });
+  if (existing >= 0) {
+    if (candidate.score > retained[existing].score) retained[existing] = candidate;
+  } else {
+    retained.push(candidate);
+  }
+  retained.sort((left, right) => right.score - left.score || left.profile.entryUrl.localeCompare(right.profile.entryUrl));
+  if (retained.length > MAX_DISCOVERY_CANDIDATES) retained.length = MAX_DISCOVERY_CANDIDATES;
+}
+
+function enqueueTargets(queue: ExplorationTarget[], known: Set<string>, planned: readonly ExplorationTarget[]): void {
+  for (const next of planned) {
+    if (known.has(next.url)) continue;
+    known.add(next.url);
+    queue.push(next);
+  }
+  queue.splice(0, queue.length, ...rankExplorationQueue(queue));
+}
+
+function recipeFromDraft(
+  draft: DraftRecipe,
+  origin: string,
+  entryUrl: string,
+  displayName: string,
+): VendorRecipe | undefined {
+  try {
+    const raw = structuredClone(draft.recipe) as Record<string, unknown>;
+    const invoices = raw.invoices as {
+      strategy?: string;
+      list?: { request?: { url?: string }; map?: { total?: unknown; documentUrl?: unknown } };
+    } | undefined;
+    if (invoices?.strategy === "html" && invoices.list?.request) invoices.list.request.url = entryUrl;
+    // Generic inference cannot prove whether integer amounts are minor or major
+    // units. Omitting the total is safer than uploading plausible wrong data.
+    if (invoices?.list?.map) delete invoices.list.map.total;
+    if (invoices?.list?.map?.documentUrl && draft.notes.some((note) => note.includes("Stripe HOSTED invoice page"))) {
+      const current = invoices.list.map.documentUrl;
+      const extractor = typeof current === "string"
+        ? { path: current, transforms: [] as unknown[] }
+        : structuredClone(current as { path: string; transforms?: unknown[] });
+      extractor.transforms = [
+        ...(extractor.transforms ?? []),
+        { kind: "replace", pattern: "^https://invoice\\.stripe\\.com/i/([^/?#]+)/([^/?#]+)(\\?.*)?$", with: "https://pay.stripe.com/invoice/$1/$2/pdf$3" },
+      ];
+      invoices.list.map.documentUrl = extractor;
+      raw.hosts = [
+        ...(Array.isArray(raw.hosts) ? raw.hosts : []).filter((host) => host !== "https://invoice.stripe.com/*"),
+        ...STRIPE_KNOWN_DOCUMENT_HOSTS,
+      ];
+    }
+    const auth = raw.auth as { check?: { request?: { url?: string } }; loginUrl?: string } | undefined;
+    if (auth?.check?.request?.url && new URL(auth.check.request.url).origin === origin && auth.check.request.url.startsWith(`${origin}/`)) {
+      if (new URL(auth.check.request.url).pathname === new URL(entryUrl).pathname) auth.check.request.url = entryUrl;
+    }
+    if (auth) auth.loginUrl = origin;
+    return validateRecipe({
+      ...raw,
+      id: "discovered-candidate",
+      name: displayName,
+      homepage: origin,
+      hosts: normalizeHosts(raw.hosts, origin),
+      category: "discovered",
+      icon: undefined,
+      fetchContext: "page",
+      notes: "Locally discovered candidate.",
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function findLikelyDocumentLinks(html: string, baseUrl: string, pageTitle?: string): string[] {
+  const links = new Set<string>();
+  const invoiceContext = /invoice|receipt|billing|statement|transaction|faktura|kvitto|rechnung|beleg|facture|reçu|factura|recibo|fattura|ricevuta/i;
+  const page = new URL(baseUrl);
+  const pageHasInvoiceContext = invoiceContext.test(`${page.pathname} ${pageTitle ?? ""}`);
+  for (const match of html.matchAll(/<a\b([^>]*)>/gi)) {
+    const attributes = match[1];
+    const href = /\bhref="([^"]+)"/i.exec(attributes)?.[1];
+    if (!href) continue;
+    try {
+      const url = new URL(href, baseUrl);
+      if (url.protocol !== "https:" || url.username || url.password) continue;
+      const path = url.pathname.toLowerCase();
+      const explicitDownload =
+        /\bdownload(?:\s|=|>|$)/i.test(attributes) ||
+        /\b(?:aria-label|title)="[^"]*download[^"]*"/i.test(attributes);
+      const providerDocument = Boolean(documentProviderForUrl(url));
+      const directDocument =
+        path.endsWith(".pdf") || /(?:^|\/)download(?:\/|$)/i.test(path) ||
+        /(?:^|\/)pdf(?:\/|$)/i.test(path) || /^\/account\/receipt\//i.test(path) ||
+        providerDocument;
+      const knownInvoiceDocument = /^\/account\/receipt\//i.test(path) ||
+        (url.hostname === "invoice.stripe.com" && /^\/i\/[^/]+\/[^/]+$/.test(path));
+      const linkHasInvoiceContext = invoiceContext.test(`${path} ${attributes}`);
+      if (knownInvoiceDocument || ((explicitDownload || directDocument) && (pageHasInvoiceContext || linkHasInvoiceContext))) {
+        links.add(url.toString());
+      }
+      if (links.size >= 100) break;
+    } catch {
+      // Malformed page links are not document evidence.
+    }
+  }
+  return [...links];
+}
+
+function directDomRecipe(origin: string, entryUrl: string, displayName: string, links: string[]): VendorRecipe | undefined {
+  try {
+    const hosts = new Set([exactOriginPattern(origin)]);
+    for (const href of links) {
+      const url = normalizedDocumentUrl(new URL(href, entryUrl));
+      if (url.protocol === "https:") {
+        hosts.add(exactOriginPattern(url.origin));
+        if (documentProviderForUrl(url)?.id === "stripe") {
+          for (const host of STRIPE_KNOWN_DOCUMENT_HOSTS) hosts.add(host);
+        }
+      }
+    }
+    return validateRecipe({
+      id: "discovered-candidate",
+      name: displayName,
+      homepage: origin,
+      hosts: [...hosts].sort(),
+      category: "discovered",
+      fetchContext: "page",
+      notes: "Locally discovered candidate.",
+      auth: {
+        check: { request: { url: entryUrl }, expect: { statusIn: [200] } },
+        loginUrl: origin,
+      },
+      invoices: {
+        strategy: "dom",
+        list: {
+          open: entryUrl,
+          steps: [
+            { action: "waitFor", selector: DOM_LINK_SELECTOR, timeoutMs: 8_000 },
+            { action: "extractAll", selector: DOM_LINK_SELECTOR, attr: "href", as: "documents" },
+          ],
+          continuation: {
+            mode: "auto",
+            maxActions: 8,
+            maxDocuments: 500,
+            timeoutMs: 30_000,
+            allowScroll: true,
+          },
+          hrefsFrom: "documents",
+        },
+        document: { contentType: "application/pdf" },
+      },
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function semanticDomRecipe(
+  origin: string,
+  entryUrl: string,
+  displayName: string,
+  observedCrossOriginHosts: readonly string[],
+): VendorRecipe | undefined {
+  try {
+    return validateRecipe({
+      id: "discovered-candidate",
+      name: displayName,
+      homepage: origin,
+      // Exact HTTPS origins observed while the billing page loaded are the
+      // only cross-origin action results allowed through the DOM boundary.
+      hosts: normalizeHosts(
+        observedCrossOriginHosts.slice(0, 8).map((host) => `https://${host}`),
+        origin,
+      ),
+      category: "discovered",
+      fetchContext: "page",
+      notes: "Locally discovered semantic download candidate.",
+      auth: {
+        check: { request: { url: entryUrl }, expect: { statusIn: [200] } },
+        loginUrl: origin,
+      },
+      invoices: {
+        strategy: "dom",
+        list: {
+          open: entryUrl,
+          steps: [{ action: "extractSemanticDownloads", as: "documents", maxActions: 8 }],
+          continuation: {
+            mode: "auto",
+            maxActions: 8,
+            maxDocuments: 100,
+            timeoutMs: 30_000,
+            allowScroll: true,
+          },
+          hrefsFrom: "documents",
+        },
+        document: { contentType: "application/pdf" },
+      },
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizedDocumentUrl(url: URL): URL {
+  return new URL(canonicalDocumentProviderUrl(url));
+}
+
+function normalizeHosts(value: unknown, origin: string): string[] {
+  const hosts = new Set<string>([exactOriginPattern(origin)]);
+  if (Array.isArray(value)) {
+    for (const candidate of value.slice(0, 8)) {
+      if (typeof candidate !== "string") continue;
+      try {
+        const parsed = new URL(candidate.endsWith("/*") ? candidate.slice(0, -2) : candidate);
+        if (parsed.protocol === "https:" && !parsed.hostname.includes("*")) hosts.add(exactOriginPattern(parsed.origin));
+      } catch {
+        // Invalid inferred origins are discarded before policy validation.
+      }
+    }
+  }
+  return [...hosts].sort();
+}
+
+async function resolvePreviewScopes(
+  recipe: VendorRecipe,
+  ctx: ReturnType<typeof buildRunContext>["ctx"],
+): Promise<Record<string, unknown>[]> {
+  let scopes: Record<string, unknown>[] = [{}];
+  for (const option of recipe.config ?? []) {
+    const response = await ctx.fetch(option.discover.request, ctx.vars);
+    if (!response.ok) throw new Error("supplier scope discovery failed");
+    const root = await response.json();
+    const raw = option.discover.items
+      ? getArray(root, option.discover.items).map((item) => extract(item, option.discover.value))
+      : [extract(root, option.discover.value)];
+    const values = raw.filter((value) => value !== undefined && value !== null && value !== "").slice(0, 20);
+    if (!values.length) throw new Error("supplier scope discovery returned no reusable value");
+    scopes = scopes.flatMap((scope) => values.map((value) => ({ ...scope, [option.id]: value }))).slice(0, 20);
+  }
+  return scopes;
+}

@@ -15,17 +15,45 @@
  * tenant-scoped backend route; the sink reads it per request.
  */
 const TOKEN_KEY = "hostToken";
+let hostTokenStorageAccess: Promise<void> | undefined;
+
+function isCollectorToken(value: unknown): value is string {
+  return typeof value === "string" && /^rat_[a-f0-9]{64}$/.test(value);
+}
+
+/** Restrict local storage before any upload credential is read or written. The
+ * extension service worker is a trusted context; content scripts are not. */
+export function initializeHostTokenStorage(): Promise<void> {
+  if (!hostTokenStorageAccess) {
+    hostTokenStorageAccess = chrome.storage.local
+      .setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" })
+      .catch((error: unknown) => {
+        hostTokenStorageAccess = undefined;
+        throw new Error(`unable to restrict Collector credential storage (${error instanceof Error ? error.name : "error"})`);
+      });
+  }
+  return hostTokenStorageAccess;
+}
 
 export async function getHostToken(): Promise<string | undefined> {
+  await initializeHostTokenStorage();
   const values = await chrome.storage.local.get(TOKEN_KEY);
-  return values[TOKEN_KEY] as string | undefined;
+  const token = values[TOKEN_KEY];
+  if (token === undefined) return undefined;
+  if (isCollectorToken(token)) return token;
+  // Stored data is untrusted across extension upgrades and external mutation.
+  // Never turn an arbitrary persisted value into an authorization header.
+  await chrome.storage.local.remove(TOKEN_KEY);
+  return undefined;
 }
 
 export async function setHostToken(token: string): Promise<void> {
-  if (!/^rat_[a-f0-9]{64}$/.test(token)) throw new Error("invalid backend token");
+  if (!isCollectorToken(token)) throw new Error("invalid backend token");
+  await initializeHostTokenStorage();
   await chrome.storage.local.set({ [TOKEN_KEY]: token });
 }
 
 export async function clearHostToken(): Promise<void> {
+  await initializeHostTokenStorage();
   await chrome.storage.local.remove(TOKEN_KEY);
 }

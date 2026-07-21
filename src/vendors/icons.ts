@@ -9,7 +9,7 @@ export type { BrandIcon };
 
 /** The brand icon for a slug, or undefined → the caller shows a letter avatar. */
 export function brandIcon(slug: string | undefined): BrandIcon | undefined {
-  return slug ? ICONS[slug] : undefined;
+  return slug && Object.hasOwn(ICONS, slug) ? ICONS[slug] : undefined;
 }
 
 /** Every bundled slug — for a "browse vendors" gallery, tests, and tooling. */

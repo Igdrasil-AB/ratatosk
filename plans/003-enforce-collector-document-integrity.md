@@ -49,13 +49,16 @@ new scheduling policy, or changing disconnect semantics.
 
 ### 1. Enforce document content
 
-For recipes expecting `application/pdf`, require both a PDF-compatible response
-content type (when present) and `%PDF` magic bytes. Reject HTML and other content
-with `UnexpectedResponse`; never pass bytes to a sink or seen store. Keep a small
-bounded diagnostic containing status and normalized content type only.
+For recipes expecting `application/pdf`, require bounded bytes and `%PDF` magic
+bytes. MIME is advisory: signed/object-storage downloads commonly use
+`application/octet-stream`, force-download metadata, or stale headers. Reject
+HTML/text or any response without the PDF signature before it reaches a sink or
+seen store. Keep a small bounded diagnostic containing status and normalized
+content type only.
 
-**Verify**: tests cover valid PDF, 200 HTML, mislabeled binary, empty body, and
-missing content-type with valid PDF magic.
+**Verify**: tests cover valid PDF, valid `%PDF` served as
+`application/octet-stream`, 200 HTML, mislabeled binary without a PDF signature,
+empty body, and missing content-type with valid PDF magic.
 
 ### 2. Add one per-vendor run coordinator
 
@@ -98,4 +101,3 @@ mocks on `test/core/scheduler.test.ts`.
 
 Keep the run coordinator platform-local. Do not put Chrome lifecycle state into
 the platform-free engine.
-

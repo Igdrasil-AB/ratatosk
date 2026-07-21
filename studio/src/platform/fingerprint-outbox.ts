@@ -37,16 +37,23 @@ const inFlight = new Map<string, Promise<FingerprintOutboxItemSummary | undefine
 export function enqueueFingerprintSubmission(submission: unknown, now = new Date()): Promise<FingerprintOutboxStatus> {
   return serialized(async () => {
     const valid = parseSupplierFingerprintSubmission(submission);
-    const items = await readValidItems(now, false);
-    const withoutDuplicate = items.filter((item) => item.submission.fingerprint.fingerprintId !== valid.fingerprint.fingerprintId);
-    withoutDuplicate.push({
+    // Capacity eviction is a mutating boundary: recover an interrupted send
+    // before deduplication/retention so it cannot be silently dropped.
+    const items = await readValidItems(now, true);
+    // The fingerprint ID is the durable delivery identity. Re-submitting it
+    // must never reset an accepted/retryable/delivering record or replace the
+    // only retained deliverable payload with a newer caller-owned object.
+    if (items.some((item) => item.submission.fingerprint.fingerprintId === valid.fingerprint.fingerprintId)) {
+      return statusFrom(items);
+    }
+    items.push({
       queuedAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + RETENTION_MS).toISOString(),
       submission: valid,
       deliveryState: "pending",
       attempts: 0,
     });
-    const retained = withoutDuplicate.slice(-MAX_ITEMS);
+    const retained = items.slice(-MAX_ITEMS);
     await persist(retained);
     return statusFrom(retained);
   });
@@ -109,15 +116,6 @@ export function deliverFingerprintSubmission(
   inFlight.set(fingerprintId, task);
   void task.then(() => inFlight.delete(fingerprintId), () => inFlight.delete(fingerprintId));
   return task;
-}
-
-export async function resumeFingerprintDeliveries(now = new Date()): Promise<void> {
-  const items = await listFingerprintOutboxItems(now);
-  for (const item of items) {
-    if (item.deliveryState === "pending" || (item.deliveryState === "retryable" && (!item.nextAttemptAt || Date.parse(item.nextAttemptAt) <= now.getTime()))) {
-      await deliverFingerprintSubmission(item.fingerprintId, now);
-    }
-  }
 }
 
 export function requeueRejectedFingerprintSubmissions(now = new Date()): Promise<FingerprintOutboxStatus> {

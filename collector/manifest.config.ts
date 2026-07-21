@@ -1,11 +1,11 @@
 import { defineManifest } from "@crxjs/vite-plugin";
 import pkg from "../package.json";
-import { allHosts } from "../src/vendors";
 
 /**
- * The MV3 manifest is generated from the vendor registry: `optional_host_permissions`
- * is exactly the set of hosts the recipes touch. Vendors are optional (requested
- * at connect-time), so the install-time prompt stays minimal.
+ * Vendor access remains optional and is requested as an exact HTTPS origin only
+ * after the user clicks Connect or Search This App. The wildcard declaration
+ * lets unsupported suppliers use that same runtime consent flow; it does not
+ * grant access at install time.
  *
  * SINGLE PURPOSE (Chrome Web Store policy): this public extension only collects a
  * user's own supplier invoices and receipts into a destination they confirm.
@@ -19,11 +19,19 @@ export default defineManifest({
   description:
     "Collect your own supplier invoices and receipts from vendor billing pages using your existing browser session — no passwords stored.",
   minimum_chrome_version: "116",
-  permissions: ["storage", "alarms", "notifications", "scripting", "downloads"],
+  // webRequest is observation-only: a bounded listener follows the request ID
+  // of a user-approved Stripe capability URL so a changed exact redirect origin
+  // can be offered through the existing runtime permission flow. No headers,
+  // bodies, cookies, blocking, or request modification are exposed.
+  permissions: ["storage", "alarms", "notifications", "scripting", "downloads", "activeTab", "webRequest", "sidePanel"],
   // Required for service-worker fetches that upload to the Igdrasil API. Keep
   // exact-origin; vendor access remains optional and is requested on connect.
   host_permissions: ["https://accounting.igdrasil.se/*"],
-  optional_host_permissions: allHosts(),
+  optional_host_permissions: ["https://*/*"],
+  // Optional rather than install-time: users who want the persistent side
+  // panel to follow tab switches grant URL/title metadata access once. This
+  // does not grant page access; exact supplier hosts remain separately gated.
+  optional_permissions: ["tabs"],
   // The one-click "Connect Igdrasil" bridge: a content script that runs ONLY on
   // the Igdrasil web app's exact origin. It announces the extension to the page
   // and relays the connect handshake to the service worker, which re-validates
@@ -44,8 +52,10 @@ export default defineManifest({
     service_worker: "collector/src/platform/service-worker.ts",
     type: "module",
   },
+  side_panel: {
+    default_path: "collector/src/ui/popup/popup.html",
+  },
   action: {
-    default_popup: "collector/src/ui/popup/popup.html",
     default_title: "Ratatosk — Invoice Collector",
   },
   icons: { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" },

@@ -24,8 +24,9 @@ import type { OperationalOutcomeCode } from "./errors";
 export interface InvoiceRef {
   /** Vendor's own stable id for the invoice (e.g. Stripe "in_9F2..."). */
   vendorInvoiceId: string;
-  /** ISO 8601 date the invoice was issued, `YYYY-MM-DD`. */
-  issuedAt: string;
+  /** ISO 8601 issue date (`YYYY-MM-DD`) when the list exposes it. Link-only
+   * strategies leave it absent for the destination/accounting pipeline to derive. */
+  issuedAt?: string;
   /** Decimal string, e.g. `"49.00"`. String (not number) to avoid float drift. */
   total?: string;
   /** ISO 4217 currency code, e.g. `"USD"`. */
@@ -36,6 +37,39 @@ export interface InvoiceRef {
   documentRef?: string;
   /** Anything else worth carrying through (line items, description, ...). */
   meta?: Record<string, unknown>;
+  /** Previous safe identities accepted only for dedup migration. Strategies
+   * bound this list; recipe data cannot supply it directly. */
+  identityAliases?: string[];
+}
+
+export type RetrievalCompleteness = "complete" | "partial";
+
+export type RetrievalTermination =
+  | "explicit_end"
+  | "stable_end"
+  | "continuation_failed"
+  | "repeated_state"
+  | "page_cap"
+  | "action_cap"
+  | "document_cap"
+  | "time_cap";
+
+/** Structural proof about path traversal. Completeness is independent of how
+ * many invoices exist and never depends on document text or language. */
+export interface RetrievalProof {
+  completeness: RetrievalCompleteness;
+  termination: RetrievalTermination;
+  pagesVisited: number;
+  observedItems: number;
+  resolvedItems: number;
+  unresolvedItems: number;
+}
+
+/** The list phase returns both normalized invoice references and proof that the
+ * available route, pagination, or rendered controls were exhausted. */
+export interface InvoiceListResult {
+  refs: InvoiceRef[];
+  retrieval: RetrievalProof;
 }
 
 /** A fully materialized invoice document, ready to hand to an {@link IngestSink}. */
@@ -46,7 +80,8 @@ export interface FetchedDocument {
   /** Display name of the supplier, e.g. `"Anthropic (Claude)"` — used for folder names. */
   vendorName: string;
   vendorInvoiceId: string;
-  issuedAt: string;
+  /** Known list date, or absent when document/accounting extraction owns it. */
+  issuedAt?: string;
   total?: string;
   currency?: string;
   filename: string;
@@ -54,6 +89,9 @@ export interface FetchedDocument {
   bytes: ArrayBuffer;
   /** Stable across runs — the dedup key. See {@link idempotencyKey}. */
   idempotencyKey: string;
+  /** Exact-PDF fallback identity. This catches supplier identity/URL drift
+   * without relying on invoice text, language, dates, or amounts. */
+  contentIdempotencyKey: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +168,7 @@ export interface TokenSpec {
   request: RequestSpec;
   /** Where the token is in the response, e.g. `"accessToken"`. */
   value: Extractor;
-  /** Template variable to bind it to (default `"token"`). */
+  /** Template variable to bind it to (default `"token"`); must match a JavaScript-style identifier. */
   as?: string;
 }
 
@@ -144,7 +182,7 @@ export interface TokenSpec {
  * the run, producing one "scope" per value.
  */
 export interface ConfigOption {
-  /** Template variable name this option binds, e.g. `"workspace"`. */
+  /** Template variable name this option binds, e.g. `"workspace"`; must match a JavaScript-style identifier. */
   id: string;
   discover: {
     request: RequestSpec;
@@ -155,6 +193,8 @@ export interface ConfigOption {
     value: Extractor;
     /** Optional human-readable label. */
     label?: Extractor;
+    /** Bounded cursor traversal for multi-page scope discovery. */
+    paginate?: CursorPaginateSpec;
   };
 }
 
@@ -172,12 +212,61 @@ export interface FieldMap {
   documentRef?: Extractor;
 }
 
-export interface PaginateSpec {
-  /** Path to the "next cursor" in the response; injected into the next request as `{cursor}`. */
-  cursor: string;
-  /** Safety cap on pages fetched (default 20). */
+interface PaginateBase {
+  /** Optional response path that must remain truthy before another page is requested. */
+  hasMore?: string;
+  /** Safety cap on pages fetched (default 20, hard schema cap 100). */
   maxPages?: number;
 }
+
+/** Cursor pagination. The omitted `kind` preserves existing bundled recipes. */
+export type CursorPaginateSpec = PaginateBase & {
+  kind?: "cursor";
+  /** Path to the next cursor in the response. */
+  cursor: string;
+  /** Template variable receiving the cursor; defaults to `{cursor}`. */
+  variable?: string;
+  /** A full page requires continuation even when the server omits hasMore. */
+  pageSize?: number;
+};
+
+/** Follow a next-page URL returned in the response. Relative URLs resolve against the current request. */
+export type NextUrlPaginateSpec = PaginateBase & {
+  kind: "next-url";
+  nextUrl: string;
+};
+
+/** Follow the response's bounded RFC Link header relation `rel=next`. */
+export type LinkHeaderPaginateSpec = PaginateBase & {
+  kind: "link-header";
+};
+
+/** Increment a `{page}`-style request variable. */
+export type PagePaginateSpec = PaginateBase & {
+  kind: "page";
+  variable?: string;
+  start?: number;
+  step?: number;
+  /** Stop when a page contains fewer rows than this size. */
+  pageSize?: number;
+};
+
+/** Increment an `{offset}`-style request variable. */
+export type OffsetPaginateSpec = PaginateBase & {
+  kind: "offset";
+  variable?: string;
+  start?: number;
+  step: number;
+  /** Stop when a page contains fewer rows than this size. */
+  pageSize?: number;
+};
+
+export type PaginateSpec =
+  | CursorPaginateSpec
+  | NextUrlPaginateSpec
+  | LinkHeaderPaginateSpec
+  | PagePaginateSpec
+  | OffsetPaginateSpec;
 
 export interface NetworkListSpec {
   request: RequestSpec;
@@ -204,12 +293,30 @@ export interface DocumentSpec {
 export type DomStep =
   | { action: "waitFor"; selector: string; timeoutMs?: number }
   | { action: "click"; selector: string }
-  | { action: "extractAll"; selector: string; attr: string; as: string };
+  | { action: "extractAll"; selector: string; attr: string; as: string }
+  /** Packaged browser primitive: inspect explicitly labelled download controls,
+   * capture only safe HTTPS GET targets, and never persist page-provided actions. */
+  | { action: "extractSemanticDownloads"; as: string; maxActions?: number };
+
+/**
+ * Packaged continuation primitive for rendered invoice lists. The platform,
+ * not the recipe, owns the closed recognition rules for Next/More controls and
+ * infinite scroll. Every dimension is bounded again at runtime.
+ */
+export interface DomContinuationSpec {
+  mode: "auto";
+  maxActions?: number;
+  maxDocuments?: number;
+  timeoutMs?: number;
+  allowScroll?: boolean;
+}
 
 export interface DomListSpec {
   /** URL to open in an offscreen document / tab before running steps. */
   open: string;
   steps: DomStep[];
+  /** Enumerate subsequent rendered pages after the first page has verified the source. */
+  continuation?: DomContinuationSpec;
   /** Which collected variable holds the list of PDF hrefs. */
   hrefsFrom: string;
 }
@@ -295,6 +402,12 @@ export interface VendorRecipe {
 /** A remembered-set of idempotency keys the engine has already emitted. */
 export interface SeenStore {
   has(key: string): Promise<boolean>;
+  /** Distinguish durable acceptance from a competing in-flight reservation. */
+  isAccepted?(key: string): Promise<boolean>;
+  /** Atomically reserve an absent key. Returns an opaque ownership id. */
+  claimIfAbsent(key: string, source?: string): Promise<string | undefined>;
+  /** Release a reservation after failed/abandoned delivery. Accepted keys are never removed. */
+  release(key: string, reservationId: string): Promise<void>;
   /** `source` (e.g. "ext:railway") tags the key so a vendor's history can be cleared. */
   add(key: string, source?: string): Promise<void>;
 }
@@ -307,21 +420,33 @@ export interface RunContext {
   vars: Record<string, unknown>;
   seen: SeenStore;
   /** Performs a credentialed HTTP request. Injected so the engine stays platform-free. */
-  fetch: (spec: RequestSpec, vars: Record<string, unknown>) => Promise<HttpResponse>;
+  fetch: (spec: RequestSpec, vars: Record<string, unknown>, signal?: AbortSignal) => Promise<HttpResponse>;
 }
 
 /** A thin, testable view over a fetch Response. */
 export interface HttpResponse {
   status: number;
   ok: boolean;
+  /** Final response URL after redirects, when exposed by the transport. */
+  url?: string;
+  /** Whether the transport followed one or more redirects. */
+  redirected?: boolean;
   json(): Promise<unknown>;
-  arrayBuffer(): Promise<ArrayBuffer>;
+  /** Materialize at most `maximumBytes` when the transport supports streaming.
+   * Callers must still validate the returned size because test and platform
+   * adapters are independently implemented. */
+  arrayBuffer(maximumBytes?: number): Promise<ArrayBuffer>;
   headers: { get(name: string): string | null };
 }
 
 export interface RunResult {
   vendorId: string;
   documents: FetchedDocument[];
+  /** Aggregate list traversal state across every attempted scope. */
+  retrieval: RetrievalCompleteness;
+  /** List proofs in deterministic scope traversal order. A scope that failed
+   * before producing a list has no proof and remains visible in `scopes`. */
+  retrievalProofs: RetrievalProof[];
   scopes: {
     total: number;
     succeeded: number;

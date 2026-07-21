@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ensureSyncAlarm, setSchedulePeriod } from "../../collector/src/platform/scheduler";
+import { ensureSyncAlarm, getScheduleInfo, isSyncCatchUpDue, setSchedulePeriod } from "../../collector/src/platform/scheduler";
 
 describe("collector schedule persistence", () => {
   let values: Record<string, unknown>;
@@ -41,7 +41,7 @@ describe("collector schedule persistence", () => {
     await ensureSyncAlarm();
 
     expect(values.schedulePeriodMinutes).toBe(720);
-    expect(create).toHaveBeenCalledWith("collector-sync", { periodInMinutes: 720, delayInMinutes: 1 });
+    expect(create).toHaveBeenCalledWith("collector-sync", { periodInMinutes: 720, delayInMinutes: 720 });
   });
 
   it("preserves an off schedule across service-worker restarts", async () => {
@@ -63,5 +63,59 @@ describe("collector schedule persistence", () => {
     expect(values.schedulePeriodMinutes).toBe(0);
     expect(clear).toHaveBeenCalledWith("collector-sync");
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it("does not acknowledge a schedule update until Chrome confirms alarm creation", async () => {
+    let releaseCreate!: () => void;
+    const createGate = new Promise<void>((resolve) => { releaseCreate = resolve; });
+    create.mockImplementationOnce(async (name: string, info: chrome.alarms.AlarmCreateInfo) => {
+      await createGate;
+      alarm = { name, periodInMinutes: info.periodInMinutes, scheduledTime: Date.now() + 60_000 };
+    });
+    let settled = false;
+
+    const update = setSchedulePeriod(360).then(() => { settled = true; });
+    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    releaseCreate();
+    await update;
+
+    expect(settled).toBe(true);
+    await expect(getScheduleInfo()).resolves.toMatchObject({ periodMinutes: 360 });
+  });
+
+  it("propagates alarm creation failures instead of reporting success", async () => {
+    create.mockRejectedValueOnce(new Error("alarm unavailable"));
+
+    await expect(setSchedulePeriod(360)).rejects.toThrow("alarm unavailable");
+  });
+
+  it("keeps an explicit off choice made while startup initialization is in flight", async () => {
+    let releaseRead!: () => void;
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    vi.mocked(chrome.storage.local.get).mockImplementationOnce(async (key) => {
+      await readGate;
+      return { [key as string]: undefined };
+    });
+
+    const initializing = ensureSyncAlarm();
+    await Promise.resolve();
+    const disabling = setSchedulePeriod(0);
+    releaseRead();
+    await Promise.all([initializing, disabling]);
+
+    expect(values.schedulePeriodMinutes).toBe(0);
+    expect(alarm).toBeUndefined();
+  });
+
+  it("requests one catch-up only when a connected supplier missed the cadence", () => {
+    const now = 10_000_000;
+    expect(isSyncCatchUpDue({
+      stale: { connectedAt: 1, lastAttemptAt: now - 721 * 60_000 },
+    }, 720, now)).toBe(true);
+    expect(isSyncCatchUpDue({
+      current: { connectedAt: 1, lastAttemptAt: now - 719 * 60_000 },
+    }, 720, now)).toBe(false);
+    expect(isSyncCatchUpDue({ stale: { connectedAt: 1 } }, null, now)).toBe(false);
   });
 });

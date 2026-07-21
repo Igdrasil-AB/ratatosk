@@ -11,6 +11,9 @@ import { TemplateError } from "./errors";
  */
 export function render(tpl: string, vars: Record<string, unknown>): string {
   return tpl.replace(/\{(\w+)\}/g, (_match, key: string) => {
+    if (!Object.hasOwn(vars, key)) {
+      throw new TemplateError(`missing template variable "{${key}}" in: ${tpl}`);
+    }
     const value = vars[key];
     if (value === undefined || value === null) {
       throw new TemplateError(`missing template variable "{${key}}" in: ${tpl}`);

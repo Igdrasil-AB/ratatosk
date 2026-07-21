@@ -23,9 +23,10 @@ The only network destination is the fixed
 `https://svala.igdrasil.se/api/dev/ratatosk/fingerprints` endpoint. Studio stores
 the one-time token only in extension-local storage, omits cookies and referrers,
 refuses redirects, and uses the fingerprint ID as the idempotency key. Network,
-429, and server failures retry with bounded backoff after restart; other 4xx
-responses require re-pairing or review. A successful receipt is retained locally
-alongside the still-downloadable approved envelope.
+429, and server failures remain retryable with bounded backoff, but delivery is
+never resumed automatically after restart; the user explicitly chooses a later
+delivery attempt. Other 4xx responses require re-pairing or review. A successful
+receipt is retained locally alongside the still-downloadable approved envelope.
 
 ## Included
 
@@ -61,6 +62,9 @@ Origins, query-key names, GraphQL operation names, and inferred schema paths are
 structural but can still contain tenant or internal naming chosen by a supplier.
 The user must inspect the exact preview. Do not commit fingerprint JSON or agent
 reports to this public repository; import approved submissions into private Svala.
+Public supplier requests may name a canonical vendor-wide public origin only;
+tenant-, workspace-, account-, customer-, employee-, or internal-specific hosts
+must be omitted and handled through a maintainer-agreed private channel.
 External contributors can follow the separate
 [safe contribution guide](contributing-supplier-fingerprints.md) without access
 to Svala.

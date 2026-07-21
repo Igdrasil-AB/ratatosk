@@ -15,14 +15,22 @@
  */
 import type { HtmlInvoices, HtmlListSpec, InvoiceRef } from "../types";
 import type { Strategy } from "../engine";
-import { AuthExpired, UnexpectedResponse } from "../errors";
+import { AuthExpired, ResponseTooLarge, UnexpectedResponse } from "../errors";
+import { preferDocumentUrl } from "../document-candidate";
 import { getArray } from "../jsonpath";
 import { mapItem, networkStrategy } from "./network";
+import { createInvoiceListResult } from "../retrieval";
+import { render } from "../template";
+
+/** Regex extraction is a legacy escape hatch; never scan an unbounded page. */
+export const MAX_ROW_REGEX_INPUT_CHARS = 512 * 1024;
 
 export const htmlStrategy: Strategy = {
   async list(recipe, vars, ctx) {
     const spec = (recipe.invoices as HtmlInvoices).list;
-    const res = await ctx.fetch(spec.request, { ...vars, cursor: "" });
+    const requestVars = { ...vars, cursor: "" };
+    const renderedRequestUrl = render(spec.request.url, requestVars);
+    const res = await ctx.fetch(spec.request, requestVars);
     if (res.status === 401) throw new AuthExpired(recipe.id);
     if (!res.ok) throw new UnexpectedResponse(res.status, "html list failed", recipe.id);
 
@@ -31,10 +39,19 @@ export const htmlStrategy: Strategy = {
     const refs = rows.map((row) => mapItem(recipe.id, spec.map, row));
     // Row-regex links are usually page-relative (`/account/receipt/…`) — make them
     // absolute against the page URL so the document fetch can follow them.
+    const documentBaseUrl = res.url || renderedRequestUrl;
     for (const ref of refs) {
-      if (ref.documentUrl) ref.documentUrl = absolutize(ref.documentUrl, spec.request.url);
+      if (ref.documentUrl) ref.documentUrl = absolutize(ref.documentUrl, documentBaseUrl);
     }
-    return dedupById(refs);
+    const unique = dedupById(refs);
+    const resolvedRows = refs.filter((ref) => Boolean(ref.vendorInvoiceId && (ref.documentUrl || spec.map.documentRef))).length;
+    return createInvoiceListResult(unique, {
+      termination: "explicit_end",
+      pagesVisited: 1,
+      observedItems: rows.length,
+      resolvedItems: resolvedRows,
+      unresolvedItems: Math.max(0, rows.length - resolvedRows),
+    });
   },
 
   // Same as network-replay: follow the row's documentUrl (or document.request) to the PDF.
@@ -46,6 +63,7 @@ export const htmlStrategy: Strategy = {
 /** Pull the invoice rows out of an HTML page per the recipe's chosen mode. */
 export function extractRows(spec: HtmlListSpec, html: string): unknown[] {
   if (spec.rowRegex) {
+    if (html.length > MAX_ROW_REGEX_INPUT_CHARS) throw new ResponseTooLarge(MAX_ROW_REGEX_INPUT_CHARS);
     const out: unknown[] = [];
     for (const match of html.matchAll(new RegExp(spec.rowRegex, "g"))) {
       out.push(match.groups ?? {});
@@ -104,10 +122,13 @@ export function absolutize(url: string, base: string): string {
 }
 
 function dedupById(refs: InvoiceRef[]): InvoiceRef[] {
-  const seen = new Set<string>();
-  return refs.filter((ref) => {
-    if (!ref.vendorInvoiceId || seen.has(ref.vendorInvoiceId)) return false;
-    seen.add(ref.vendorInvoiceId);
-    return true;
-  });
+  const unique = new Map<string, InvoiceRef>();
+  for (const ref of refs) {
+    if (!ref.vendorInvoiceId) continue;
+    const existing = unique.get(ref.vendorInvoiceId);
+    unique.set(ref.vendorInvoiceId, existing
+      ? { ...existing, documentUrl: preferDocumentUrl(existing.documentUrl, ref.documentUrl) }
+      : ref);
+  }
+  return [...unique.values()];
 }

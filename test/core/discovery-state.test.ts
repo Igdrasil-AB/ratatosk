@@ -1,0 +1,252 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDiscoveredSupplierCandidateSet, createDiscoveredSupplierProfile } from "../../src/core/discovery";
+import type { VendorRecipe } from "../../src/core/types";
+import {
+  DISCOVERY_FAILURE_MESSAGES,
+  beginSupplierDiscovery,
+  beginSupplierDiscoveryConnect,
+  cancelSupplierDiscovery,
+  clearSupplierDiscovery,
+  completeSupplierDiscovery,
+  failSupplierDiscovery,
+  getSupplierDiscoveryDiagnostic,
+  getSupplierDiscoveryStatus,
+  markSupplierDiscoveryScanning,
+  restoreSupplierDiscoveryPreview,
+  requireSupplierDiscoveryDocumentOrigins,
+  setSupplierDiscoveryPreview,
+} from "../../collector/src/platform/discovery-state";
+import { DISCOVERY_DIAGNOSTIC_SCHEMA } from "../../collector/src/platform/discovery-diagnostic";
+
+describe("durable supplier discovery handoff", () => {
+  const values: Record<string, unknown> = {};
+
+  beforeEach(() => {
+    for (const key of Object.keys(values)) delete values[key];
+    vi.stubGlobal("chrome", {
+      storage: {
+        session: {
+          get: vi.fn(async (key: string) => ({ [key]: values[key] })),
+          set: vi.fn(async (next: Record<string, unknown>) => { Object.assign(values, next); }),
+          remove: vi.fn(async (key: string) => { delete values[key]; }),
+        },
+      },
+    });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("survives the popup permission handoff without storing a full page URL", async () => {
+    const runId = await beginSupplierDiscovery(42, "https://vendor.example");
+    expect(await getSupplierDiscoveryStatus()).toEqual({ stage: "scanning", origin: "https://vendor.example" });
+    expect(JSON.stringify(values)).not.toContain("account/billing");
+    await expect(markSupplierDiscoveryScanning()).resolves.toEqual({ runId, tabId: 42, origin: "https://vendor.example" });
+    await expect(cancelSupplierDiscovery()).resolves.toEqual(["https://vendor.example/*"]);
+    await expect(getSupplierDiscoveryStatus()).resolves.toEqual({ stage: "idle" });
+  });
+
+  it("keeps the strict profile only in session until confirmation succeeds", async () => {
+    const profile = createDiscoveredSupplierProfile({
+      primaryOrigin: "https://vendor.example",
+      entryUrl: "https://vendor.example/account/billing",
+      displayName: "Example Vendor",
+      nameSource: "page",
+      nameConfidence: "medium",
+      adapterId: "dom-links",
+      candidateCount: 2,
+      recipe: recipe(),
+    });
+    const candidates = createDiscoveredSupplierCandidateSet([profile]);
+    const runId = await beginSupplierDiscovery(42, "https://vendor.example");
+    await markSupplierDiscoveryScanning();
+    await setSupplierDiscoveryPreview(runId, candidates, candidateDiagnostic());
+    await expect(getSupplierDiscoveryStatus()).resolves.toMatchObject({
+      stage: "preview",
+      vendorId: profile.id,
+      requiredOrigins: ["https://vendor.example/*"],
+    });
+    await expect(beginSupplierDiscoveryConnect(profile.id)).resolves.toEqual({ runId, candidates });
+    await expect(getSupplierDiscoveryStatus()).resolves.toEqual({ stage: "connecting", name: "Example Vendor" });
+    await restoreSupplierDiscoveryPreview(runId);
+    await expect(getSupplierDiscoveryStatus()).resolves.toMatchObject({ stage: "preview", vendorId: profile.id });
+    await beginSupplierDiscoveryConnect(profile.id);
+    await completeSupplierDiscovery(runId, profile.id, profile.displayName, 2);
+    await expect(getSupplierDiscoveryStatus()).resolves.toEqual({
+      stage: "complete", vendorId: profile.id, name: "Example Vendor", count: 2,
+    });
+    await clearSupplierDiscovery();
+    await expect(getSupplierDiscoveryStatus()).resolves.toEqual({ stage: "idle" });
+  });
+
+  it("retains only a validated redacted diagnostic for a failed search", async () => {
+    const diagnostic = {
+      schema: DISCOVERY_DIAGNOSTIC_SCHEMA,
+      site: "vendor.example",
+      runtime: { collectorVersion: "0.8.0", discoveryEngine: 4 },
+      limits: { pages: 10, depth: 3, durationMs: 15_000 },
+      timing: { elapsedMs: 1_200 },
+      pages: { attempted: 2, linked: 1, commonRoutes: 0 },
+      evidence: { jsonResources: 0, observedRequests: 0, replayedRequests: 0, documentLinks: 1, structuredDataPages: 0, crossOriginHosts: ["api.vendor.example"] },
+      candidates: { compiled: 1, previewed: 1, retained: 0 },
+      attempts: [{ page: 1, source: "entry" as const, route: "/:id/settings/billing", result: "no_candidate" as const, durationMs: 500 }],
+      termination: "queue_exhausted" as const,
+      result: "not_found" as const,
+    };
+    await failSupplierDiscovery(undefined,
+      "No reusable invoice path was found after checking this app's likely billing pages.",
+      ["https://vendor.example/*"],
+      diagnostic,
+    );
+    await expect(getSupplierDiscoveryStatus()).resolves.toEqual({
+      stage: "failed",
+      message: "No reusable invoice path was found after checking this app's likely billing pages.",
+      diagnosticAvailable: true,
+    });
+    await expect(getSupplierDiscoveryDiagnostic()).resolves.toEqual(diagnostic);
+    expect(JSON.stringify(values)).not.toMatch(/[?#]|responseBody|9012345678/i);
+  });
+
+  it("rejects preview and failure writes from superseded or cancelled discovery runs", async () => {
+    const profile = createDiscoveredSupplierProfile({
+      primaryOrigin: "https://vendor.example",
+      entryUrl: "https://vendor.example/account/billing",
+      displayName: "Example Vendor",
+      nameSource: "page",
+      nameConfidence: "medium",
+      adapterId: "dom-links",
+      candidateCount: 1,
+      recipe: recipe(),
+    });
+    const candidates = createDiscoveredSupplierCandidateSet([profile]);
+    const runA = await beginSupplierDiscovery(42, "https://vendor.example");
+    await markSupplierDiscoveryScanning();
+    const runB = await beginSupplierDiscovery(43, "https://other.example");
+    await markSupplierDiscoveryScanning();
+
+    await expect(setSupplierDiscoveryPreview(runA, candidates, candidateDiagnostic())).resolves.toBe(false);
+    await expect(failSupplierDiscovery(runA, DISCOVERY_FAILURE_MESSAGES.pageChanged, ["https://vendor.example/*"])).resolves.toBe(false);
+    await expect(getSupplierDiscoveryStatus()).resolves.toEqual({ stage: "scanning", origin: "https://other.example" });
+
+    await expect(cancelSupplierDiscovery()).resolves.toEqual(["https://other.example/*"]);
+    await expect(setSupplierDiscoveryPreview(runB, candidates, candidateDiagnostic())).resolves.toBe(false);
+    await expect(failSupplierDiscovery(runB, DISCOVERY_FAILURE_MESSAGES.pageChanged, ["https://other.example/*"])).resolves.toBe(false);
+    await expect(getSupplierDiscoveryStatus()).resolves.toEqual({ stage: "idle" });
+  });
+
+  it("serializes a stale scan result and a replacement begin without a read/write interleave", async () => {
+    const profile = createDiscoveredSupplierProfile({
+      primaryOrigin: "https://vendor.example",
+      entryUrl: "https://vendor.example/account/billing",
+      displayName: "Example Vendor",
+      nameSource: "page",
+      nameConfidence: "medium",
+      adapterId: "dom-links",
+      candidateCount: 1,
+      recipe: recipe(),
+    });
+    const runA = await beginSupplierDiscovery(42, "https://vendor.example");
+    await markSupplierDiscoveryScanning();
+
+    const [previewApplied, runB] = await Promise.all([
+      setSupplierDiscoveryPreview(runA, createDiscoveredSupplierCandidateSet([profile]), candidateDiagnostic()),
+      beginSupplierDiscovery(43, "https://other.example"),
+    ]);
+
+    expect(previewApplied).toBe(true);
+    expect(await markSupplierDiscoveryScanning()).toMatchObject({ runId: runB, tabId: 43, origin: "https://other.example" });
+    await expect(setSupplierDiscoveryPreview(runA, createDiscoveredSupplierCandidateSet([profile]), candidateDiagnostic())).resolves.toBe(false);
+    await expect(getSupplierDiscoveryStatus()).resolves.toEqual({ stage: "scanning", origin: "https://other.example" });
+  });
+
+  it("preserves a typed collection failure without exposing supplier data", async () => {
+    await failSupplierDiscovery(undefined, "Supplier returned an invalid document", ["https://vendor.example/*"]);
+    await expect(getSupplierDiscoveryStatus()).resolves.toEqual({
+      stage: "failed",
+      message: "Supplier returned an invalid document",
+      diagnosticAvailable: false,
+    });
+  });
+
+  it("returns a Stripe-backed preview with only the newly required exact origin", async () => {
+    const stripeRecipe = recipe();
+    stripeRecipe.hosts.push("https://pay.stripe.com/*");
+    const profile = createDiscoveredSupplierProfile({
+      primaryOrigin: "https://vendor.example",
+      entryUrl: "https://vendor.example/account/billing",
+      displayName: "Example Vendor",
+      nameSource: "page",
+      nameConfidence: "medium",
+      adapterId: "dom-links",
+      candidateCount: 1,
+      recipe: stripeRecipe,
+    });
+    const runId = await beginSupplierDiscovery(42, "https://vendor.example");
+    await markSupplierDiscoveryScanning();
+    await setSupplierDiscoveryPreview(runId, createDiscoveredSupplierCandidateSet([profile]), candidateDiagnostic());
+    await beginSupplierDiscoveryConnect(profile.id);
+
+    await expect(requireSupplierDiscoveryDocumentOrigins(runId, [
+      "https://stripe-upload-api.s3.eu-north-1.amazonaws.com/*",
+    ])).resolves.toBe(true);
+    await expect(getSupplierDiscoveryStatus()).resolves.toMatchObject({
+      stage: "preview",
+      requiredOrigins: expect.arrayContaining([
+        "https://pay.stripe.com/*",
+        "https://stripe-upload-api.s3.eu-north-1.amazonaws.com/*",
+      ]),
+    });
+    expect(JSON.stringify(values)).not.toContain("signature=");
+  });
+
+  it.each([
+    "Ratatosk found a possible invoice source, but this supplier session has expired. Sign in and try again.",
+    "Ratatosk found a possible invoice source, but this account does not have billing access.",
+    "Ratatosk found a possible invoice source, but the supplier blocked its session check. Keep the billing page open and try again.",
+    "The supplier could not be reached reliably during verification. Keep the app open and try again.",
+    "Ratatosk reached its safe search-time limit before it could verify an invoice source.",
+    "Ratatosk checked its safe page limit without verifying an invoice source.",
+  ])("preserves the detailed closed discovery failure: %s", async (message) => {
+    await failSupplierDiscovery(undefined, message, ["https://vendor.example/*"]);
+    await expect(getSupplierDiscoveryStatus()).resolves.toMatchObject({ stage: "failed", message });
+  });
+});
+
+function candidateDiagnostic() {
+  return {
+    schema: DISCOVERY_DIAGNOSTIC_SCHEMA,
+    site: "vendor.example",
+    runtime: { collectorVersion: "0.8.1", discoveryEngine: 4 },
+    limits: { pages: 10, depth: 3, durationMs: 15_000 },
+    timing: { elapsedMs: 800 },
+    pages: { attempted: 2, linked: 1, commonRoutes: 0 },
+    evidence: { jsonResources: 0, observedRequests: 0, replayedRequests: 0, documentLinks: 2, structuredDataPages: 0, crossOriginHosts: [] },
+    candidates: { compiled: 1, previewed: 1, retained: 1 },
+    attempts: [],
+    termination: "candidate_set_complete" as const,
+    result: "candidates_found" as const,
+  };
+}
+
+function recipe(): VendorRecipe {
+  const page = "https://vendor.example/account/billing";
+  return {
+    id: "candidate",
+    name: "Example Vendor",
+    homepage: "https://vendor.example",
+    hosts: ["https://vendor.example/*"],
+    fetchContext: "page",
+    auth: { check: { request: { url: page }, expect: { statusIn: [200] } }, loginUrl: "https://vendor.example" },
+    invoices: {
+      strategy: "dom",
+      list: {
+        open: page,
+        steps: [
+          { action: "waitFor", selector: 'a[href$=".pdf"]', timeoutMs: 5_000 },
+          { action: "extractAll", selector: 'a[href$=".pdf"]', attr: "href", as: "documents" },
+        ],
+        hrefsFrom: "documents",
+      },
+      document: { contentType: "application/pdf" },
+    },
+  };
+}

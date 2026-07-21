@@ -22,6 +22,9 @@ destination; dedicated Igdrasil test company; support request; deletion request.
 3. Build from the reviewed commit and replace template hashes/commit/window in a
    private pilot manifest.
 4. Run `npm run validate:pilot -- <private-manifest.json> --ready`.
+   A `ready` manifest fails after its pilot window ends; prepare and review a new
+   manifest rather than reusing stale approval evidence. Future start dates are
+   allowed for advance preparation, and completed `evaluated` records remain valid.
 5. Confirm legal/support ownership, publisher/trader identity, verified domain,
    private reviewer account, regions, and Unlisted distribution.
 6. Ask the operator for explicit submission approval. Do not infer it.

@@ -23,15 +23,38 @@ export interface ConnectParams {
   token: string;
   /** The company the collected invoices belong to. */
   companyId: string;
-  /** The Igdrasil API base URL, e.g. "https://api.igdrasil.se". Must be an `*.igdrasil.se` https host. */
+  /** The reviewed Collector API base URL: "https://accounting.igdrasil.se". */
   apiBaseUrl: string;
   /** One-use state created by an explicit connection action. */
   state: string;
 }
 
+/** Accept only the upload-only credential shape Collector itself persists. */
+export function collectorTokenFromResponse(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const token = (value as Record<string, unknown>).token;
+  return typeof token === "string" && /^rat_[a-f0-9]{64}$/.test(token) ? token : undefined;
+}
+
 export type ConnectResult =
   | { ok: true; present?: boolean; version?: string; connected?: boolean; companyId?: string; state?: string }
   | { ok: false; error: string };
+
+/**
+ * Run a token-minting action only after the extension confirms the one-use
+ * connection intent it created. Keeping the ordering here makes it usable by
+ * every web-app integration, and lets callers test that minting cannot happen
+ * when the extension is absent or the intent has expired.
+ */
+export async function withValidatedInvoiceCollectorIntent<T>(
+  state: string,
+  mint: () => Promise<T>,
+  validate: (state: string) => Promise<ConnectResult> = validateInvoiceCollectorIntent,
+): Promise<{ ok: true; value: T } | { ok: false; error: string }> {
+  const validation = await validate(state);
+  if (!validation.ok) return { ok: false, error: validation.error };
+  return { ok: true, value: await mint() };
+}
 
 let seq = 0;
 
@@ -85,4 +108,14 @@ export function getInvoiceCollectorStatus(): Promise<ConnectResult> {
 /** Disconnect the extension from Igdrasil (clears the token, reverts to local saving). */
 export function disconnectInvoiceCollector(): Promise<ConnectResult> {
   return request({ type: "igdrasil:disconnect" });
+}
+
+/** Map the disconnect acknowledgment without claiming success on refusal or timeout. */
+export function disconnectInvoiceCollectorOutcome(result: ConnectResult): {
+  state: "connected" | "disconnected";
+  error: string | null;
+} {
+  return result.ok
+    ? { state: "disconnected", error: null }
+    : { state: "connected", error: result.error };
 }

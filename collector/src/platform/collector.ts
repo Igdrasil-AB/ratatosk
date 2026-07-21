@@ -1,13 +1,17 @@
-import { runVendor } from "../../../src/core/engine";
+import { streamVendor } from "../../../src/core/engine";
+import type { FetchedDocument, RetrievalCompleteness, RetrievalProof, VendorRecipe } from "../../../src/core/types";
 import {
   AuthExpired,
+  AuthFailure,
+  DocumentPermissionRequired,
   operationalCodeForError,
   operationalOutcomeLabel,
   RateLimited,
+  RetrievalIncomplete,
   type OperationalOutcomeCode,
 } from "../../../src/core/errors";
-import { getVendor } from "../../../src/vendors";
 import { buildRunContext, buildSink, buildStrategies } from "./runtime";
+import { resolveCollectorSource } from "./source-catalog";
 import {
   boundedNextEligibleRunAt,
   getConnections,
@@ -22,12 +26,19 @@ import { notifyReconnect } from "./notifications";
 export interface VendorRunSummary {
   vendorId: string;
   status: "ok" | "partial" | "auth_expired" | "rate_limited" | "skipped" | "error";
+  /** Newly committed documents. Backend-reported duplicates are excluded. */
   count: number;
+  /** Documents whose retrieval and destination identity were verified,
+   * including documents the destination had already accepted. */
+  verifiedCount?: number;
+  retrieval?: RetrievalCompleteness;
+  retrievalProof?: RetrievalProof;
   code?: OperationalOutcomeCode;
   failedScopes?: number;
   emptyScopes?: number;
   nextEligibleRunAt?: number;
   error?: string;
+  requiredOrigins?: readonly string[];
 }
 
 /**
@@ -40,20 +51,49 @@ export interface VendorRunSummary {
  */
 const vendorRuns = new Map<string, Promise<VendorRunSummary>>();
 
+class DestinationDeliveryError extends Error {
+  constructor(readonly cause: unknown) {
+    super("invoice destination unavailable");
+    this.name = "DestinationDeliveryError";
+  }
+}
+
+class DiscoveryAdmissionError extends Error {
+  constructor(readonly cause: unknown) {
+    super("discovered supplier connection could not be saved");
+    this.name = "DiscoveryAdmissionError";
+  }
+}
+
 export function runVendorById(vendorId: string): Promise<VendorRunSummary> {
   const existing = vendorRuns.get(vendorId);
   if (existing) return existing;
 
-  const task = executeVendorRun(vendorId).finally(() => {
-    if (vendorRuns.get(vendorId) === task) vendorRuns.delete(vendorId);
-  });
+  const task = resolveCollectorSource(vendorId)
+    .then((source) => source?.recipe
+      ? executeRecipeRun(source.recipe)
+      : { vendorId, status: "error", count: 0, error: "unknown vendor" } as VendorRunSummary)
+    .finally(() => {
+      if (vendorRuns.get(vendorId) === task) vendorRuns.delete(vendorId);
+    });
   vendorRuns.set(vendorId, task);
   return task;
 }
 
-async function executeVendorRun(vendorId: string): Promise<VendorRunSummary> {
-  const recipe = getVendor(vendorId);
-  if (!recipe) return { vendorId, status: "error", count: 0, error: "unknown vendor" };
+/** Execute an ephemeral candidate before it is admitted to the local catalog. */
+export function runDiscoveredCandidate(
+  recipe: VendorRecipe,
+  afterFirstDelivery: (document: FetchedDocument) => Promise<void>,
+): Promise<VendorRunSummary> {
+  return executeRecipeRun(recipe, afterFirstDelivery, true);
+}
+
+async function executeRecipeRun(
+  recipe: VendorRecipe,
+  afterFirstDelivery?: (document: FetchedDocument) => Promise<void>,
+  requireCompleteRetrieval = false,
+): Promise<VendorRunSummary> {
+  const vendorId = recipe.id;
 
   const nextEligibleRunAt = await getNextEligibleRunAt(vendorId);
   if (nextEligibleRunAt) {
@@ -63,26 +103,39 @@ async function executeVendorRun(vendorId: string): Promise<VendorRunSummary> {
   const config = await getSinkConfig();
   if (!config) return { vendorId, status: "error", count: 0, error: "choose a destination before collecting" };
   const { ctx, dispose } = buildRunContext(sinkCompanyId(config), recipe);
-  const strategies = buildStrategies();
+  const strategies = buildStrategies(recipe);
 
   console.info(`[collector] running "${vendorId}"…`);
+  let acceptedCount = 0;
+  let verifiedCount = 0;
+  let retrieval: RetrievalCompleteness | undefined;
+  let retrievalProof: RetrievalProof | undefined;
 
-  let phase: "collect" | "destination" = "collect";
   try {
-    const { documents, scopes } = await runVendor(recipe, ctx, strategies);
-    console.info(`[collector] "${vendorId}": ok — ${documents.length} document(s)`);
-
-    let acceptedCount = 0;
-    if (documents.length) {
-      phase = "destination";
-      const sink = await buildSink();
-      const collectedAt = Date.now();
-      for (const doc of documents) {
+    let firstDeliveryCommitted = false;
+    let sink: Awaited<ReturnType<typeof buildSink>>;
+    try {
+      // Build the irreversible delivery path from the exact destination
+      // snapshot that supplied this run's tenant/dedup context. A later UI
+      // configuration change must apply to the next run, never split one run
+      // across two destinations.
+      sink = await buildSink(config);
+    } catch (error) {
+      throw new DestinationDeliveryError(error);
+    }
+    const collectedAt = Date.now();
+    const result = await streamVendor(recipe, ctx, strategies, async (doc) => {
+      try {
         const result = await sink.send(doc);
         if (!result.accepted) throw new Error("destination rejected document");
-        await ctx.seen.add(doc.idempotencyKey, doc.source);
-        acceptedCount++;
-        // Remember what we collected so the popup can show a feed of invoices.
+        // Remember the accepted delivery before any admission callback. The
+        // destination write cannot be rolled back, so its dedup evidence must
+        // survive later secondary dedup/profile/connection storage failures.
+        if (!result.deduped) acceptedCount++;
+        // A backend-deduplicated retry can be the recovery path after a
+        // previous accepted delivery failed before this local write. Preserve
+        // (or restore) the local collection history for every accepted sink
+        // response before committing either seen key.
         await recordCollected([
           {
             key: doc.idempotencyKey,
@@ -94,8 +147,34 @@ async function executeVendorRun(vendorId: string): Promise<VendorRunSummary> {
             collectedAt,
           },
         ]);
+      } catch (error) {
+        throw new DestinationDeliveryError(error);
       }
-    }
+      if (!firstDeliveryCommitted) {
+        try {
+          await afterFirstDelivery?.(doc);
+          firstDeliveryCommitted = true;
+        } catch (error) {
+          // Delivery is already durable, but discovery must not report a
+          // connected supplier until both its profile and connection persist.
+          throw new DiscoveryAdmissionError(error);
+        }
+      }
+      // Admission must succeed before either identity becomes a retry guard.
+      // The durable destination journal makes a repeated delivery safe while
+      // leaving a failed discovered candidate eligible for verification again.
+      try {
+        await ctx.seen.add(doc.contentIdempotencyKey, doc.source);
+        await ctx.seen.add(doc.idempotencyKey, doc.source);
+        verifiedCount++;
+      } catch (error) {
+        throw new DestinationDeliveryError(error);
+      }
+    }, { requireCompleteRetrieval });
+    const { scopes } = result;
+    retrieval = result.retrieval;
+    retrievalProof = result.retrievalProof;
+    console.info(`[collector] "${vendorId}": ok — ${acceptedCount} document(s)`);
 
     const partial = scopes.failed > 0;
     const code = partial ? "partial_scope_failure" as const : undefined;
@@ -112,32 +191,120 @@ async function executeVendorRun(vendorId: string): Promise<VendorRunSummary> {
       vendorId,
       status: partial ? "partial" : "ok",
       count: acceptedCount,
+      verifiedCount,
+      retrieval,
+      ...(retrievalProof ? { retrievalProof } : {}),
       ...(code ? { code } : {}),
       failedScopes: scopes.failed,
       emptyScopes: scopes.empty,
     };
   } catch (err) {
+    if (err instanceof RetrievalIncomplete) retrievalProof = err.proof;
+    if (err instanceof DiscoveryAdmissionError) {
+      const code = "connection_persistence_failed" as const;
+      const message = operationalOutcomeLabel(code);
+      console.error(`[collector] "${vendorId}": ${message}`);
+      return {
+        vendorId,
+        status: "error",
+        count: acceptedCount,
+        verifiedCount,
+        retrieval,
+        ...(retrievalProof ? { retrievalProof } : {}),
+        code,
+        error: message,
+      };
+    }
     if (err instanceof AuthExpired) {
       console.warn(`[collector] "${vendorId}": auth check failed — session looks logged out`);
       notifyReconnect(recipe);
+      if (acceptedCount > 0) {
+        const message = operationalOutcomeLabel("auth_expired");
+        await recordRun(vendorId, {
+          lastStatus: "partial",
+          lastCount: acceptedCount,
+          lastCode: "auth_expired",
+          lastError: message,
+          nextEligibleRunAt: undefined,
+        });
+        return { vendorId, status: "partial", count: acceptedCount, retrieval, code: "auth_expired", error: message };
+      }
       await recordRun(vendorId, { lastStatus: "auth_expired", lastCode: "auth_expired", nextEligibleRunAt: undefined });
       return { vendorId, status: "auth_expired", count: 0, code: "auth_expired" };
+    }
+    if (err instanceof AuthFailure) {
+      const code = operationalCodeForError(err);
+      const message = operationalOutcomeLabel(code);
+      console.warn(`[collector] "${vendorId}": ${message.toLowerCase()}`);
+      if (acceptedCount > 0) {
+        await recordRun(vendorId, { lastStatus: "partial", lastCount: acceptedCount, lastCode: code, lastError: message, nextEligibleRunAt: undefined });
+        return { vendorId, status: "partial", count: acceptedCount, retrieval, code, error: message };
+      }
+      await recordRun(vendorId, { lastStatus: "error", lastCode: code, lastError: message, nextEligibleRunAt: undefined });
+      return { vendorId, status: "error", count: 0, code, error: message };
     }
     if (err instanceof RateLimited) {
       const eligibleAt = boundedNextEligibleRunAt(err.retryAfterMs);
       await recordRun(vendorId, {
-        lastStatus: "rate_limited",
+        lastStatus: acceptedCount > 0 ? "partial" : "rate_limited",
+        lastCount: acceptedCount || undefined,
         lastCode: "rate_limited",
         lastError: operationalOutcomeLabel("rate_limited"),
         nextEligibleRunAt: eligibleAt,
       });
-      return { vendorId, status: "rate_limited", count: 0, code: "rate_limited", nextEligibleRunAt: eligibleAt };
+      return acceptedCount > 0
+        ? { vendorId, status: "partial", count: acceptedCount, retrieval, code: "rate_limited", error: operationalOutcomeLabel("rate_limited"), nextEligibleRunAt: eligibleAt }
+        : { vendorId, status: "rate_limited", count: 0, code: "rate_limited", nextEligibleRunAt: eligibleAt };
     }
-    const code: OperationalOutcomeCode = phase === "destination" ? "destination_unavailable" : operationalCodeForError(err);
+    if (err instanceof DocumentPermissionRequired) {
+      const code = "document_permission_required" as const;
+      const message = operationalOutcomeLabel(code);
+      const existing = (await getConnections())[vendorId];
+      if (existing) {
+        await recordRun(vendorId, {
+          lastStatus: acceptedCount > 0 ? "partial" : "error",
+          lastCount: acceptedCount || undefined,
+          lastCode: code,
+          lastError: message,
+          documentOrigins: [...new Set([...(existing.documentOrigins ?? []), ...err.requiredOrigins])],
+          nextEligibleRunAt: undefined,
+        });
+      }
+      return {
+        vendorId,
+        status: acceptedCount > 0 ? "partial" : "error",
+        count: acceptedCount,
+        retrieval,
+        code,
+        error: message,
+        requiredOrigins: err.requiredOrigins,
+      };
+    }
+    const code: OperationalOutcomeCode = err instanceof DestinationDeliveryError ? "destination_unavailable" : operationalCodeForError(err);
     const message = operationalOutcomeLabel(code);
     console.error(`[collector] "${vendorId}": ${message}`);
+    if (acceptedCount > 0) {
+      await recordRun(vendorId, { lastStatus: "partial", lastCount: acceptedCount, lastCode: code, lastError: message, nextEligibleRunAt: undefined });
+      return {
+        vendorId,
+        status: "partial",
+        count: acceptedCount,
+        retrieval: retrieval ?? (code === "retrieval_incomplete" ? "partial" : undefined),
+        ...(retrievalProof ? { retrievalProof } : {}),
+        code,
+        error: message,
+      };
+    }
     await recordRun(vendorId, { lastStatus: "error", lastCode: code, lastError: message, nextEligibleRunAt: undefined });
-    return { vendorId, status: "error", count: 0, code, error: message };
+    return {
+      vendorId,
+      status: "error",
+      count: 0,
+      retrieval: code === "retrieval_incomplete" ? "partial" : retrieval,
+      ...(retrievalProof ? { retrievalProof } : {}),
+      code,
+      error: message,
+    };
   } finally {
     await dispose();
   }
@@ -147,6 +314,21 @@ async function executeVendorRun(vendorId: string): Promise<VendorRunSummary> {
 export async function runAllConnected(): Promise<VendorRunSummary[]> {
   const ids = Object.keys(await getConnections());
   const summaries: VendorRunSummary[] = [];
-  for (const id of ids) summaries.push(await runVendorById(id));
+  for (const id of ids) {
+    try {
+      summaries.push(await runVendorById(id));
+    } catch (error) {
+      const code = operationalCodeForError(error);
+      const message = operationalOutcomeLabel(code);
+      console.error(`[collector] "${id}": isolated run failure (${code})`);
+      await recordRun(id, {
+        lastStatus: "error",
+        lastCode: code,
+        lastError: message,
+        nextEligibleRunAt: undefined,
+      }).catch(() => undefined);
+      summaries.push({ vendorId: id, status: "error", count: 0, code, error: message });
+    }
+  }
   return summaries;
 }
