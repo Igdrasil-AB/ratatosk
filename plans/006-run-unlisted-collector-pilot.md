@@ -36,8 +36,8 @@ and support processes before a public claim scales the blast radius.
 | --- | --- | --- |
 | Clean install | `npm ci` | lockfile unchanged |
 | Release build | `npm run release:collector` | ZIP + checksum |
-| Verify checksum | `shasum -a 256 -c artifacts/ratatosk-collector-v*.zip.sha256` | `OK` |
-| Archive audit | `unzip -l artifacts/ratatosk-collector-v*.zip` | Collector-only contents |
+| Verify exact artifact | `npm run verify:collector-artifact` | Current package version ZIP and checksum verified |
+| Archive audit | `unzip -l "artifacts/ratatosk-collector-v$(node -p \"require('./package.json').version\").zip"` | Collector-only contents |
 | Security | `npm audit --audit-level=high` | zero high/critical |
 
 ## Scope
@@ -69,7 +69,9 @@ root manifest, exact permissions, no Studio/debugger code, no source maps, and n
 environment or fixture files. Record checksum and commit in the private operator
 evidence, not secrets in Git.
 
-**Verify**: packaging and archive commands above pass.
+**Verify**: the exact-version packaging and archive commands above pass. Record
+that same path, checksum, and `git rev-parse HEAD` together in the decision
+evidence; do not select a release candidate with a wildcard.
 
 ### 3. Complete fresh-profile live tests
 
@@ -119,4 +121,3 @@ or prepare a separate public-launch plan.
 
 Re-run the live matrix before every release. Endpoint compatibility is temporal,
 not a permanent property of a fixture test.
-

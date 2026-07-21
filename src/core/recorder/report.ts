@@ -23,11 +23,12 @@ const NOISE = /javascript|text\/css|font|image\/|\.(js|css|woff2?|png|svg|jpe?g|
 export function buildAgentReport(input: AgentReportInput): string {
   const { version, session, draft, docLinks } = input;
   const entries = session.entries;
-  const withBodies = entries.filter((e) => e.responseBody).length;
+  const requests = entries.filter((entry) => entry.method !== "DOM");
+  const withBodies = requests.filter((e) => e.responseBody).length;
 
   const out: string[] = [];
   out.push(`# Invoice Collector capture → paste to your coding agent`);
-  out.push(`origin: ${session.origin} · extension v${version} · ${entries.length} requests captured · ${withBodies} with bodies`);
+  out.push(`origin: ${session.origin} · extension v${version} · ${requests.length} requests captured · ${withBodies} with bodies · ${entries.length - requests.length} rendered-page artifacts`);
   out.push("");
 
   if (draft) {
@@ -44,7 +45,7 @@ export function buildAgentReport(input: AgentReportInput): string {
   }
   out.push("");
 
-  const samples = entries
+  const samples = requests
     .filter((e) => !NOISE.test(`${e.contentType} ${e.url}`))
     .slice(0, 25)
     .map((e) => `${e.status} ${e.contentType || "?"} ${e.method} ${sanitizeReportUrl(e.url)}`);

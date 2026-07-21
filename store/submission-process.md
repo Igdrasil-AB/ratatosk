@@ -27,15 +27,20 @@ From a clean release commit on Node 22:
 ```bash
 npm ci
 npm run release:collector
-shasum -a 256 -c artifacts/ratatosk-collector-v0.7.0.zip.sha256
+COLLECTOR_VERSION="$(node -p "require('./package.json').version")"
+COLLECTOR_ZIP="artifacts/ratatosk-collector-v${COLLECTOR_VERSION}.zip"
+npm run verify:collector-artifact
+unzip -l "$COLLECTOR_ZIP"
 ```
 
-Upload only `artifacts/ratatosk-collector-v0.7.0.zip`. Do not upload the Studio
-ZIP, `dist/`, a GitHub source archive, or the repository root.
+Upload only the exact path in `COLLECTOR_ZIP`, resolved from the reviewed
+package version above. Do not upload the Studio ZIP, `dist/`, a GitHub source
+archive, or the repository root.
 
 The packaging command rejects a non-MV3 build, version mismatch, source maps,
-unexpected Collector permissions, an all-sites host pattern, a changed Igdrasil
-content-script origin, or a weakened CSP.
+unexpected Collector permissions, an optional-host envelope other than the
+reviewed HTTPS discovery pattern, a changed Igdrasil content-script origin, or a
+weakened CSP.
 
 ## 3. Complete the dashboard tabs
 

@@ -25,9 +25,17 @@ be shared.
 1. Check Collector's Vendors screen to confirm the supplier is not already
    available.
 2. Open the [Ratatosk repository](https://github.com/Igdrasil-AB/ratatosk) and
-   create a supplier request containing only the public supplier name and billing
-   portal origin. This lets maintainers confirm whether an investigation is
-   useful before anyone records a page.
+   create a supplier request containing the public supplier name. Include an
+   origin only when it is the canonical, vendor-wide public origin (for example,
+   `https://billing.vendor.example`). Never paste the active tab's tenant-,
+   workspace-, account-, customer-, or employee-specific host (for example,
+   `https://acme-customer.vendor.example`) or an internal hostname. Do not try to
+   anonymize such a host by editing it: omit the origin instead. If you cannot
+   confidently distinguish a public vendor origin from an identifying one, open
+   a [private GitHub security advisory](https://github.com/Igdrasil-AB/ratatosk/security/advisories/new)
+   with the supplier name only and ask a maintainer to arrange a safe channel;
+   do not attach the origin or capture data yet. This lets maintainers confirm
+   whether an investigation is useful before anyone records a page.
 3. If you are helping with the technical investigation, install the reviewed
    Ratatosk Studio build described in the repository README.
 4. Open the supplier's billing page in the dedicated profile, read Studio's
@@ -51,7 +59,8 @@ values, fixtures, invoice IDs, dates, amounts, currencies, document URLs, and
 customer details.
 
 Origins and schema names can still reveal tenant or internal naming chosen by a
-supplier, so inspect the exact preview before approving it.
+supplier, so inspect the exact preview before approving it. Approval for private
+Svala intake does not make an origin safe to copy into a public issue.
 
 ## Stop and retention
 

@@ -1,15 +1,26 @@
 /**
- * Ratatosk Collector popup. Framework-free and intentionally small: state comes
- * from the service worker and each screen renders semantic native controls.
+ * Ratatosk Collector side panel. Framework-free and intentionally small: state
+ * comes from the service worker and each screen renders semantic native controls.
  */
-import { send, type ScheduleInfo, type SourceView } from "../../platform/messaging";
+import { send, type DiscoveryStatusView, type ScheduleInfo, type SourceView } from "../../platform/messaging";
 import type { LedgerEntry } from "../../platform/storage";
 import { vendorLifecycleLabel } from "../../../../src/vendors/lifecycle";
-import { requestHostPermissions } from "../../platform/permissions";
-import { clearConnectBadge } from "../../platform/popup-handoff";
+import {
+  hasTabAwarenessPermission,
+  requestHostPermissions,
+  requestTabAwarenessPermission,
+  revokeTabAwarenessPermission,
+} from "../../platform/permissions";
 import { brandIcon } from "../../../../src/vendors/icons";
+import { filterLedgerByDate, groupLedgerBySupplier, type LedgerDateFilter } from "./ledger-view";
+import { PANEL_UI_STATE_KEY, parsePanelUiState, type PanelScreen } from "./panel-state";
+import {
+  queryActiveSupplierTab,
+  watchActiveSupplierTab,
+  type ActiveSupplierTab,
+} from "./active-supplier-tab";
+import { parseConfigResponse, parseInitialBackgroundState, PopupLoadError } from "./load-state";
 
-type Screen = "home" | "vendors" | "settings";
 type InlineError = { scope: "vendor"; vendorId: string; message: string } | { scope: "settings"; message: string };
 
 const app = document.getElementById("app") as HTMLElement;
@@ -18,12 +29,19 @@ const disconnectDialog = document.getElementById("disconnect-dialog") as HTMLDia
 const disconnectName = document.getElementById("disconnect-name") as HTMLElement;
 const confirmDisconnect = document.getElementById("confirm-disconnect") as HTMLButtonElement;
 const cancelDisconnect = document.getElementById("cancel-disconnect") as HTMLButtonElement;
+const historyDialog = document.getElementById("history-dialog") as HTMLDialogElement;
+const historyName = document.getElementById("history-name") as HTMLElement;
+const confirmHistory = document.getElementById("confirm-history") as HTMLButtonElement;
+const cancelHistory = document.getElementById("cancel-history") as HTMLButtonElement;
 const VENDOR_GUIDANCE_SEEN = "ui.vendorGuidanceSeen.v1";
 const ADD_SUPPLIER_URL = "https://github.com/Igdrasil-AB/ratatosk#download-studio-to-add-a-new-supplier";
 
-let screen: Screen = "home";
+let screen: PanelScreen = "home";
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let disconnectVendorId: string | null = null;
+let historyVendorId: string | null = null;
+let hasLoadedBackgroundState = false;
+const expandedSupplierIds = new Set<string>();
 const state = {
   sources: [] as SourceView[],
   ledger: [] as LedgerEntry[],
@@ -33,6 +51,11 @@ const state = {
   forceGuidance: false,
   busyVendorId: null as string | null,
   inlineError: null as InlineError | null,
+  discovery: { stage: "idle" } as DiscoveryStatusView,
+  activeSupplierTab: null as ActiveSupplierTab | null,
+  tabAwarenessEnabled: false,
+  tabAwarenessRequestPending: false,
+  ledgerDateFilter: "all" as LedgerDateFilter,
 };
 
 // ---- helpers --------------------------------------------------------------
@@ -87,9 +110,7 @@ function categoryLabel(category?: string): string {
   return category.charAt(0).toUpperCase() + category.slice(1);
 }
 
-const getConfig = () => send({ type: "getConfig" }).then((response) => (
-  response.ok && "config" in response ? response.config : null
-));
+const getConfig = () => send({ type: "getConfig" }).then(parseConfigResponse);
 
 function toast(message: string): void {
   if (toastTimer) clearTimeout(toastTimer);
@@ -110,29 +131,74 @@ function settingsError(message: string): void {
   document.getElementById("settings-error")?.focus();
 }
 
+function persistPanelUiState(): void {
+  void chrome.storage.session.set({
+    [PANEL_UI_STATE_KEY]: {
+      screen,
+      ledgerDateFilter: state.ledgerDateFilter,
+      expandedSupplierIds: [...expandedSupplierIds],
+    },
+  }).catch((error) => console.warn("[collector] side panel state was not saved", error));
+}
+
+async function restorePanelUiState(): Promise<void> {
+  try {
+    const stored = await chrome.storage.session.get(PANEL_UI_STATE_KEY);
+    const restored = parsePanelUiState(stored[PANEL_UI_STATE_KEY]);
+    screen = restored.screen;
+    state.ledgerDateFilter = restored.ledgerDateFilter;
+    expandedSupplierIds.clear();
+    for (const vendorId of restored.expandedSupplierIds) expandedSupplierIds.add(vendorId);
+  } catch (error) {
+    console.warn("[collector] side panel state was not restored", error);
+  }
+}
+
 // ---- load + render --------------------------------------------------------
 
 async function load(): Promise<void> {
   try {
-    const [sourceResponse, ledgerResponse, config, scheduleResponse, ui] = await Promise.all([
+    const [sourceResponse, ledgerResponse, config, scheduleResponse, discoveryResponse, activeSupplierTab, tabAwarenessEnabled, ui] = await Promise.all([
       send({ type: "listSources" }),
       send({ type: "getLedger" }),
       getConfig(),
       send({ type: "getSchedule" }),
+      send({ type: "getDiscoveryStatus" }),
+      queryActiveSupplierTab(),
+      hasTabAwarenessPermission(),
       chrome.storage.local.get(VENDOR_GUIDANCE_SEEN),
     ]);
-    state.sources = sourceResponse.ok && "sources" in sourceResponse ? sourceResponse.sources : [];
-    state.ledger = ledgerResponse.ok && "ledger" in ledgerResponse ? ledgerResponse.ledger : [];
+    const background = parseInitialBackgroundState({
+      sourceResponse,
+      ledgerResponse,
+      scheduleResponse,
+      discoveryResponse,
+    });
+    state.sources = background.sources;
+    state.ledger = background.ledger;
     state.config = config;
-    state.schedule = scheduleResponse.ok && "schedule" in scheduleResponse
-      ? scheduleResponse.schedule
-      : { periodMinutes: null, nextRunAt: null };
+    state.schedule = background.schedule;
+    state.discovery = background.discovery;
+    state.activeSupplierTab = activeSupplierTab;
+    state.tabAwarenessEnabled = tabAwarenessEnabled;
+    if (state.discovery.stage !== "idle" && screen !== "vendors") {
+      screen = "vendors";
+      persistPanelUiState();
+    }
     state.vendorGuidanceSeen = ui[VENDOR_GUIDANCE_SEEN] === true;
     render();
+    hasLoadedBackgroundState = true;
   } catch (error) {
-    console.error("[collector] popup state failed to load", error);
+    console.error("[collector] side panel state failed to load", error);
     app.setAttribute("aria-busy", "false");
-    app.innerHTML = `${header()}<section class="empty error-state"><h1>Ratatosk couldn’t load</h1><p>Close and reopen the extension, or try again now.</p><button class="btn" data-action="retry-load">Try Again</button></section>`;
+    if (hasLoadedBackgroundState) {
+      toast("Couldn’t refresh Ratatosk. Your previous view is still shown.");
+      return;
+    }
+    const detail = error instanceof PopupLoadError
+      ? error.message
+      : "Ratatosk couldn’t reach its background service.";
+    app.innerHTML = `${header()}<section class="empty error-state"><h1>Ratatosk couldn’t load</h1><p>${esc(detail)} Try again now, or close and reopen the extension.</p><button class="btn" data-action="retry-load">Try Again</button></section>`;
   }
 }
 
@@ -147,32 +213,66 @@ function header(): string {
   return `<header class="head">
     <span class="mark"><img src="/icons/48.png" width="44" height="44" alt="" /></span>
     <span class="brand"><span class="title">Ratatosk</span><span class="subtitle">Invoice Collector</span></span>
-    <button type="button" class="settings-btn" data-action="open-settings">${gearIcon()}<span>Settings</span></button>
+    <button type="button" class="settings-btn" data-action="open-settings" aria-label="Settings" title="Settings">${gearIcon()}</button>
   </header>`;
 }
 
 function renderHome(): void {
   const connected = state.sources.filter((source) => source.connection);
-  const needsReconnect = connected.filter((source) => source.connection?.lastStatus === "auth_expired");
+  const needsReconnect = connected.filter((source) =>
+    source.connection?.lastStatus === "auth_expired" || source.missingHosts.length > 0);
+  const needsAttention = connected.filter((source) =>
+    source.missingHosts.length > 0 || source.connection?.lastStatus === "auth_expired" ||
+    source.connection?.lastStatus === "partial" || source.connection?.lastStatus === "error" ||
+    source.connection?.lastStatus === "rate_limited");
 
   let status = "";
   if (!state.config) {
     status = `<div class="status"><span class="dot warn" aria-hidden="true"></span><strong>Setup Required</strong><span class="sep" aria-hidden="true">·</span><button type="button" class="status-link" data-action="open-settings">Choose Destination</button></div>`;
   } else if (needsReconnect.length) {
     status = `<button type="button" class="status status-action" data-action="open-vendors"><span class="dot warn" aria-hidden="true"></span><strong>${needsReconnect.length} Vendor${needsReconnect.length > 1 ? "s" : ""} Need Reconnecting</strong><span aria-hidden="true">→</span></button>`;
-  } else if (state.schedule.periodMinutes) {
-    const synced = connected.map((source) => source.connection?.lastRunAt ?? 0).sort((left, right) => right - left)[0];
-    status = `<div class="status" role="status"><span class="dot" aria-hidden="true"></span><strong>Up to Date</strong><span class="sep" aria-hidden="true">·</span><span>synced ${relTime(synced || undefined)}</span></div>`;
+  } else if (needsAttention.length) {
+    status = `<button type="button" class="status status-action" data-action="open-vendors"><span class="dot warn" aria-hidden="true"></span><strong>${needsAttention.length} Vendor${needsAttention.length > 1 ? "s" : ""} Need Attention</strong><span aria-hidden="true">→</span></button>`;
+  } else if (state.schedule.periodMinutes && connected.length) {
+    const completeSyncs = connected.map((source) =>
+      source.connection?.lastCompleteSyncAt ??
+      (source.connection?.lastStatus === "ok" ? source.connection.lastRunAt : undefined)
+    );
+    if (completeSyncs.every((timestamp): timestamp is number => typeof timestamp === "number" && timestamp > 0)) {
+      const coverageWatermark = Math.min(...completeSyncs);
+      status = `<div class="status" role="status"><span class="dot" aria-hidden="true"></span><strong>Up to Date</strong><span class="sep" aria-hidden="true">·</span><span>all synced ${relTime(coverageWatermark)}</span></div>`;
+    } else {
+      const pending = completeSyncs.filter((timestamp) => !timestamp).length;
+      status = `<button type="button" class="status status-action" data-action="open-vendors"><span class="dot warn" aria-hidden="true"></span><strong>${pending} Vendor${pending === 1 ? "" : "s"} Awaiting First Sync</strong><span aria-hidden="true">→</span></button>`;
+    }
   }
 
   let body: string;
   if (state.ledger.length) {
     const newest = Math.max(...state.ledger.map((entry) => entry.collectedAt));
-    const rows = state.ledger.map((entry) => {
-      const fresh = entry.collectedAt >= newest - 60_000 ? '<span class="new" aria-label="New"></span>' : "";
-      return `<li class="inv">${logo(iconFor(entry.vendorId), entry.vendorName)}<span class="name"><span class="text">${esc(entry.vendorName)}</span>${fresh}</span><time class="meta" datetime="${esc(entry.issuedAt?.slice(0, 10) ?? new Date(entry.collectedAt).toISOString())}">${invoiceDate(entry)}</time><span class="amt">${amount(entry.total, entry.currency)}</span></li>`;
+    const visibleEntries = filterLedgerByDate(state.ledger, state.ledgerDateFilter);
+    const groups = groupLedgerBySupplier(visibleEntries);
+    const groupRows = groups.map((group) => {
+      const isOpen = expandedSupplierIds.has(group.vendorId);
+      const hasFresh = group.entries.some((entry) => entry.collectedAt >= newest - 60_000);
+      const rows = group.entries.map((entry) => {
+        const fresh = entry.collectedAt >= newest - 60_000 ? '<span class="new" aria-label="New"></span>' : "";
+        const datetime = entry.issuedAt?.slice(0, 10) ?? new Date(entry.collectedAt).toISOString();
+        const collected = entry.issuedAt ? `Collected ${relTime(entry.collectedAt)}` : "Invoice date unavailable";
+        return `<li class="invoice-row"><span class="invoice-row-copy"><span class="invoice-label">Invoice ${fresh}</span><small>${esc(collected)}</small></span><time class="invoice-date" datetime="${esc(datetime)}">${invoiceDate(entry)}</time><span class="invoice-amount">${esc(amount(entry.total, entry.currency))}</span></li>`;
+      }).join("");
+      return `<details class="supplier-group" data-supplier-id="${esc(group.vendorId)}" ${isOpen ? "open" : ""}>
+        <summary>${logo(iconFor(group.vendorId), group.vendorName)}<span class="supplier-group-copy"><strong>${esc(group.vendorName)}${hasFresh ? '<span class="new" aria-label="New"></span>' : ""}</strong><small>${group.entries.length} invoice${group.entries.length === 1 ? "" : "s"}</small></span><span class="supplier-updated">${relTime(group.latestCollectedAt)}</span><span class="supplier-chevron" aria-hidden="true">${chevronIcon()}</span></summary>
+        <ul class="invoice-list" aria-label="${esc(group.vendorName)} invoices">${rows}</ul>
+      </details>`;
     }).join("");
-    body = `<ul class="feed" aria-label="Collected invoices">${rows}</ul><div class="add"><button type="button" class="ghost" data-action="open-vendors">Manage Vendors <span aria-hidden="true">→</span></button></div>`;
+    const history = groups.length
+      ? `<div class="supplier-groups">${groupRows}</div>`
+      : `<div class="feed-empty"><strong>No invoices in this period</strong><span>Choose a wider date range to see older invoices.</span></div>`;
+    body = `<section class="invoice-history" aria-labelledby="invoice-history-title">
+      <div class="feed-toolbar"><span><strong id="invoice-history-title">Invoices</strong><small>${visibleEntries.length} of ${state.ledger.length}</small></span><label class="date-filter">${filterIcon()}<span class="sr-only">Filter invoices by date</span><select name="ledger-range" aria-label="Filter invoices by date">${ledgerDateOption("All dates", "all")}${ledgerDateOption("Last 30 days", "30d")}${ledgerDateOption("Last 90 days", "90d")}${ledgerDateOption("This year", "year")}</select></label></div>
+      ${history}
+    </section><div class="add"><button type="button" class="ghost" data-action="open-vendors">Manage Vendors <span aria-hidden="true">→</span></button></div>`;
   } else if (connected.length) {
     const count = connected.length;
     const vendorLabel = `${count} vendor${count === 1 ? "" : "s"} connected`;
@@ -212,30 +312,36 @@ function renderVendors(): void {
     <div class="guidance-body">
       <p>Ratatosk uses your current browser session only for vendors you choose.</p>
       <ul><li>New documents go to ${esc(destination)}.</li><li>Passwords, cookies & temporary vendor tokens are not stored.</li><li>Disconnecting revokes vendor access.</li></ul>
-      <div class="guidance-actions"><span class="guidance-note">Only reviewed recipes are included.</span><button type="button" class="btn tonal sm" data-action="dismiss-vendor-guidance">Got It</button></div>
+      <div class="guidance-actions"><span class="guidance-note">Reviewed recipes and locally verified discoveries only.</span><button type="button" class="btn tonal sm" data-action="dismiss-vendor-guidance">Got It</button></div>
     </div>
   </details>` : "";
 
   const rows = state.sources.map((source) => {
     const connection = source.connection;
     const isBusy = state.busyVendorId === source.id;
-    let sub = categoryLabel(source.category);
+    let sub = source.kind === "discovered" ? new URL(source.primaryOrigin).hostname : categoryLabel(source.category);
     let action = source.runnable
       ? `<button type="button" class="btn tonal sm" data-action="connect" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}" ${isBusy ? "disabled" : ""}>${isBusy ? "Connecting…" : "Connect"}</button>`
       : `<button type="button" class="btn tonal sm" disabled aria-describedby="vendor-status-${esc(source.id)}">Unavailable</button>`;
     let secondaryAction = `<span class="action-spacer" aria-hidden="true"></span>`;
-    if (connection?.lastStatus === "auth_expired") {
+    if (connection && source.missingHosts.length > 0) {
+      sub = "Vendor access changed — review the newly required site";
+      action = `<button type="button" class="btn warn sm" data-action="connect" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}" ${isBusy ? "disabled" : ""}>${isBusy ? "Reviewing…" : "Review Access"}</button>`;
+      secondaryAction = `<button type="button" class="icon-btn danger" data-action="disconnect" data-id="${esc(source.id)}" aria-label="Disconnect ${esc(source.name)}">${xIcon()}</button>`;
+    } else if (connection?.lastStatus === "auth_expired") {
       sub = "Session expired — sign in, then reconnect";
       action = `<button type="button" class="btn warn sm" data-action="connect" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}" ${isBusy ? "disabled" : ""}>${isBusy ? "Connecting…" : "Reconnect"}</button>`;
     } else if (connection) {
       const count = connection.lastCount ?? 0;
       sub = connection.lastStatus === "partial"
-        ? `Collected ${count}; ${connection.lastFailedScopes ?? 0} account scope${connection.lastFailedScopes === 1 ? "" : "s"} need attention`
+        ? connection.lastError
+          ? `Collected ${count}; ${connection.lastError}`
+          : `Collected ${count}; ${connection.lastFailedScopes ?? 0} account scope${connection.lastFailedScopes === 1 ? "" : "s"} need attention`
         : connection.lastStatus === "rate_limited"
           ? `Supplier asked Ratatosk to wait · resumes ${relTime(connection.nextEligibleRunAt)}`
           : connection.lastStatus === "error"
         ? connection.lastError ? `Couldn’t sync — ${connection.lastError}` : "Couldn’t sync — try again"
-        : count > 0 ? `${count} collected · synced ${relTime(connection.lastRunAt)}` : `Connected · synced ${relTime(connection.lastRunAt)}`;
+        : count > 0 ? `${count} collected · synced ${relTime(connection.lastCompleteSyncAt ?? connection.lastRunAt)}` : `Connected · synced ${relTime(connection.lastCompleteSyncAt ?? connection.lastRunAt)}`;
       action = `<button type="button" class="btn outline sm" data-action="sync" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}">Sync</button>`;
       secondaryAction = `<button type="button" class="icon-btn danger" data-action="disconnect" data-id="${esc(source.id)}" aria-label="Disconnect ${esc(source.name)}">${xIcon()}</button>`;
     }
@@ -243,17 +349,58 @@ function renderVendors(): void {
       ? `<div class="inline-error" id="vendor-error-${esc(source.id)}" role="alert" tabindex="-1">${esc(state.inlineError.message)}</div>` : "";
     const diagnostic = connection?.lastStatus && connection.lastStatus !== "ok"
       ? `<button type="button" class="diagnostic-link" data-action="copy-diagnostic" data-id="${esc(source.id)}">Copy diagnostic</button>` : "";
-    return `<li class="vrow">${logo(source.icon, source.name)}<div class="mid"><div class="vn">${esc(source.name)}</div><div class="vlifecycle">${esc(vendorLifecycleLabel(source.lifecycle))}</div><div class="vs" id="vendor-status-${esc(source.id)}">${esc(sub)}</div>${diagnostic}${error}</div><div class="actions">${action}${secondaryAction}</div></li>`;
+    const history = connection
+      ? `<button type="button" class="diagnostic-link subtle" data-action="forget-history" data-id="${esc(source.id)}">Forget history</button>`
+      : "";
+    const vendorLinks = diagnostic || history ? `<div class="vendor-links">${diagnostic}${history}</div>` : "";
+    const lifecycle = source.kind === "discovered"
+      ? `<div class="vlifecycle"><span class="local-badge">Discovered · this browser</span></div>`
+      : `<div class="vlifecycle">${esc(source.lifecycle ? vendorLifecycleLabel(source.lifecycle) : "Unavailable")}</div>`;
+    return `<li class="vrow">${logo(source.icon, source.name)}<div class="mid"><div class="vn">${esc(source.name)}</div>${lifecycle}<div class="vs" id="vendor-status-${esc(source.id)}">${esc(sub)}</div>${vendorLinks}${error}</div><div class="actions">${action}${secondaryAction}</div></li>`;
   }).join("");
 
   const infoButton = state.vendorGuidanceSeen && !showGuidance
     ? `<button type="button" class="icon-btn" data-action="show-vendor-guidance" aria-label="How vendor connections work">${infoIcon()}</button>` : "";
-  const missingSupplier = `<aside class="supplier-request" aria-labelledby="supplier-request-title">
-    <span class="supplier-request-mark" aria-hidden="true">${branchIcon()}</span>
-    <span class="supplier-request-copy"><strong id="supplier-request-title">Can’t find your supplier?</strong><small>Help Ratatosk add it on GitHub.</small></span>
-    <button type="button" class="supplier-request-link" data-action="open-add-supplier" aria-label="Open the Ratatosk supplier contribution guide on GitHub">GitHub${externalIcon()}</button>
-  </aside>`;
+  const missingSupplier = discoveryCard();
   app.innerHTML = `${sheetHeader("Vendors", infoButton)}${guidance}<ul class="vendor-list">${rows}</ul>${missingSupplier}<p class="foot">Chrome may briefly hide this window while confirming vendor access. Setup continues safely in the background.</p>`;
+}
+
+function discoveryCard(): string {
+  const discovery = state.discovery;
+  const page = state.activeSupplierTab;
+  if (discovery.stage === "scanning") {
+    return `<aside class="supplier-request discovery-progress" role="status"><span class="discovery-spinner" aria-hidden="true"></span><span class="supplier-request-copy"><strong>Searching this app…</strong><small>Checking a small set of billing-related pages on ${esc(new URL(discovery.origin).hostname)}.</small></span><button type="button" class="quiet-link compact" data-action="cancel-discovery">Cancel</button></aside>`;
+  }
+  if (discovery.stage === "preview") {
+    const sites = discovery.requiredOrigins.length;
+    const hostnames = discovery.requiredOrigins.map((pattern) => new URL(pattern.slice(0, -2)).hostname).join(", ");
+    const clues = discovery.candidateCount;
+    return `<aside class="supplier-request discovery-found" aria-labelledby="supplier-request-title"><span class="supplier-request-mark letter" aria-hidden="true">${esc(discovery.name.charAt(0).toUpperCase())}</span><span class="supplier-request-copy"><strong id="supplier-request-title">Found a possible invoice source</strong><small>${esc(discovery.name)} · ${clues} invoice clue${clues === 1 ? "" : "s"} seen · ${sites} exact site${sites === 1 ? "" : "s"}</small><small class="discovery-hosts">Access: ${esc(hostnames)}</small></span><span class="discovery-actions"><button type="button" class="btn tonal sm" data-action="connect-discovery" data-id="${esc(discovery.vendorId)}">Connect &amp; Collect</button><button type="button" class="quiet-link compact" data-action="cancel-discovery">Cancel</button></span></aside>`;
+  }
+  if (discovery.stage === "connecting") {
+    return `<aside class="supplier-request discovery-progress" role="status"><span class="discovery-spinner" aria-hidden="true"></span><span class="supplier-request-copy"><strong>Verifying downloads…</strong><small>${esc(discovery.name)} will be saved only if a valid PDF is collected.</small></span></aside>`;
+  }
+  if (discovery.stage === "complete") {
+    return `<aside class="supplier-request discovery-complete" role="status"><span class="supplier-request-mark success" aria-hidden="true">✓</span><span class="supplier-request-copy"><strong>${esc(discovery.name)} is connected</strong><small>Collected ${discovery.count} verified invoice${discovery.count === 1 ? "" : "s"}. The supplier is now in your list.</small></span><button type="button" class="quiet-link compact" data-action="dismiss-discovery">Done</button></aside>`;
+  }
+  if (discovery.stage === "failed") {
+    const diagnostic = discovery.diagnosticAvailable
+      ? `<button type="button" class="quiet-link compact" data-action="copy-discovery-diagnostic">Copy Diagnostic</button>`
+      : "";
+    return `<aside class="supplier-request discovery-failed" role="alert"><span class="supplier-request-mark" aria-hidden="true">!</span><span class="supplier-request-copy"><strong>Couldn’t verify this supplier</strong><small>${esc(discovery.message)}</small><button type="button" class="supplier-help-link" data-action="open-add-supplier">Add it with Studio on GitHub ${externalIcon()}</button></span><span class="discovery-actions"><button type="button" class="btn tonal sm" data-action="cancel-discovery">Try Again</button>${diagnostic}</span></aside>`;
+  }
+  if (state.config && !page && !state.tabAwarenessEnabled) {
+    return `<aside class="supplier-request tab-awareness" aria-labelledby="tab-awareness-title"><span class="supplier-request-mark" aria-hidden="true">${branchIcon()}</span><span class="supplier-request-copy"><strong id="tab-awareness-title">Find invoices on this site</strong><small>Allow Ratatosk to recognize the supplier in your active tab. Chrome will ask once.</small></span><button type="button" class="supplier-request-link" data-action="enable-tab-awareness" ${state.tabAwarenessRequestPending ? "disabled" : ""}>${state.tabAwarenessRequestPending ? "Preparing…" : "Find Invoices"}</button></aside>`;
+  }
+  const listed = page ? state.sources.find((source) => source.primaryOrigin === page.origin) : undefined;
+  if (listed) {
+    return `<aside class="supplier-request"><span class="supplier-request-mark letter" aria-hidden="true">${esc(listed.name.charAt(0).toUpperCase())}</span><span class="supplier-request-copy"><strong>${esc(listed.name)} is already listed</strong><small>Use its Connect button above for ${esc(page!.hostname)}.</small></span><button type="button" class="supplier-request-link" disabled>Listed Above</button></aside>`;
+  }
+  const ready = Boolean(state.config && page);
+  const detail = !state.config
+    ? "Choose a destination first."
+    : page ? `Search ${page.hostname} for billing and invoice pages.` : "Open an HTTPS supplier app first.";
+  return `<aside class="supplier-request" aria-labelledby="supplier-request-title"><span class="supplier-request-mark" aria-hidden="true">${branchIcon()}</span><span class="supplier-request-copy"><strong id="supplier-request-title">Supplier not listed?</strong><small>${esc(detail)}</small><button type="button" class="supplier-help-link" data-action="open-add-supplier">Build a reviewed recipe instead ${externalIcon()}</button></span><button type="button" class="supplier-request-link" data-action="try-discovery" ${ready ? "" : "disabled"}>Find Invoices</button></aside>`;
 }
 
 function renderSettings(): void {
@@ -271,6 +418,9 @@ function renderSettings(): void {
       : `<div class="callout"><strong>Choose a destination first.</strong> Ratatosk will not fetch or save invoices until you confirm one.</div>`;
   const error = state.inlineError?.scope === "settings"
     ? `<div class="inline-error settings-error" id="settings-error" role="alert" tabindex="-1">${esc(state.inlineError.message)}</div>` : "";
+  const tabAwareness = state.tabAwarenessEnabled
+    ? `<div class="context-access"><span><strong>Active-tab switching enabled</strong><small>Ratatosk reads the current tab URL to keep this side panel in context. URLs are not stored as browsing history.</small></span><button type="button" class="btn outline sm" data-action="disable-tab-awareness">Turn Off</button></div>`
+    : `<div class="context-access"><span><strong>Recognize supplier tabs automatically</strong><small>Chrome calls this permission “Read your browsing history.” Ratatosk only reads the current tab URL and does not store browsing history.</small></span><button type="button" class="btn tonal sm" data-action="enable-tab-awareness" ${state.tabAwarenessRequestPending ? "disabled" : ""}>${state.tabAwarenessRequestPending ? "Preparing…" : "Enable"}</button></div>`;
 
   app.innerHTML = `${sheetHeader("Settings")}
     <form class="settings-form">
@@ -279,6 +429,7 @@ function renderSettings(): void {
         <button type="button" class="opt opt-link ${kind === "igdrasil" ? "selected" : ""}" data-action="${kind === "igdrasil" ? "manage-igdrasil" : "connect-igdrasil"}"><span class="radio" aria-hidden="true"></span><span><strong>Igdrasil Accounting</strong><small>${kind === "igdrasil" ? "Connected · invoices go to your inbox" : "Connect or create an Igdrasil account"}</small></span><span class="open-label">${kind === "igdrasil" ? "Manage" : "Connect"}</span></button>
       </div>${destinationFields}${error}</fieldset>
       <fieldset class="grp divider"><legend>Check for New Invoices</legend><div class="seg">${scheduleOption("Off", 0)}${scheduleOption("6h", 360)}${scheduleOption("12h", 720)}${scheduleOption("Daily", 1440)}</div></fieldset>
+      <fieldset class="grp divider"><legend>Browser Context</legend>${tabAwareness}</fieldset>
     </form>
     <p class="foot">Runs while Chrome is open and uses your signed-in vendor sessions. If Chrome is closed, Ratatosk catches up next time.</p>`;
 }
@@ -296,11 +447,29 @@ app.addEventListener("click", (event) => {
     void connectFromUserGesture(vendorId);
     return;
   }
+  if (action === "enable-tab-awareness") {
+    void enableTabAwarenessFromUserGesture();
+    return;
+  }
+  if (action === "try-discovery") {
+    void discoverFromUserGesture();
+    return;
+  }
+  if (action === "connect-discovery" && vendorId) {
+    void connectDiscoveryFromUserGesture(vendorId);
+    return;
+  }
   void handle(action, vendorId);
 });
 
 app.addEventListener("change", (event) => {
   const element = event.target as HTMLInputElement | HTMLSelectElement;
+  if (element instanceof HTMLSelectElement && element.name === "ledger-range") {
+    state.ledgerDateFilter = element.value as LedgerDateFilter;
+    persistPanelUiState();
+    renderHome();
+    return;
+  }
   if (element.dataset.field) {
     void saveField(element.dataset.field, element.value);
     return;
@@ -312,9 +481,20 @@ app.addEventListener("change", (event) => {
   }
 });
 
+app.addEventListener("toggle", (event) => {
+  const details = event.target;
+  if (!(details instanceof HTMLDetailsElement) || !details.classList.contains("supplier-group")) return;
+  const vendorId = details.dataset.supplierId;
+  if (!vendorId) return;
+  if (details.open) expandedSupplierIds.add(vendorId);
+  else expandedSupplierIds.delete(vendorId);
+  persistPanelUiState();
+}, true);
+
 async function connectFromUserGesture(vendorId: string): Promise<void> {
   if (!state.config) {
     screen = "settings";
+    persistPanelUiState();
     settingsError("Choose where invoices should be saved, then connect a vendor.");
     return;
   }
@@ -325,7 +505,7 @@ async function connectFromUserGesture(vendorId: string): Promise<void> {
   }
 
   const prepared = send({ type: "beginConnect", vendorId });
-  const permission = requestHostPermissions(source.hosts);
+  const permission = requestHostPermissions(source.missingHosts.length ? source.missingHosts : source.hosts);
   state.busyVendorId = vendorId;
   state.inlineError = null;
   renderVendors();
@@ -361,21 +541,104 @@ async function connectFromUserGesture(vendorId: string): Promise<void> {
   }
 }
 
+async function discoverFromUserGesture(): Promise<void> {
+  const page = state.activeSupplierTab;
+  if (!state.config) {
+    screen = "settings";
+    persistPanelUiState();
+    settingsError("Choose where invoices should be saved, then try the supplier again.");
+    return;
+  }
+  if (!page) {
+    toast("Open an HTTPS supplier app first.");
+    return;
+  }
+  const prepared = send({ type: "beginDiscovery", tabId: page.tabId, origin: page.origin });
+  const permission = requestHostPermissions([`${page.origin}/*`]);
+  state.discovery = { stage: "scanning", origin: page.origin };
+  renderVendors();
+  try {
+    const [prepareResponse, granted] = await Promise.all([prepared, permission]);
+    if (!prepareResponse.ok) {
+      await send({ type: "cancelDiscovery" });
+      toast(prepareResponse.error);
+      await load();
+      return;
+    }
+    if (!granted) {
+      await send({ type: "cancelDiscovery" });
+      toast("Access wasn’t granted. Ratatosk did not inspect the site.");
+      await load();
+      return;
+    }
+    const completed = await send({ type: "completeDiscovery" });
+    if (!completed.ok) {
+      await send({ type: "cancelDiscovery" });
+      toast("Ratatosk couldn’t search this app. Try again.");
+    }
+    await load();
+  } catch (error) {
+    console.error("[collector] supplier discovery permission failed", error);
+    await send({ type: "cancelDiscovery" });
+    toast("Chrome couldn’t finish the request. Try the supplier again.");
+    await load();
+  }
+}
+
+async function connectDiscoveryFromUserGesture(vendorId: string): Promise<void> {
+  const discovery = state.discovery;
+  if (discovery.stage !== "preview" || discovery.vendorId !== vendorId) return;
+  const prepared = send({ type: "beginDiscoveryConnect", vendorId });
+  const permission = requestHostPermissions(discovery.requiredOrigins);
+  state.discovery = { stage: "connecting", name: discovery.name };
+  renderVendors();
+  try {
+    const [prepareResponse, granted] = await Promise.all([prepared, permission]);
+    if (!prepareResponse.ok) {
+      await send({ type: "cancelDiscoveryConnect" });
+      toast(prepareResponse.error);
+      await load();
+      return;
+    }
+    if (!granted) {
+      await send({ type: "cancelDiscoveryConnect" });
+      toast("Access wasn’t granted. No supplier was saved.");
+      await load();
+      return;
+    }
+    const response = await send({ type: "completeDiscoveryConnect", vendorId });
+    if (!response.ok) toast(response.error);
+    await load();
+  } catch (error) {
+    console.error("[collector] discovered supplier connection failed", error);
+    await send({ type: "cancelDiscoveryConnect" });
+    toast("Chrome couldn’t verify the supplier. Try again.");
+    await load();
+  }
+}
+
 async function handle(action: string, vendorId?: string): Promise<void> {
   switch (action) {
-    case "open-settings": screen = "settings"; state.inlineError = null; render(); return;
-    case "open-vendors": screen = "vendors"; state.inlineError = null; render(); return;
-    case "home": screen = "home"; state.inlineError = null; await load(); return;
+    case "open-settings": screen = "settings"; state.inlineError = null; persistPanelUiState(); render(); return;
+    case "open-vendors": screen = "vendors"; state.inlineError = null; persistPanelUiState(); render(); return;
+    case "home": screen = "home"; state.inlineError = null; persistPanelUiState(); await load(); return;
     case "retry-load": await load(); return;
     case "sync": await run({ type: "runNow", vendorId: vendorId! }, vendorId); return;
     case "sync-all": await run({ type: "runNow" }); return;
     case "disconnect": openDisconnectDialog(vendorId!); return;
+    case "forget-history": openHistoryDialog(vendorId!); return;
+    case "disable-tab-awareness": await disableTabAwareness(); return;
     case "copy-diagnostic": await copyVendorDiagnostic(vendorId!); return;
+    case "copy-discovery-diagnostic": await copyDiscoveryDiagnostic(); return;
     case "connect-igdrasil": await openIgdrasilConnect(); return;
     case "manage-igdrasil": await chrome.tabs.create({ url: "https://accounting.igdrasil.se/integrations/invoice-collector" }); return;
     case "open-add-supplier":
       await chrome.tabs.create({ url: ADD_SUPPLIER_URL });
-      window.close();
+      return;
+    case "cancel-discovery":
+    case "dismiss-discovery":
+      await send({ type: action === "cancel-discovery" ? "cancelDiscovery" : "dismissDiscovery" });
+      await load();
       return;
     case "dismiss-vendor-guidance":
       await chrome.storage.local.set({ [VENDOR_GUIDANCE_SEEN]: true });
@@ -394,7 +657,6 @@ async function openIgdrasilConnect(): Promise<void> {
     return;
   }
   await chrome.tabs.create({ url: response.connectUrl });
-  window.close();
 }
 
 async function run(message: Parameters<typeof send>[0], vendorId?: string): Promise<void> {
@@ -409,13 +671,16 @@ async function run(message: Parameters<typeof send>[0], vendorId?: string): Prom
     if ("summaries" in response) {
       const collected = response.summaries.reduce((count, summary) => count + (summary.status === "ok" || summary.status === "partial" ? summary.count : 0), 0);
       const waiting = response.summaries.find((summary) => summary.status === "rate_limited" || summary.status === "skipped");
+      const expired = response.summaries.find((summary) => summary.status === "auth_expired");
+      const failed = response.summaries.find((summary) => summary.status === "error");
       if (waiting) toast(`Supplier asked Ratatosk to wait until ${relTime(waiting.nextEligibleRunAt)}`);
-      else
-      toast(collected ? `Collected ${collected} Invoice${collected === 1 ? "" : "s"}` : "No New Invoices");
+      else if (expired) toast("Session expired — sign in to the supplier and reconnect");
+      else if (failed?.error) toast(failed.error);
+      else toast(collected ? `Collected ${collected} Invoice${collected === 1 ? "" : "s"}` : "No New Invoices");
     }
     await load();
   } catch (error) {
-    console.error("[collector] popup action failed", error);
+    console.error("[collector] side panel action failed", error);
     if (vendorId) sourceError(vendorId, "Ratatosk couldn’t reach the background process. Reopen the extension and try again.");
     else toast("Couldn’t finish. Reopen Ratatosk and try again.");
   }
@@ -432,6 +697,20 @@ async function copyVendorDiagnostic(vendorId: string): Promise<void> {
     toast("Redacted Diagnostic Copied");
   } catch {
     sourceError(vendorId, "Clipboard access failed. Reopen Ratatosk and try again.");
+  }
+}
+
+async function copyDiscoveryDiagnostic(): Promise<void> {
+  const response = await send({ type: "getDiscoveryDiagnostic" });
+  if (!response.ok || !("discoveryDiagnostic" in response)) {
+    toast(response.ok ? "Diagnostic unavailable." : response.error);
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(`${JSON.stringify(response.discoveryDiagnostic, null, 2)}\n`);
+    toast("Redacted Diagnostic Copied");
+  } catch {
+    toast("Clipboard access failed. Reopen Ratatosk and try again.");
   }
 }
 
@@ -463,6 +742,46 @@ async function updateSchedule(periodMinutes: number): Promise<void> {
   await load();
 }
 
+async function enableTabAwarenessFromUserGesture(): Promise<void> {
+  // Start synchronously inside the click handler so Chrome retains the user
+  // gesture required for an optional permission prompt.
+  const permission = requestTabAwarenessPermission();
+  state.tabAwarenessRequestPending = true;
+  render();
+  try {
+    const granted = await permission;
+    state.tabAwarenessRequestPending = false;
+    if (!granted) {
+      toast("Chrome Access Was Not Granted");
+      render();
+      return;
+    }
+    await refreshTabAwareness();
+    toast("Ready — Select Find Invoices");
+  } catch (error) {
+    console.error("[collector] tab awareness permission failed", error instanceof Error ? error.name : "unknown");
+    state.tabAwarenessRequestPending = false;
+    toast("Chrome Couldn’t Prepare This Tab");
+    render();
+  }
+}
+
+async function disableTabAwareness(): Promise<void> {
+  await revokeTabAwarenessPermission();
+  await refreshTabAwareness();
+  toast("Tab Switching Turned Off");
+}
+
+async function refreshTabAwareness(): Promise<void> {
+  const [enabled, page] = await Promise.all([
+    hasTabAwarenessPermission(),
+    queryActiveSupplierTab(),
+  ]);
+  state.tabAwarenessEnabled = enabled;
+  state.activeSupplierTab = page;
+  render();
+}
+
 async function saveField(field: string, value: string): Promise<void> {
   const config = state.config;
   if (config?.kind !== "filesystem") return;
@@ -492,6 +811,34 @@ confirmDisconnect.addEventListener("click", () => {
 cancelDisconnect.addEventListener("click", () => disconnectDialog.close());
 disconnectDialog.addEventListener("close", () => { disconnectVendorId = null; });
 
+function openHistoryDialog(vendorId: string): void {
+  const source = state.sources.find((candidate) => candidate.id === vendorId);
+  if (!source) return;
+  historyVendorId = vendorId;
+  historyName.textContent = source.name;
+  historyDialog.showModal();
+}
+
+confirmHistory.addEventListener("click", () => {
+  const vendorId = historyVendorId;
+  historyDialog.close();
+  historyVendorId = null;
+  if (vendorId) void forgetVendorHistory(vendorId);
+});
+
+cancelHistory.addEventListener("click", () => historyDialog.close());
+historyDialog.addEventListener("close", () => { historyVendorId = null; });
+
+async function forgetVendorHistory(vendorId: string): Promise<void> {
+  const response = await send({ type: "forgetVendorHistory", vendorId });
+  if (!response.ok) {
+    sourceError(vendorId, `${response.error} Try again.`);
+    return;
+  }
+  toast("Download History Forgotten");
+  await load();
+}
+
 async function disconnectVendor(vendorId: string): Promise<void> {
   toast("Disconnecting…");
   try {
@@ -520,15 +867,43 @@ function destinationLabel(): string {
   return "Not Selected";
 }
 
+function ledgerDateOption(label: string, value: LedgerDateFilter): string {
+  return `<option value="${value}" ${state.ledgerDateFilter === value ? "selected" : ""}>${label}</option>`;
+}
+
 // ---- inline icons ---------------------------------------------------------
 
-function gearIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.2M12 18.8V21M4.2 7.5l1.9 1.1M17.9 15.4l1.9 1.1M4.2 16.5l1.9-1.1M17.9 8.6l1.9-1.1"/></svg>`; }
+function gearIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"/><circle cx="12" cy="12" r="3"/></svg>`; }
 function backIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6"/></svg>`; }
 function xIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>`; }
 function chevronIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>`; }
 function infoIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>`; }
 function branchIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="7" cy="6" r="2.2"/><circle cx="17" cy="8" r="2.2"/><circle cx="7" cy="18" r="2.2"/><path d="M7 8.2v7.6M9.2 8h3.3A4.5 4.5 0 0 1 17 12.5v2.3"/></svg>`; }
 function externalIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 3.5H3.5v9h9V10M8.5 3.5h4v4M12.2 3.8 7 9"/></svg>`; }
+function filterIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h14M5.5 10h9M8 15h4"/></svg>`; }
 
-void clearConnectBadge();
-void load();
+async function boot(): Promise<void> {
+  await restorePanelUiState();
+  await load();
+  const stopWatchingActiveTab = watchActiveSupplierTab(
+    () => {
+      const hadPage = state.activeSupplierTab !== null;
+      state.activeSupplierTab = null;
+      if (hadPage && screen === "vendors") renderVendors();
+    },
+    (page) => {
+      state.activeSupplierTab = page;
+      if (screen === "vendors") renderVendors();
+    },
+  );
+  const onTabPermissionChanged = (permissions: chrome.permissions.Permissions) => {
+    if (permissions.permissions?.includes("tabs")) void refreshTabAwareness();
+  };
+  chrome.permissions.onAdded.addListener(onTabPermissionChanged);
+  chrome.permissions.onRemoved.addListener(onTabPermissionChanged);
+  window.addEventListener("unload", () => {
+    stopWatchingActiveTab();
+  }, { once: true });
+}
+
+void boot();

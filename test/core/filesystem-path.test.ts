@@ -15,19 +15,41 @@ const doc = {
 
 describe("buildInvoicePath", () => {
   it("extraction mode: root / supplier / date-collected / file", () => {
+    const identity = "c".repeat(64);
     const path = buildInvoicePath(
       { rootFolder: "InvoiceCollector", dateMode: "extraction", extractionDate: "2026-07-12" },
-      doc,
+      { ...doc, idempotencyKey: identity },
     );
-    expect(path).toBe("InvoiceCollector/Anthropic (Claude)/2026-07-12/anthropic-2026-06-27-1782543567.pdf");
+    expect(path).toBe(`InvoiceCollector/Anthropic (Claude)/2026-07-12/anthropic-2026-06-27-1782543567--${identity}.pdf`);
   });
 
-  it("invoice mode uses the invoice date → deterministic path (re-save overwrites, no dupes)", () => {
+  it("invoice mode uses the invoice date → deterministic path", () => {
     const path = buildInvoicePath(
       { rootFolder: "InvoiceCollector", dateMode: "invoice", extractionDate: "2026-07-12" },
       doc,
     );
     expect(path).toBe("InvoiceCollector/Anthropic (Claude)/2026-06-27/anthropic-2026-06-27-1782543567.pdf");
+  });
+
+  it("adds the delivery identity when invoice-mode documents share a filename and date", () => {
+    const cfg = { rootFolder: "InvoiceCollector", dateMode: "invoice" as const, extractionDate: "2026-07-12" };
+    const firstKey = "a".repeat(64);
+    const secondKey = "b".repeat(64);
+    const first = buildInvoicePath(cfg, { ...doc, idempotencyKey: firstKey });
+    const second = buildInvoicePath(cfg, { ...doc, idempotencyKey: secondKey });
+
+    expect(first).toBe(`InvoiceCollector/Anthropic (Claude)/2026-06-27/anthropic-2026-06-27-1782543567--${firstKey}.pdf`);
+    expect(second).toBe(`InvoiceCollector/Anthropic (Claude)/2026-06-27/anthropic-2026-06-27-1782543567--${secondKey}.pdf`);
+    expect(first).not.toBe(second);
+  });
+
+  it("does not turn sanitized or truncated non-digest identities into overwrite targets", () => {
+    const cfg = { rootFolder: "InvoiceCollector", dateMode: "invoice" as const, extractionDate: "2026-07-12" };
+    const collidingPrefix = "a".repeat(80);
+    expect(buildInvoicePath(cfg, { ...doc, idempotencyKey: "a/b" })).toMatch(/anthropic-2026-06-27-1782543567\.pdf$/);
+    expect(buildInvoicePath(cfg, { ...doc, idempotencyKey: "a:b" })).toMatch(/anthropic-2026-06-27-1782543567\.pdf$/);
+    expect(buildInvoicePath(cfg, { ...doc, idempotencyKey: `${collidingPrefix}1` })).toMatch(/anthropic-2026-06-27-1782543567\.pdf$/);
+    expect(buildInvoicePath(cfg, { ...doc, idempotencyKey: `${collidingPrefix}2` })).toMatch(/anthropic-2026-06-27-1782543567\.pdf$/);
   });
 
   it("keeps spaces/parens but sanitizes path-breaking characters in supplier names", () => {
@@ -44,5 +66,13 @@ describe("buildInvoicePath", () => {
       { vendorId: "vercel", issuedAt: "2026-06-30", filename: "f.pdf" },
     );
     expect(path).toBe("X/vercel/2026-07-12/f.pdf");
+  });
+
+  it.each([".", "..", "..."])("does not allow bare dot filename %s", (filename) => {
+    const path = buildInvoicePath(
+      { rootFolder: "X", dateMode: "invoice", extractionDate: "2026-07-12" },
+      { ...doc, filename },
+    );
+    expect(path).toBe("X/Anthropic (Claude)/2026-06-27/invoice.pdf");
   });
 });

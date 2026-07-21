@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import chatgpt from "../../src/vendors/chatgpt";
-import { mapListResponse } from "../../src/core/strategies/network";
-import type { NetworkInvoices, TokenSpec } from "../../src/core/types";
+import { mapListResponse, networkStrategy } from "../../src/core/strategies/network";
+import type { HttpResponse, NetworkInvoices, RequestSpec, RunContext, TokenSpec } from "../../src/core/types";
+import fixture from "./fixtures/chatgpt.invoices.json";
 
 /**
  * The recorder-authored ChatGPT recipe. The billing API is Stripe-shaped, so this
@@ -9,13 +10,6 @@ import type { NetworkInvoices, TokenSpec } from "../../src/core/types";
  * the DIRECT invoice_pdf) and that the finalized auth wiring is present: a cookie→
  * bearer token exchange plus the Authorization header on the backend-api calls.
  */
-const fixture = {
-  data: [
-    { id: "in_1", created: 1744158410, amount_due: 2000, currency: "usd", invoice_pdf: "https://pay.stripe.com/invoice/acct_X/live_A/pdf?s=ap" },
-    { id: "in_2", created: 1741566410, amount_due: 9900, currency: "usd", invoice_pdf: "https://pay.stripe.com/invoice/acct_X/live_B/pdf?s=ap" },
-  ],
-};
-
 describe("chatgpt recipe", () => {
   const list = (chatgpt.invoices as NetworkInvoices).list;
 
@@ -53,5 +47,71 @@ describe("chatgpt recipe", () => {
     expect(opt?.discover.request.headers?.authorization).toBe("Bearer {token}");
     expect(opt?.discover.value).toBe("accounts.default.account.account_id");
     expect(opt?.discover.items).toBeUndefined(); // scalar discovery (single value)
+  });
+
+  it("continues Stripe-style history after the first 100 invoices", async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({
+      id: `in_${index + 1}`,
+      created: 1744158410 - index,
+      amount_due: 2000,
+      currency: "usd",
+      invoice_pdf: `https://pay.stripe.com/invoice/acct_X/in_${index + 1}/pdf`,
+    }));
+    const requests: string[] = [];
+    const response = (body: unknown): HttpResponse => ({
+      status: 200,
+      ok: true,
+      json: async () => body,
+      arrayBuffer: async () => new ArrayBuffer(0),
+      headers: { get: () => "application/json" },
+    });
+    const context: RunContext = {
+      companyId: "co_test",
+      vars: {},
+      seen: { has: async () => false, claimIfAbsent: async () => "test-reservation", release: async () => undefined, add: async () => undefined },
+      fetch: async (request: RequestSpec, vars: Record<string, unknown>) => {
+        const url = request.url.replace(/\{(\w+)\}/g, (_match, key) => String(vars[key] ?? ""));
+        requests.push(url);
+        return requests.length === 1
+          ? response({ data: firstPage, has_more: true })
+          : response({ data: [{ ...firstPage[0], id: "in_101" }], has_more: false });
+      },
+    };
+
+    const result = await networkStrategy.list(chatgpt, { account_id: "acct_X" }, context);
+
+    expect(result.refs).toHaveLength(101);
+    expect(result.refs.at(-1)?.vendorInvoiceId).toBe("in_101");
+    expect(requests).toEqual([
+      "https://chatgpt.com/backend-api/invoices?limit=100&account_id=acct_X&starting_after=",
+      "https://chatgpt.com/backend-api/invoices?limit=100&account_id=acct_X&starting_after=in_100",
+    ]);
+    expect(result.retrieval.completeness).toBe("complete");
+  });
+
+  it("marks a full page partial when continuation metadata and the last cursor are unusable", async () => {
+    const capped = Array.from({ length: 100 }, (_, index) => ({
+      id: index === 99 ? { unexpected: "cursor shape" } : `in_${index + 1}`,
+      created: 1744158410 - index,
+      amount_due: 2000,
+      currency: "usd",
+      invoice_pdf: `https://pay.stripe.com/invoice/acct_X/in_${index + 1}/pdf`,
+    }));
+    const context: RunContext = {
+      companyId: "co_test",
+      vars: {},
+      seen: { has: async () => false, claimIfAbsent: async () => "reservation", release: async () => undefined, add: async () => undefined },
+      fetch: async () => ({
+        status: 200,
+        ok: true,
+        json: async () => ({ data: capped }),
+        arrayBuffer: async () => new ArrayBuffer(0),
+        headers: { get: () => "application/json" },
+      }),
+    };
+
+    const result = await networkStrategy.list(chatgpt, { account_id: "acct_X" }, context);
+
+    expect(result.retrieval).toMatchObject({ completeness: "partial", termination: "continuation_failed", pagesVisited: 1 });
   });
 });

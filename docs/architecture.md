@@ -21,7 +21,7 @@ hands.** Everything else is plumbing around that fact.
 │ core/       platform-free engine (runs in Node too)          │
 │   engine  → auth · scopes · list · dedup · download          │
 │   strategies/network  (replay JSON API)  ← default           │
-│   strategies/dom      (offscreen DOM)    ← fallback          │
+│   strategies/dom      (bounded real tab) ← fallback          │
 │   http · template · jsonpath · extract · dedup · schema      │
 └───────────────┬─────────────────────────────────────────────┘
                 │ interprets…
@@ -46,22 +46,63 @@ that extension's manifest at the ZIP root.
 
 ```
 alarm → service-worker → collector.runAllConnected()
-  └─ per vendor: engine.runVendor(recipe, ctx, strategies)
-        1. auth-probe        recipe.auth.check → alive? (else AuthExpired)
+  └─ per vendor: engine.streamVendor(recipe, ctx, strategies, emit)
+        1. auth evidence     API predicate + final redirect, or exact DOM list
         2. resolveScopes     recipe.config → [{}] or one scope per workspace
-        3. strategy.list     replay billing API → InvoiceRef[]
-        4. dedup             idempotencyKey(company, source, invoiceId)
-        5. strategy.fetch    download the PDF bytes
-  └─ sink.send(doc) per new document
-  └─ seen.add(key) ONLY after the sink accepts  ← failed ingest retries next run
+        3. strategy.list     enumerate bounded API/HTML/DOM pages → refs + traversal proof
+        4. preflight         reject incomplete discovered-candidate paths before delivery
+        5. dedup             idempotencyKey(company, source, invoiceId)
+        6. strategy.fetch    download PDF bytes in bounded ordered batches
+  └─ sink.send(doc) through one exclusive commit lane
+  └─ seen.add(key) + ledger receipt after the sink accepts
+  └─ discovery admission callback only after durable dedup evidence
 ```
+
+## Concurrency and cancellation
+
+Concurrency is a typed policy rather than a collection of unbounded
+`Promise.all` calls. `core/concurrency.ts` owns the reviewed limits and returns a
+closed outcome union (`fulfilled | rejected | cancelled`) in original input
+order. The current policy is:
+
+| Work | Width | Safety boundary |
+|---|---:|---|
+| same-origin GET route probes | 2 | separate inactive tabs; read-only navigation |
+| candidate previews | 2 | structural/API listing only; no semantic DOM actions |
+| document fetches | 3 | bounded batches; at most three materialized PDFs |
+| destination commits | 1 | stable source order; seen-key and ledger only after acceptance |
+
+This is a speculate → elect → commit design. Route and candidate evidence may be
+gathered speculatively. Ranking elects a deterministic candidate. A full DOM
+canary and every destination write remain serialized because those paths can
+activate a download control or mutate extension state. Search stops after the
+current two-route wave once enough strong candidates exist, so at most one
+already-running route is redundant.
+
+Candidate election is based on retrieval completeness, not a minimum invoice
+count. One resolved invoice is a valid result when the API reports no next page,
+HTML has no continuation, or DOM pagination reaches a stable end. A path remains
+partial when it hits a page/action/document/time cap, repeats its continuation
+state, or exposes controls/links it cannot resolve. For discovered candidates,
+all scopes are enumerated first and an incomplete path is rejected before any
+PDF is fetched or sent; the next retained candidate can then run without creating
+duplicate destination files.
+
+Fatal supplier-wide failures (expired authentication or rate limiting) cancel
+unscheduled sibling document work. Candidate-local failures stay local and allow
+the next ranked fallback. Destination failures abort immediately; uncommitted
+documents are not marked seen and therefore retry on the next run. Connected
+vendors also remain sequential to avoid multiplying load across unrelated
+supplier portals.
 
 ## Why recipes are data, not functions
 
 A recipe is a plain object validated by `core/schema.ts`. Consequences:
 
-- **Reviewable** — each recipe is bundled in the signed extension package. A new
-  vendor or recipe change requires tests, review, and a new Web Store release.
+- **Reviewable** — official recipes are bundled in the signed extension package.
+  A new official vendor or recipe change requires tests, review, and a new Web
+  Store release. Local discovery profiles are structural output from the same
+  packaged interpreter, never downloaded code.
 - **Safe** — no arbitrary or remote code is fetched; the engine is a fixed
   interpreter over a closed set of packaged primitives.
 - **Testable** — `mapListResponse` is pure, so a fixture in → refs out.
@@ -88,6 +129,23 @@ worker. Response bytes cross the executeScript boundary base64-encoded. Tabs the
 transport opens are closed on dispose; pre-existing tabs are reused and left
 alone. See `collector/src/platform/page-fetch.ts`.
 
+### Shared document providers
+
+Document delivery infrastructure is modeled independently from supplier
+recipes. The Stripe provider recognizes any normal HTTPS path on its exact
+capability origins, canonicalizes only the proven hosted-invoice `/i/` shape,
+and follows redirects under an observation-only listener scoped to the browser
+request ID. Redirects may end only on another exact Stripe origin or the fixed
+`stripe-upload-api` bucket across AWS regions. A newly observed regional origin
+becomes a typed permission-drift result containing only the origin; after the
+user grants that exact host, collection reruns the supplier list to obtain a
+fresh signed URL. Signed paths, queries, and response data are never persisted.
+
+The same provider boundary is used by packaged recipes, locally discovered
+network candidates, worker fetches, and the cross-origin portion of page-mode
+fetches. Provider permission failures are vendor-wide fatal outcomes, so bounded
+concurrent document work stops and the popup can offer Review Access.
+
 ## The ingest seam
 
 `IngestSink` is the single boundary for where collected documents go, selected by
@@ -99,7 +157,7 @@ config:
   (default) or invoice date (deterministic path → overwrite-safe).
 - **`HttpSink`** — multipart POST + normalized metadata + idempotency key to any
   URL; a `409` means "already have it" and is treated as success.
-- **`IgdrasilSink`** — an `HttpSink` pointed at engine-api's `/documents/ingest`
+- **`IgdrasilSink`** — an `HttpSink` pointed at engine-api's `/api/documents/ingest`
   with a revocable, company-scoped, upload-only Collector token. The user's
   general accounting session token never enters the extension.
 
@@ -110,10 +168,108 @@ destination.
 There is no implicit default destination. The user must confirm local Downloads
 or connect Igdrasil before a vendor can be connected or run.
 
+## Unsupported-supplier discovery
+
+Collector uses a two-confirmation state machine in `chrome.storage.session` so
+Chrome may close the popup during either permission prompt without losing the
+user's intent:
+
+1. **Find Invoices** requests the active tab's exact HTTPS origin. Before any
+   temporary exploration tab loads, Collector dynamically registers a packaged
+   `document_start` MAIN-world observer for that exact origin. It keeps a bounded,
+   sanitized, in-memory sample of JSON fetch/XHR responses, including the method,
+   JSON content type, and request body needed to replay an explicit GraphQL query.
+   A closed allowlist of bounded static query controls (for example `limit`,
+   `status`, and `page`) is preserved for replay; account identifiers,
+   signatures, credentials, and unknown query values remain redacted.
+   This captures early, cached, POST, and cross-origin API evidence that cannot be
+   reconstructed from `performance` URLs. Registration and page hooks are removed
+   in `finally`; no captured response is persisted or uploaded.
+2. A deterministic planner scores same-origin routes from path intent, bounded
+   visible/accessibility labels, nearby menu context, tenant shape, depth, and
+   route-family confidence. Semantic controls such as `Invoices` can therefore
+   lead to otherwise opaque routes, while observed `Settings` routes remain as
+   lower-confidence bridges for multi-step navigation. For tenant-scoped apps,
+   `/<tenant>/settings/billing` ranks ahead of speculative history paths. The
+   planner also keeps a small packaged set of common paths. The best safe
+   contextual/common route is scheduled after at most two higher-ranked observed
+   routes, preventing a saturated menu or slow probes from starving an independent
+   route source. For account-scoped apps it preserves one bounded tenant prefix, so
+   shapes such as `/<account-id>/billing/subscriptions` remain navigable and
+   reusable. A best-first queue repeats this process from every inspected page,
+   prioritizing invoice/receipt paths over billing history and broader payment or
+   subscription paths. It checks at most fifteen pages, depth three, and thirty
+   seconds. After the active entry page, it probes deterministic waves of at most
+   two same-origin routes in separate inactive temporary tabs. Invoice/detail
+   routes stay in the queue; only explicit
+   `.pdf`, download, PDF-path, known direct-receipt, or hosted-Stripe links become
+   document candidates. Search navigation is GET-only; it
+   never clicks controls, submits forms, or follows logout, checkout, purchase,
+   cancellation, deletion, or authorization paths. The tab is always closed.
+3. Packaged adapters compile observed/replayed network JSON, embedded JSON, rendered invoice links,
+   or explicit download controls into recipes. Discovery retains at most three
+   proof-ranked, identity-compatible candidates rather than trusting the first
+   link-shaped result. Generic downloads outside invoice-shaped page, path, label,
+   or nearby context are rejected. Search remains read-only: DOM candidates and
+   semantic controls are retained structurally but are not activated or given an
+   eight-second canary wait inside the route-search budget.
+4. **Connect & Collect** shows and requests the bounded union of every candidate's
+   exact origins. It then materializes and validates a real PDF canary from the
+   highest-ranked candidate. A candidate-local shape failure, empty result, or
+   incomplete traversal falls through to the next candidate; authentication,
+   rate-limit, permission, and destination failures stop immediately. Completion
+   is proven by exhausting that path, never by requiring two or more invoices.
+   The strict
+   discovery policy forbids remote code, arbitrary headers/bodies, mutating
+   requests, token exchange, arbitrary DOM clicks/selectors, broad/private hosts, and
+   credential-like stored URL values. A semantic fallback may first reveal an
+   exact invoice/receipt-history tab-like section, then activate only visible,
+   enabled, explicitly download-labelled controls after confirmation;
+   payment, purchase, cancellation, deletion, logout, and form mutations are
+   excluded. The only persisted POST shape is a bounded `application/json`
+   GraphQL body whose operation starts with explicit `query`; mutations,
+   subscriptions, persisted-query extensions, secret-like variables, and other
+   POST bodies are rejected. When a supplier converts an authenticated GET response into a
+   temporary `blob:` URL, Collector captures at most 8 MiB of magic-checked PDF
+   bytes in memory and immediately replaces them with a SHA-256-derived internal
+   handle; blob contents, request headers, and authentication values are never
+   persisted or logged. Inline PDFs are additionally capped at 24 MiB and 500
+   documents across the complete DOM run. Every click-capable or continuation
+   run uses a disposable tab, so scheduled collection never navigates or mutates
+   an existing supplier tab. Collection follows API cursors, returned next URLs, HTTP/HTML
+   `rel=next`, numbered/offset pages, localized visible Next/Load More controls
+   outside forms, or bounded infinite scroll. Ephemeral cursor values are never
+   stored or logged.
+5. Each valid PDF is streamed to the chosen destination instead of buffering the
+   whole supplier run. Stable document identity includes the canonical URL for
+   generic endpoints, so distinct query-addressed invoices do not collapse or
+   download twice. PDF admission uses bounded bytes plus the `%PDF` signature;
+   supplier MIME metadata is advisory because signed/object-storage downloads
+   commonly use `application/octet-stream`. Extracted invoice text or invoice
+   keywords are not a hard retrieval gate. The profile is committed only after the destination accepts
+   the first validated PDF. An accepted delivery is recorded in the seen store
+   and ledger before the discovery admission callback, so a later profile-write
+   failure cannot cause the delivered file to be downloaded again. Failure before
+   any accepted delivery rolls back the connection, profile, seen keys, and ledger.
+
+Failed searches or candidate verification attempts retain only a bounded
+structural diagnostic in session storage:
+runtime/discovery-engine identity, termination cause, bounded timings,
+page/source counts, observed-versus-replayed JSON request counts, retained candidate count, packaged adapter/outcome codes,
+per-route evidence counts, privacy-safe requested/resolved route templates, and
+up to eight cross-origin hostnames. Route templates preserve only recognized
+billing/navigation words and replace tenant, account, workspace, and other opaque
+segments with `:id` or `:segment`. Origins, raw paths, queries, fragments,
+headers, bodies, tokens, account identifiers, invoice identifiers, and financial
+values are excluded.
+
+The source catalog merges official registry recipes with these validated local
+profiles, so scheduling and sync use one engine rather than a parallel scraper.
+
 ## Studio authoring boundary
 
 Studio is not part of Collector's runtime or release. A developer checks a
-prominent disclosure before recording an active HTTP(S) tab. Studio can observe
+prominent disclosure before recording an active HTTPS tab. Studio can observe
 network metadata, supported response bodies, child-frame traffic, and a DOM
 snapshot. Before session storage, the shared capture boundary drops every request
 header value except a normalized `content-type`; retains only a bounded,
@@ -145,7 +301,14 @@ promote the recipe into the public `VENDORS` registry before a Collector release
 
 ## What's intentionally minimal
 
-- The **DOM strategy** defines its driver contract (`DomDriver`) but ships
-  unavailable; wire an offscreen-document driver in `platform/` when a vendor
-  genuinely needs it. Network replay covers the current pilot set.
+- The **DOM strategy** uses a real-tab driver with a closed step vocabulary.
+  Official registry recipes remain network/HTML-only for the current pilot;
+  locally discovered recipes are restricted to waiting, extracting HTTPS links,
+  the packaged semantic-download primitive, and packaged auto-continuation. The
+  semantic primitive is available only after Connect & Collect, may reveal one
+  exact invoice/receipt-history tab-like section, and rejects mutation-labelled
+  controls. Continuation searches the invoice region first and
+  activates only visible recognized controls outside forms or performs bounded
+  scrolling after the first invoice structure has already been verified. Any
+  click-capable or continuation run is isolated in a disposable tab.
 - The **popup** is framework-free by design — a thin view over the message bus.

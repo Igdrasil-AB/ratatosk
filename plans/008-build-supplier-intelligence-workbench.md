@@ -58,10 +58,15 @@ credentials, raw bodies/fixtures, background portal access, and Temporal (Plan
 Extend the Plan 007 intake schema with supplier candidates, observations, request
 shapes, inferred fields, cluster membership, review decisions, and lifecycle
 events. Preserve the original canonical submission JSON/hash for audit, but query
-normalized bounded columns. Enforce fingerprint uniqueness and foreign keys.
+normalized bounded columns. Consume Plan 007's already-enforced unique
+`(intake_scope_id, fingerprint_id)` submission and idempotency-key bindings;
+normalized evidence rows must reference that single authoritative submission and
+must not create a second fingerprint identity or weaker overwrite path. Enforce
+the remaining foreign keys.
 
 **Verify**: migration apply/rollback verification and repository round-trip tests
-pass; duplicate receipt is idempotent.
+pass; exact replay under a new transport key still resolves the original receipt
+and evidence rows, while conflicting canonical content cannot reach normalization.
 
 ### 2. Implement conservative candidate matching
 
@@ -118,4 +123,3 @@ does not duplicate it.
 
 Plan 010 operates on IDs and states from this schema. Keep large canonical JSON
 out of Temporal inputs/history.
-

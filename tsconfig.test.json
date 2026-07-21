@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    "types": ["node", "chrome", "@crxjs/vite-plugin/client", "vitest/globals"]
+  },
+  "include": ["src/**/*.ts", "collector/**/*.ts", "studio/**/*.ts", "scripts/**/*.ts", "test/**/*.ts"],
+  "exclude": ["test/type-fixtures/**"]
+}

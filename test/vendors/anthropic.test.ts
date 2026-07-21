@@ -25,6 +25,6 @@ describe("anthropic recipe", () => {
   });
 
   it("uses cursor pagination keyed on next_page", () => {
-    expect(list.paginate?.cursor).toBe("next_page");
+    expect(list.paginate).toMatchObject({ cursor: "next_page" });
   });
 });

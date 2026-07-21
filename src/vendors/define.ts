@@ -1,5 +1,6 @@
 import type { VendorRecipe } from "../core/types";
 import { validateRecipe } from "../core/schema";
+import { deepFreeze } from "../core/immutable";
 
 /**
  * Declare a vendor recipe.
@@ -13,5 +14,5 @@ import { validateRecipe } from "../core/schema";
  *   export default defineVendor({ id: "acme", ... });
  */
 export function defineVendor(recipe: VendorRecipe): VendorRecipe {
-  return Object.freeze(validateRecipe(recipe));
+  return deepFreeze(validateRecipe(recipe));
 }

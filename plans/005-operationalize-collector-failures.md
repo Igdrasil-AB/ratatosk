@@ -101,5 +101,6 @@ company IDs, and tokens.
 ## Maintenance notes
 
 The diagnostic codes become inputs to Plan 004 verification and the Plan 010
-health lifecycle. Keep them versioned and backward-compatible.
-
+health lifecycle. The initial contract is `collector.operational-outcome.v1`;
+keep that version backward-compatible and introduce a new version before
+changing code meanings or removing codes.

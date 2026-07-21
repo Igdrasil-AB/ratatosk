@@ -30,10 +30,11 @@ export default defineVendor({
     {
       id: "workspace",
       discover: {
-        request: { url: "https://app.slack.com/api/admin.workspaces.list" },
+        request: { url: "https://app.slack.com/api/admin.workspaces.list?limit=50&cursor={cursor}" },
         items: "workspaces",
         value: "domain", // becomes {workspace}
         label: "name",
+        paginate: { cursor: "response_metadata.next_cursor", maxPages: 10 },
       },
     },
   ],

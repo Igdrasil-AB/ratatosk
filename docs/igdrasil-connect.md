@@ -19,7 +19,7 @@ service worker  →  consumes intent, stores scoped token, sets the Igdrasil sin
 
 The web app never needs the extension id, and it can detect whether the extension
 is installed. The extension trusts **only** `https://accounting.igdrasil.se` and
-only ever sends the token to an `*.igdrasil.se` https backend.
+only ever sends the token to the reviewed `https://accounting.igdrasil.se` API origin.
 
 ## Production connection flow
 
@@ -29,7 +29,9 @@ only ever sends the token to an `*.igdrasil.se` https backend.
    normal onboarding flow. Both paths return to the dedicated route through its
    validated local `returnTo` value.
 3. The web app asks the extension to validate the intent before calling the
-   authenticated, tenant-scoped token endpoint.
+   authenticated, tenant-scoped token endpoint. It includes that value as
+   `connection_state`; the token endpoint must reject a missing, expired, or
+   unbound state and bind it to its own short-lived, one-use mint transaction.
 4. Engine API mints a 90-day `rat_…` credential that can only upload documents
    for the selected company. Only its SHA-256 hash is stored server-side.
 5. The extension consumes the intent, stores that scoped credential, and sends
@@ -51,7 +53,12 @@ All messages are `window.postMessage` on the Igdrasil origin, wrapped as
 | `igdrasil:validate` | yes | `{ ok }` — checks the intent before token minting |
 | `igdrasil:connect` | yes | `{ ok }` — stores token + Igdrasil sink |
 | `igdrasil:status` | yes | `{ ok, connected, companyId }` |
-| `igdrasil:disconnect` | yes | `{ ok }` — clears token, reverts to local saving |
+| `igdrasil:disconnect` | yes | `{ ok }` — revokes/removes the token and clears the destination |
+
+Clients must transition to a disconnected state only after `{ ok: true }`.
+A refusal or timeout retains the connected state and presents a retryable error.
+Local Downloads is not an automatic fallback; the user must explicitly select it
+or another destination before any vendor can run again.
 
 On load the bridge also emits `{ __ic, kind: "present", version }` so an app that
 listens early learns of the extension without pinging.
@@ -68,4 +75,4 @@ listens early learns of the extension without pinging.
   `rat_…` credential. It is stored in extension-local storage so background sync
   survives a browser restart and is only sent to the allow-listed backend host
   (see [`SECURITY.md`](../SECURITY.md)).
-- `apiBaseUrl` is rejected unless it is `https` on an `*.igdrasil.se` host.
+- `apiBaseUrl` is rejected unless it is exactly `https://accounting.igdrasil.se`.

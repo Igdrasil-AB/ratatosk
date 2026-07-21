@@ -13,6 +13,7 @@ import {
   disconnectSvalaFingerprintTransport,
   pairSvalaFingerprintTransport,
   SVALA_FINGERPRINT_ENDPOINT,
+  SVALA_FINGERPRINT_DELIVERY_TIMEOUT_MS,
   svalaFingerprintTransport,
 } from "../../studio/src/platform/fingerprint-transport";
 import studioManifest from "../../studio/manifest.config";
@@ -142,6 +143,28 @@ describe("Studio supplier fingerprint outbox", () => {
     await disconnectSvalaFingerprintTransport();
   });
 
+  it("cancels an oversized streamed receipt before consuming the remaining body", async () => {
+    await pairSvalaFingerprintTransport(INTAKE_TOKEN);
+    let pulls = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls++;
+        controller.enqueue(new Uint8Array(2_048));
+        if (pulls === 10) controller.close();
+      },
+      cancel() { cancelled = true; },
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(body, { status: 201 })));
+
+    await expect(svalaFingerprintTransport.deliver(submission(2))).resolves.toEqual({
+      delivered: false,
+      reason: "server",
+    });
+    expect(cancelled).toBe(true);
+    expect(pulls).toBeLessThan(10);
+  });
+
   it("single-flights delivery, retains a stable receipt, and never removes manual export", async () => {
     const now = new Date("2026-07-16T10:00:00.000Z");
     const approved = submission(3);
@@ -185,6 +208,56 @@ describe("Studio supplier fingerprint outbox", () => {
     expect(recovered).toMatchObject({ deliveryState: "retryable", attempts: 1, nextAttemptAt: "2026-07-16T10:01:00.000Z" });
     await expect(deliverFingerprintSubmission(approved.fingerprint.fingerprintId, new Date("2026-07-16T10:01:00.000Z"))).resolves.toMatchObject({ deliveryState: "delivered", attempts: 2 });
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors an HTTP-date Retry-After instead of retrying on the exponential fallback", async () => {
+    vi.useFakeTimers();
+    const now = new Date("2026-07-16T10:00:00.000Z");
+    vi.setSystemTime(now);
+    const approved = submission(11);
+    await enqueueFingerprintSubmission(approved, now);
+    await pairSvalaFingerprintTransport(INTAKE_TOKEN);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", {
+      status: 429,
+      headers: { "retry-after": "Thu, 16 Jul 2026 10:05:00 GMT" },
+    })));
+
+    await expect(deliverFingerprintSubmission(approved.fingerprint.fingerprintId, now)).resolves.toMatchObject({
+      deliveryState: "retryable",
+      attempts: 1,
+      nextAttemptAt: "2026-07-16T10:05:00.000Z",
+    });
+    vi.useRealTimers();
+  });
+
+  it("times out a stalled request and releases queued outbox operations", async () => {
+    vi.useFakeTimers();
+    const now = new Date("2026-07-16T10:00:00.000Z");
+    const approved = submission(10);
+    await enqueueFingerprintSubmission(approved, now);
+    await pairSvalaFingerprintTransport(INTAKE_TOKEN);
+    let aborted = false;
+    const fetch = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>(() => {
+      init?.signal?.addEventListener("abort", () => { aborted = true; });
+    }));
+    vi.stubGlobal("fetch", fetch);
+
+    const delivery = deliverFingerprintSubmission(approved.fingerprint.fingerprintId, now);
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    const status = fingerprintOutboxStatus(now);
+    let statusSettled = false;
+    void status.then(() => { statusSettled = true; });
+    await Promise.resolve();
+    expect(statusSettled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(SVALA_FINGERPRINT_DELIVERY_TIMEOUT_MS);
+    await expect(delivery).resolves.toMatchObject({
+      deliveryState: "retryable",
+      nextAttemptAt: "2026-07-16T10:01:00.000Z",
+    });
+    await expect(status).resolves.toMatchObject({ pendingCount: 1 });
+    expect(aborted).toBe(true);
+    vi.useRealTimers();
   });
 
   it("does not retry a rejected 4xx until an explicit re-pair or review reset", async () => {

@@ -16,8 +16,6 @@
  * prepare/validate/connect/status/disconnect requests relayed to the worker.
  */
 const TAG = "invoice-collector";
-const APP_ORIGIN = location.origin; // guaranteed to be the Igdrasil origin by the match
-const VERSION = chrome.runtime.getManifest().version;
 
 /** Requests forwarded to the service worker (everything else is rejected). */
 const RELAYED = new Set([
@@ -28,32 +26,64 @@ const RELAYED = new Set([
   "igdrasil:disconnect",
 ]);
 
-// Announce presence so the app can render "Connect" without polling. The app can
-// also ping at any time (below), which is the reliable path if it loads later.
-window.postMessage({ __ic: TAG, kind: "present", version: VERSION }, APP_ORIGIN);
+export interface ConnectBridgeWindow {
+  readonly location: { readonly origin: string };
+  postMessage(message: unknown, targetOrigin: string): void;
+  addEventListener(type: "message", listener: (event: MessageEvent) => void): void;
+}
 
-window.addEventListener("message", (event: MessageEvent) => {
-  if (event.source !== window || event.origin !== APP_ORIGIN) return;
-  const data = event.data as { __ic?: string; kind?: string; requestId?: string; payload?: unknown } | null;
-  if (!data || data.__ic !== TAG || data.kind !== "request") return;
+export interface ConnectBridgeRuntime {
+  getManifest(): { version: string };
+  sendMessage(message: unknown, callback: (response: unknown) => void): void;
+  readonly lastError?: { message?: string };
+}
 
-  const reply = (result: unknown) =>
-    window.postMessage({ __ic: TAG, kind: "response", requestId: data.requestId, result }, APP_ORIGIN);
+/** Install one bridge listener. Dependencies are injectable so the complete
+ * page/extension trust boundary can be exercised without privileged APIs. */
+export function installConnectBridge(
+  bridgeWindow: ConnectBridgeWindow,
+  runtime: ConnectBridgeRuntime,
+): void {
+  const appOrigin = bridgeWindow.location.origin;
+  const version = runtime.getManifest().version;
 
-  const payload = data.payload as { type?: string } | undefined;
-  const type = payload?.type ?? "";
+  // Announce presence so the app can render "Connect" without polling. The app
+  // can also ping at any time, which is reliable if it loads later.
+  bridgeWindow.postMessage({ __ic: TAG, kind: "present", version }, appOrigin);
 
-  // Presence check is answered locally — no need to wake the worker.
-  if (type === "igdrasil:ping") {
-    reply({ ok: true, present: true, version: VERSION });
-    return;
-  }
-  if (!RELAYED.has(type)) {
-    reply({ ok: false, error: "unsupported request" });
-    return;
-  }
+  bridgeWindow.addEventListener("message", (event: MessageEvent) => {
+    if (event.source !== bridgeWindow || event.origin !== appOrigin) return;
+    const data = event.data as { __ic?: string; kind?: string; requestId?: string; payload?: unknown } | null;
+    if (
+      !data || data.__ic !== TAG || data.kind !== "request" ||
+      typeof data.requestId !== "string" || data.requestId.length < 1 || data.requestId.length > 160
+    ) return;
 
-  chrome.runtime.sendMessage(payload, (res) => {
-    reply(chrome.runtime.lastError ? { ok: false, error: chrome.runtime.lastError.message } : res);
+    const reply = (result: unknown) =>
+      bridgeWindow.postMessage({ __ic: TAG, kind: "response", requestId: data.requestId, result }, appOrigin);
+
+    const payload = data.payload as { type?: string } | undefined;
+    const type = payload?.type ?? "";
+
+    // Presence check is answered locally — no need to wake the worker.
+    if (type === "igdrasil:ping") {
+      reply({ ok: true, present: true, version });
+      return;
+    }
+    if (!RELAYED.has(type)) {
+      reply({ ok: false, error: "unsupported request" });
+      return;
+    }
+
+    runtime.sendMessage(payload, (res) => {
+      reply(runtime.lastError ? { ok: false, error: runtime.lastError.message } : res);
+    });
   });
-});
+}
+
+if (typeof window !== "undefined" && typeof chrome !== "undefined") {
+  installConnectBridge(
+    window as unknown as ConnectBridgeWindow,
+    chrome.runtime as unknown as ConnectBridgeRuntime,
+  );
+}

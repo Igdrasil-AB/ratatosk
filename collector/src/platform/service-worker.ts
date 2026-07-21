@@ -2,22 +2,20 @@
  * Service-worker entry point — the extension's only long-lived wiring.
  *
  * It does no business logic itself; it routes browser events to the collector
- * and the popup:
+ * and the persistent side panel:
  *   - onInstalled / onStartup → make sure the sync alarm exists
  *   - onAlarm                 → run every connected vendor
  *   - onMessage               → handle popup commands
  *   - notifications.onClicked → open the vendor login on a "reconnect" nudge
  */
-import { getVendor, VENDORS, VENDOR_LIFECYCLE_BY_ID } from "../../../src/vendors";
 import { isLifecycleRunnable } from "../../../src/vendors/lifecycle";
-import { runAllConnected, runVendorById } from "./collector";
-import { ensureSyncAlarm, getScheduleInfo, isSyncAlarm, setSchedulePeriod } from "./scheduler";
-import { hasVendorPermissions, revokeVendorPermissions } from "./permissions";
+import { runAllConnected, runDiscoveredCandidate, runVendorById } from "./collector";
+import { ensureSyncAlarm, getScheduleInfo, isSyncAlarm, isSyncCatchUpDue, setSchedulePeriod } from "./scheduler";
+import { hasHostPermissions, missingHostPermissions, revokeHostPermissions, vendorPermissionOrigins } from "./permissions";
 import { notifyReconnect, openLoginFor } from "./notifications";
 import {
   clearSeenForSource,
   clearLedgerForVendor,
-  clearSinkConfig,
   getConnections,
   getLedger,
   getSinkConfig,
@@ -25,9 +23,10 @@ import {
   setSinkConfig,
   upsertConnection,
 } from "./storage";
-import { clearHostToken, getHostToken, setHostToken } from "./auth";
+import { clearHostToken, getHostToken, initializeHostTokenStorage, setHostToken } from "./auth";
+import { clearFilesystemDeliveryJournalForSource } from "./filesystem-sink";
 import { clearPendingConnect, getPendingConnect, setPendingConnect } from "./pending-connect";
-import { revealPopupAfterConnect } from "./popup-handoff";
+import { configureSidePanelAction } from "./side-panel";
 import {
   consumeIgdrasilConnectIntent,
   createIgdrasilConnectIntent,
@@ -36,33 +35,99 @@ import {
 import type { Message, Response, SourceView } from "./messaging";
 import pkg from "../../../package.json";
 import { buildCollectorDiagnostic } from "./diagnostics";
+import { discoverSupplierInTab, removeStaleDiscoveryObserverRegistration, SupplierDiscoveryError } from "./discovery";
+import {
+  beginSupplierDiscovery,
+  beginSupplierDiscoveryConnect,
+  cancelSupplierDiscovery,
+  clearSupplierDiscovery,
+  completeSupplierDiscovery,
+  DISCOVERY_FAILURE_MESSAGES,
+  failSupplierDiscovery,
+  getPendingSupplierDiscoveryConnect,
+  getPendingSupplierDiscoveryDiagnostic,
+  getSupplierDiscoveryDiagnostic,
+  getSupplierDiscoveryStatus,
+  markSupplierDiscoveryScanning,
+  restoreSupplierDiscoveryPreview,
+  requireSupplierDiscoveryDocumentOrigins,
+  setSupplierDiscoveryPreview,
+} from "./discovery-state";
+import {
+  assertDiscoveredSupplierCapacity,
+  DiscoveredSupplierCapacityError,
+  removeDiscoveredSupplier,
+  upsertDiscoveredSupplier,
+} from "./discovered-suppliers";
+import { listCollectorSources, resolveCollectorSource } from "./source-catalog";
+import { formatCollectorRuntimeIdentity } from "./collector-runtime-identity";
+import { operationalOutcomeLabel } from "../../../src/core/errors";
+import { requiredCandidateOrigins } from "../../../src/core/discovery";
+import { collectFirstWorkingCandidate } from "./discovery-candidates";
+import { withCandidateVerification } from "./discovery-diagnostic";
+import { canContinueSupplierDiscovery } from "./discovery-continuation";
+import { CollectionRunCoordinator } from "../../../src/core/concurrency";
+import { isIgdrasilApiBase } from "../../../src/ingest/igdrasil-sink";
+import { disconnectIgdrasil } from "./igdrasil-disconnect";
+
+console.info(`[collector] ready ${formatCollectorRuntimeIdentity()}`);
+void initializeHostTokenStorage().catch((error: unknown) => {
+  // Credential operations fail closed until Chrome confirms this access level.
+  console.error("[collector] credential storage hardening failed", error instanceof Error ? error.name : "error");
+});
+
+const collectionRuns = new CollectionRunCoordinator();
 
 chrome.runtime.onInstalled.addListener(() => {
-  void ensureSyncAlarm();
+  void ensureSyncAlarm().catch((error) => {
+    console.error("[collector] schedule initialization failed", error instanceof Error ? error.name : "unknown");
+  });
+  void removeStaleDiscoveryObserverRegistration();
+  void configureSidePanelAction();
 });
 chrome.runtime.onStartup.addListener(() => {
-  void ensureSyncAlarm();
+  void resumeScheduledSync().catch((error) => {
+    console.error("[collector] startup sync recovery failed", error instanceof Error ? error.name : "unknown");
+  });
+  void removeStaleDiscoveryObserverRegistration();
+  void configureSidePanelAction();
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (isSyncAlarm(alarm.name)) void runAllConnected();
-});
-
-chrome.notifications.onClicked.addListener((id) => {
-  if (id.startsWith("reconnect:")) {
-    const recipe = getVendor(id.slice("reconnect:".length));
-    if (recipe) openLoginFor(recipe);
+  if (isSyncAlarm(alarm.name)) {
+    void collectionRuns.runScheduled(() => runAllConnected()).then((summaries) => {
+      if (summaries === undefined) console.info("[collector] scheduled sync already queued");
+    }).catch((error) => {
+      console.error("[collector] scheduled sync failed", error instanceof Error ? error.name : "unknown");
+    });
   }
 });
 
-// The native optional-host prompt may close the action popup. Finish a fresh,
-// validated handoff here so connection setup no longer depends on that popup
-// JavaScript context surviving the browser-owned dialog.
+async function resumeScheduledSync(): Promise<void> {
+  await ensureSyncAlarm();
+  const [schedule, connections] = await Promise.all([getScheduleInfo(), getConnections()]);
+  if (isSyncCatchUpDue(connections, schedule.periodMinutes)) {
+    await collectionRuns.runScheduled(() => runAllConnected());
+  }
+}
+
+chrome.notifications.onClicked.addListener((id) => {
+  if (id.startsWith("reconnect:")) {
+    void resolveCollectorSource(id.slice("reconnect:".length)).then((source) => {
+      if (source) openLoginFor(source.recipe);
+    });
+  }
+});
+
+// Finish a fresh, validated handoff in the worker so connection setup does not
+// depend on any extension-page JavaScript context surviving the browser-owned
+// permission dialog. The side panel itself remains visible throughout.
 chrome.permissions.onAdded.addListener((permissions) => {
   if (permissions.origins?.length) {
     void (async () => {
       const completed = await completePendingConnect(permissions.origins!);
-      if (completed) await revealPopupAfterConnect();
+      const discovered = await completePendingDiscoveryPermission(permissions.origins!);
+      if (completed || discovered) console.info("[collector] permission handoff completed");
     })().catch((error) => {
       console.error("[collector] pending vendor connection failed", error);
     });
@@ -116,16 +181,6 @@ function isAppRequest(m: unknown): m is AppRequest {
   return t === "igdrasil:prepare" || t === "igdrasil:validate" || t === "igdrasil:connect" || t === "igdrasil:status" || t === "igdrasil:disconnect";
 }
 
-/** True only for the Igdrasil backend itself — https and an `*.igdrasil.se` host. */
-function isIgdrasilBackend(apiBaseUrl: string): boolean {
-  try {
-    const u = new URL(apiBaseUrl);
-    return u.protocol === "https:" && (u.hostname === "igdrasil.se" || u.hostname.endsWith(".igdrasil.se"));
-  } catch {
-    return false;
-  }
-}
-
 async function handleAppRequest(message: AppRequest, sender: chrome.runtime.MessageSender): Promise<AppResponse> {
   // It must be OUR own content script, running on an allow-listed page origin.
   if (sender.id !== chrome.runtime.id) return { ok: false, error: "bad sender" };
@@ -146,7 +201,7 @@ async function handleAppRequest(message: AppRequest, sender: chrome.runtime.Mess
       if (typeof token !== "string" || typeof companyId !== "string" || typeof apiBaseUrl !== "string" || typeof state !== "string") {
         return { ok: false, error: "invalid connect payload" };
       }
-      if (!isIgdrasilBackend(apiBaseUrl)) return { ok: false, error: "backend host not allowed" };
+      if (!isIgdrasilApiBase(apiBaseUrl)) return { ok: false, error: "backend host not allowed" };
       if (!(await consumeIgdrasilConnectIntent(state))) {
         return { ok: false, error: "connection request expired; start again from Ratatosk" };
       }
@@ -165,23 +220,7 @@ async function handleAppRequest(message: AppRequest, sender: chrome.runtime.Mess
       return { ok: true, connected, companyId: cfg?.kind === "igdrasil" ? cfg.companyId : undefined };
     }
     case "igdrasil:disconnect": {
-      const cfg = await getSinkConfig();
-      const token = await getHostToken();
-      if (cfg?.kind === "igdrasil" && token) {
-        const response = await fetch(`${cfg.endpoint.replace(/\/+$/, "")}/documents/ingest/token`, {
-          method: "DELETE",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "X-Company-Id": cfg.companyId,
-          },
-        });
-        if (!response.ok && response.status !== 401) {
-          return { ok: false, error: "could not revoke the Igdrasil connection; try again" };
-        }
-      }
-      await clearHostToken();
-      await clearSinkConfig();
-      return { ok: true };
+      return disconnectIgdrasil();
     }
   }
 }
@@ -190,15 +229,22 @@ async function handle(message: Message): Promise<Response> {
   switch (message.type) {
     case "listSources": {
       const connections = await getConnections();
-      const sources: SourceView[] = VENDORS.map((v) => ({
-        id: v.id,
-        name: v.name,
-        category: v.category,
-        icon: v.icon,
-        hosts: [...v.hosts],
-        lifecycle: VENDOR_LIFECYCLE_BY_ID[v.id],
-        runnable: isLifecycleRunnable(VENDOR_LIFECYCLE_BY_ID[v.id]),
-        connection: connections[v.id] ?? null,
+      const sources: SourceView[] = await Promise.all((await listCollectorSources()).map(async (source) => {
+        const connection = connections[source.recipe.id] ?? null;
+        const hosts = vendorPermissionOrigins(source.recipe, connection);
+        return {
+          kind: source.kind,
+          id: source.recipe.id,
+          name: source.recipe.name,
+          category: source.recipe.category,
+          icon: source.recipe.icon,
+          hosts,
+          missingHosts: connection ? await missingHostPermissions(hosts) : [],
+          lifecycle: source.lifecycle,
+          primaryOrigin: source.primaryOrigin,
+          runnable: source.kind === "discovered" || Boolean(source.lifecycle && isLifecycleRunnable(source.lifecycle)),
+          connection,
+        };
       }));
       return { ok: true, sources };
     }
@@ -216,10 +262,11 @@ async function handle(message: Message): Promise<Response> {
     }
 
     case "beginConnect": {
-      const recipe = getVendor(message.vendorId);
+      const recipe = (await resolveCollectorSource(message.vendorId))?.recipe;
       if (!recipe) return { ok: false, error: "Unknown vendor." };
       if (!(await getSinkConfig())) return { ok: false, error: "Choose a destination before connecting a vendor." };
-      await setPendingConnect(recipe.id, recipe.hosts);
+      const connection = (await getConnections())[recipe.id];
+      await setPendingConnect(recipe.id, vendorPermissionOrigins(recipe, connection));
       return { ok: true };
     }
 
@@ -245,41 +292,115 @@ async function handle(message: Message): Promise<Response> {
     }
 
     case "disconnect": {
-      const recipe = getVendor(message.vendorId);
-      await removeConnection(message.vendorId);
-      await clearSeenForSource(`ext:${message.vendorId}`); // forget its history → reconnect re-fetches
-      await clearLedgerForVendor(message.vendorId);
-      if (recipe) await revokeVendorPermissions(recipe);
-      return { ok: true };
+      // A run records its result into the connection at completion. Queue the
+      // destructive lifecycle transition behind that run so it cannot recreate
+      // a supplier the user just disconnected.
+      return collectionRuns.runInteractive(async () => {
+        const source = await resolveCollectorSource(message.vendorId);
+        const recipe = source?.recipe;
+        const connection = (await getConnections())[message.vendorId];
+        await removeConnection(message.vendorId);
+        if (source?.kind === "discovered") await removeDiscoveredSupplier(message.vendorId);
+        if (recipe) await revokeUnusedPermissions(vendorPermissionOrigins(recipe, connection));
+        return { ok: true };
+      });
     }
+
+    case "forgetVendorHistory":
+      // Serialize the reset with collection so a finishing run cannot recreate
+      // history immediately after the user clears it.
+      return collectionRuns.runInteractive(async () => {
+        const source = `ext:${message.vendorId}`;
+        await Promise.all([
+          clearSeenForSource(source),
+          clearLedgerForVendor(message.vendorId),
+          clearFilesystemDeliveryJournalForSource(source),
+        ]);
+        return { ok: true };
+      });
 
     case "runNow": {
       if (message.vendorId) {
         // Background contexts cannot open permission prompts. If a recipe gains
         // hosts, send the user back through Connect rather than silently failing.
-        const recipe = getVendor(message.vendorId);
-        if (recipe && !(await hasVendorPermissions(recipe))) {
+        const recipe = (await resolveCollectorSource(message.vendorId))?.recipe;
+        const connection = (await getConnections())[message.vendorId];
+        if (recipe && !(await hasHostPermissions(vendorPermissionOrigins(recipe, connection)))) {
           return { ok: false, error: "vendor access changed; reconnect this vendor" };
         }
-        return { ok: true, summaries: [await runVendorById(message.vendorId)] };
+        const summary = await collectionRuns.runInteractive(() => runVendorById(message.vendorId!));
+        return { ok: true, summaries: [summary] };
       }
-      return { ok: true, summaries: await runAllConnected() };
+      return { ok: true, summaries: await collectionRuns.runInteractive(() => runAllConnected()) };
     }
 
     case "getVendorDiagnostic": {
-      const lifecycle = VENDOR_LIFECYCLE_BY_ID[message.vendorId];
-      if (!lifecycle) return { ok: false, error: "Unknown vendor." };
+      const source = await resolveCollectorSource(message.vendorId);
+      if (!source) return { ok: false, error: "Unknown vendor." };
       const connection = (await getConnections())[message.vendorId];
       return {
         ok: true,
         diagnostic: buildCollectorDiagnostic({
           vendorId: message.vendorId,
           collectorVersion: pkg.version,
-          lifecycleRevision: lifecycle.recipeRevision,
+          lifecycleRevision: source.lifecycle?.recipeRevision ?? "local-discovery-v1",
           connection,
         }),
       };
     }
+
+    case "getDiscoveryStatus":
+      return { ok: true, discovery: await getSupplierDiscoveryStatus() };
+
+    case "getDiscoveryDiagnostic": {
+      const diagnostic = await getSupplierDiscoveryDiagnostic();
+      return diagnostic
+        ? { ok: true, discoveryDiagnostic: diagnostic }
+        : { ok: false, error: "No discovery diagnostic is available." };
+    }
+
+    case "beginDiscovery": {
+      if (!(await getSinkConfig())) return { ok: false, error: "Choose a destination before trying this supplier." };
+      if ((await listCollectorSources()).some((source) => source.primaryOrigin === message.origin)) {
+        await failSupplierDiscovery(undefined, DISCOVERY_FAILURE_MESSAGES.alreadySupported, [`${message.origin}/*`]);
+        return { ok: false, error: DISCOVERY_FAILURE_MESSAGES.alreadySupported };
+      }
+      const tab = await chrome.tabs.get(message.tabId);
+      if (!tab.active || !tab.url || new URL(tab.url).origin !== message.origin) {
+        return { ok: false, error: "Open the supplier app in the active tab and try again." };
+      }
+      await beginSupplierDiscovery(message.tabId, message.origin);
+      // Covers an already-granted origin and the narrow race where Chrome adds
+      // permission just before the onAdded listener observes the durable state.
+      if (await chrome.permissions.contains({ origins: [`${message.origin}/*`] })) void completeSupplierScan();
+      return { ok: true };
+    }
+
+    case "completeDiscovery":
+      await completeSupplierScan();
+      return { ok: true, discovery: await getSupplierDiscoveryStatus() };
+
+    case "cancelDiscovery":
+      await cancelCurrentDiscovery();
+      return { ok: true };
+
+    case "dismissDiscovery":
+      await clearSupplierDiscovery();
+      return { ok: true };
+
+    case "beginDiscoveryConnect": {
+      const pending = await beginSupplierDiscoveryConnect(message.vendorId);
+      if (pending && await hasHostPermissions(requiredCandidateOrigins(pending.candidates))) void completeDiscoveredConnect(pending.candidates.id, pending.runId);
+      return pending ? { ok: true } : { ok: false, error: "The discovery preview expired. Try the supplier again." };
+    }
+
+    case "completeDiscoveryConnect":
+      return completeDiscoveredConnect(message.vendorId);
+
+    case "cancelDiscoveryConnect":
+      const pending = await getPendingSupplierDiscoveryConnect();
+      if (pending) await restoreSupplierDiscoveryPreview(pending.runId);
+      return { ok: true };
 
     case "getLedger":
       return { ok: true, ledger: await getLedger() };
@@ -299,12 +420,14 @@ async function completePendingConnect(addedOrigins: readonly string[]): Promise<
   const pending = await getPendingConnect();
   if (!pending || !pending.origins.some((origin) => addedOrigins.includes(origin))) return false;
 
-  const recipe = getVendor(pending.vendorId);
-  if (!recipe || !sameOrigins(pending.origins, recipe.hosts)) {
+  const recipe = (await resolveCollectorSource(pending.vendorId))?.recipe;
+  const connection = (await getConnections())[pending.vendorId];
+  const expectedOrigins = recipe ? vendorPermissionOrigins(recipe, connection) : [];
+  if (!recipe || !sameOrigins(pending.origins, expectedOrigins)) {
     await clearPendingConnect(pending.vendorId);
     return false;
   }
-  if (!(await hasVendorPermissions(recipe))) return false;
+  if (!(await hasHostPermissions(expectedOrigins))) return false;
   await completeVendorConnect(recipe.id);
   return true;
 }
@@ -313,19 +436,25 @@ function completeVendorConnect(vendorId: string): Promise<Response> {
   const existing = connectionInFlight.get(vendorId);
   if (existing) return existing;
 
-  const task = (async (): Promise<Response> => {
-    const recipe = getVendor(vendorId);
+  const task = collectionRuns.runInteractive(async (): Promise<Response> => {
+    const recipe = (await resolveCollectorSource(vendorId))?.recipe;
     if (!recipe) return { ok: false, error: "Unknown vendor." };
     if (!(await getSinkConfig())) return { ok: false, error: "Choose a destination before connecting a vendor." };
-    if (!(await hasVendorPermissions(recipe))) return { ok: false, error: "Vendor access was not granted." };
+    const existingConnection = (await getConnections())[recipe.id];
+    const requiredOrigins = vendorPermissionOrigins(recipe, existingConnection);
+    if (!(await hasHostPermissions(requiredOrigins))) return { ok: false, error: "Vendor access was not granted." };
 
     await clearPendingConnect(recipe.id);
-    await upsertConnection({ vendorId: recipe.id, connectedAt: Date.now() });
+    await upsertConnection({
+      ...existingConnection,
+      vendorId: recipe.id,
+      connectedAt: existingConnection?.connectedAt ?? Date.now(),
+    });
 
     const summary = await runVendorById(recipe.id);
     if (summary.status === "auth_expired") notifyReconnect(recipe);
     return { ok: true, summaries: [summary] };
-  })().finally(() => connectionInFlight.delete(vendorId));
+  }).finally(() => connectionInFlight.delete(vendorId));
 
   connectionInFlight.set(vendorId, task);
   return task;
@@ -333,4 +462,191 @@ function completeVendorConnect(vendorId: string): Promise<Response> {
 
 function sameOrigins(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((origin) => right.includes(origin));
+}
+
+let supplierScanInFlight: Promise<void> | undefined;
+const discoveredConnectionsInFlight = new Map<string, Promise<Response>>();
+
+async function completeSupplierScan(): Promise<void> {
+  if (supplierScanInFlight) return supplierScanInFlight;
+  supplierScanInFlight = (async () => {
+    const pending = await markSupplierDiscoveryScanning();
+    if (!pending) return;
+    const granted = await chrome.permissions.contains({ origins: [`${pending.origin}/*`] });
+    if (!granted) return;
+    try {
+      console.info(`[collector] discovery start ${formatCollectorRuntimeIdentity()}`);
+      const discovery = await discoverSupplierInTab(pending.tabId, pending.origin, {
+        shouldContinue: () => canContinueSupplierDiscovery(pending.origin),
+      });
+      const current = await getSupplierDiscoveryStatus();
+      if (current.stage === "scanning" && current.origin === pending.origin) {
+        await setSupplierDiscoveryPreview(pending.runId, discovery.candidates, discovery.diagnostic);
+      }
+    } catch (error) {
+      const current = await getSupplierDiscoveryStatus();
+      if (current.stage !== "scanning" || current.origin !== pending.origin) return;
+      const changed = error instanceof Error && /tab changed|did not match/.test(error.message);
+      await failSupplierDiscovery(pending.runId,
+        changed
+          ? DISCOVERY_FAILURE_MESSAGES.pageChanged
+          : supplierDiscoveryFailureMessage(error),
+        [`${pending.origin}/*`],
+        error instanceof SupplierDiscoveryError ? error.diagnostic : undefined,
+      );
+      await revokeUnusedPermissions([`${pending.origin}/*`]);
+    }
+  })().finally(() => {
+    supplierScanInFlight = undefined;
+    void resumeSupplierScanIfPending();
+  });
+  return supplierScanInFlight;
+}
+
+function supplierDiscoveryFailureMessage(error: unknown): string {
+  if (!(error instanceof SupplierDiscoveryError)) {
+    return DISCOVERY_FAILURE_MESSAGES.notFoundApp;
+  }
+  const results = new Set(error.diagnostic.attempts.map((attempt) => attempt.result));
+  if (results.has("auth_expired")) return DISCOVERY_FAILURE_MESSAGES.authExpired;
+  if (results.has("auth_scope_denied")) return DISCOVERY_FAILURE_MESSAGES.scopeDenied;
+  if (results.has("auth_blocked")) return DISCOVERY_FAILURE_MESSAGES.authBlocked;
+  if (results.has("transport_failed")) return DISCOVERY_FAILURE_MESSAGES.transportFailed;
+  if (error.diagnostic.termination === "time_cap") return DISCOVERY_FAILURE_MESSAGES.timeCap;
+  if (error.diagnostic.termination === "page_cap") return DISCOVERY_FAILURE_MESSAGES.pageCap;
+  return DISCOVERY_FAILURE_MESSAGES.notFoundApp;
+}
+
+async function resumeSupplierScanIfPending(): Promise<void> {
+  const state = await getSupplierDiscoveryStatus();
+  if (state.stage !== "scanning") return;
+  if (await chrome.permissions.contains({ origins: [`${state.origin}/*`] })) void completeSupplierScan();
+}
+
+async function completePendingDiscoveryPermission(addedOrigins: readonly string[]): Promise<boolean> {
+  const pending = await getPendingSupplierDiscoveryConnect();
+  const candidates = pending?.candidates;
+  const requiredOrigins = candidates ? requiredCandidateOrigins(candidates) : [];
+  if (pending && candidates && requiredOrigins.some((origin) => addedOrigins.includes(origin))) {
+    if (await hasHostPermissions(requiredOrigins)) {
+      await completeDiscoveredConnect(candidates.id, pending.runId);
+      return true;
+    }
+  }
+  const before = await getSupplierDiscoveryStatus();
+  if (before.stage !== "scanning" || !addedOrigins.includes(`${before.origin}/*`)) return false;
+  await completeSupplierScan();
+  return true;
+}
+
+function completeDiscoveredConnect(vendorId: string, expectedRunId?: string): Promise<Response> {
+  const key = `${vendorId}:${expectedRunId ?? "current"}`;
+  const existing = discoveredConnectionsInFlight.get(key);
+  if (existing) return existing;
+  const task = collectionRuns.runInteractive(async (): Promise<Response> => {
+    const pending = await getPendingSupplierDiscoveryConnect();
+    const candidates = pending?.candidates;
+    if (!pending || !candidates || candidates.id !== vendorId || (expectedRunId && pending.runId !== expectedRunId)) {
+      const source = await resolveCollectorSource(vendorId);
+      return source?.kind === "discovered"
+        ? { ok: true, summaries: [] }
+        : { ok: false, error: "The discovery preview expired. Try the supplier again." };
+    }
+    if (!(await getSinkConfig())) {
+      await restoreSupplierDiscoveryPreview(pending.runId);
+      return { ok: false, error: "Choose a destination before collecting." };
+    }
+    const requiredOrigins = requiredCandidateOrigins(candidates);
+    if (!(await hasHostPermissions(requiredOrigins))) {
+      await restoreSupplierDiscoveryPreview(pending.runId);
+      return { ok: false, error: "Supplier access was not granted." };
+    }
+
+    try {
+      const scanDiagnostic = await getPendingSupplierDiscoveryDiagnostic(pending.runId);
+      await assertDiscoveredSupplierCapacity(candidates.id);
+      const result = await collectFirstWorkingCandidate(candidates, async (profile, index) => {
+        let committed = false;
+        const summary = await runDiscoveredCandidate(profile.recipe, async () => {
+          await upsertDiscoveredSupplier(profile);
+          await upsertConnection({ vendorId: profile.id, connectedAt: Date.now() });
+          committed = true;
+        });
+        const proof = summary.retrievalProof;
+        console.info(
+          `[collector] discovery candidate ${index + 1}/${candidates.candidates.length} ${profile.adapter.id} -> ${summary.code ?? summary.status} retrieval=${summary.retrieval ?? "unknown"} documents=${summary.count}` +
+          (proof ? ` controls=${proof.observedItems} resolved=${proof.resolvedItems} unresolved=${proof.unresolvedItems} pages=${proof.pagesVisited} end=${proof.termination}` : ""),
+        );
+        if (committed && !((summary.status === "ok" || summary.status === "partial") &&
+          (summary.verifiedCount ?? summary.count) > 0)) {
+          await rollbackDiscoveredSupplier(profile.id);
+        }
+        return summary;
+      });
+      if (result.kind === "success") {
+        const { profile, summary } = result;
+        // The collection itself succeeded. A transient session-state write must
+        // not undo a delivered document or the now-proven local integration.
+        try {
+          await completeSupplierDiscovery(pending.runId, profile.id, profile.displayName, summary.count);
+        } catch {
+          await clearSupplierDiscovery().catch(() => undefined);
+        }
+        await revokeUnusedPermissions(requiredOrigins);
+        return { ok: true, summaries: [summary] };
+      }
+      if (
+        result.kind === "fatal" && result.summary.code === "document_permission_required" &&
+        result.summary.requiredOrigins?.length
+      ) {
+        await rollbackDiscoveredSupplier(candidates.id);
+        await requireSupplierDiscoveryDocumentOrigins(pending.runId, result.summary.requiredOrigins);
+        return { ok: false, error: operationalOutcomeLabel("document_permission_required") };
+      }
+      const failure = result.summary?.code
+        ? operationalOutcomeLabel(result.summary.code)
+        : DISCOVERY_FAILURE_MESSAGES.verificationFailed;
+      const diagnostic = scanDiagnostic
+        ? withCandidateVerification(scanDiagnostic, result.outcomes)
+        : undefined;
+      await rollbackDiscoveredSupplier(candidates.id);
+      await failSupplierDiscovery(pending.runId, failure, requiredOrigins, diagnostic);
+      await revokeUnusedPermissions(requiredOrigins);
+      return { ok: false, error: failure };
+    } catch (error) {
+      console.error("[collector] discovered candidate verification failed", error instanceof Error ? error.name : "unknown");
+      await rollbackDiscoveredSupplier(candidates.id);
+      const failure = error instanceof DiscoveredSupplierCapacityError
+        ? DISCOVERY_FAILURE_MESSAGES.capacity
+        : DISCOVERY_FAILURE_MESSAGES.verificationFailed;
+      await failSupplierDiscovery(pending.runId, failure, requiredOrigins);
+      await revokeUnusedPermissions(requiredOrigins);
+      return { ok: false, error: failure };
+    }
+  }).finally(() => discoveredConnectionsInFlight.delete(key));
+  discoveredConnectionsInFlight.set(key, task);
+  return task;
+}
+
+async function rollbackDiscoveredSupplier(vendorId: string): Promise<void> {
+  await Promise.allSettled([
+    removeConnection(vendorId),
+    removeDiscoveredSupplier(vendorId),
+  ]);
+}
+
+async function cancelCurrentDiscovery(): Promise<void> {
+  await revokeUnusedPermissions(await cancelSupplierDiscovery());
+}
+
+async function revokeUnusedPermissions(disconnectedHosts: readonly string[]): Promise<void> {
+  const connections = await getConnections();
+  const retained = new Set<string>();
+  for (const vendorId of Object.keys(connections)) {
+    const source = await resolveCollectorSource(vendorId);
+    if (source) {
+      for (const host of vendorPermissionOrigins(source.recipe, connections[vendorId])) retained.add(host);
+    }
+  }
+  await revokeHostPermissions(disconnectedHosts.filter((host) => !retained.has(host)));
 }

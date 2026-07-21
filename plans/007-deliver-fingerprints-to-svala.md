@@ -34,8 +34,11 @@ Svala attribution server-verifiable and retaining local export/recovery.
    Svala sessions, Igdrasil Collector tokens, or supplier credentials.
 3. Token storage: only a strong hash plus prefix/metadata in Svala; token value in
    Studio extension-local storage, removable through Disconnect.
-4. Idempotency: `fingerprintId` plus `Idempotency-Key`; same content returns the
-   original receipt, different content for the same key returns HTTP 409.
+4. Idempotency: within the authenticated token scope, `fingerprintId` and every
+   observed `Idempotency-Key` are both permanently bound to one canonical
+   submission hash. Exact content returns the original receipt regardless of
+   transport key; reusing either identity for different content returns HTTP
+   409 without replacing or duplicating evidence.
 5. PostgreSQL commits the validated submission and receipt before HTTP success.
 6. Temporal is not on the synchronous intake path. Later workflows consume DB
    identifiers through the established outbox boundary.
@@ -100,9 +103,34 @@ submission parser, canonicalize/hash content, and atomically insert submission,
 consent provenance, uploader attribution, and receipt. Return a bounded receipt
 with ID, fingerprint ID, accepted time, and status only.
 
-**Verify**: identical replay returns the same receipt; changed content with the
-same idempotency key returns 409; malformed/unauthorized/rate-limited requests
-leave no row.
+Canonicalization covers the complete strictly parsed submission envelope and is
+independent of JSON property order, whitespace, HTTP headers, and transport
+idempotency key. Store the original canonical JSON plus SHA-256 hash. The intake
+schema must enforce unique `(intake_scope_id, fingerprint_id)` submissions and a
+separate unique `(intake_scope_id, idempotency_key)` binding to a submission ID
+and the same content hash. The transaction must lock/resolve both identities:
+
+1. If neither identity exists, insert the submission, consent provenance,
+   receipt, idempotency-key binding, and one acceptance audit event.
+2. If the scoped fingerprint already exists with the same hash, atomically bind
+   a previously unseen transport key to that existing submission and return its
+   original receipt.
+3. If the scoped key already points to that same submission and hash, return the
+   original receipt.
+4. If either identity exists with a different hash or points to a different
+   submission, return a bounded HTTP 409 and insert no submission, receipt,
+   consent, key binding, or acceptance audit row.
+
+`intake_scope_id` is the stable server-side company/developer scope authorized by
+the token, never a client-supplied identifier. Conflict responses must not reveal
+content hashes or whether another scope contains the same fingerprint ID.
+
+**Verify**: identical replay returns the same receipt with the same or a different
+idempotency key; changed content with the same key returns 409; changed content
+with the same fingerprint ID and a different key also returns 409. Concurrent
+versions of each case produce one submission, receipt, consent provenance, key
+binding per observed exact-replay key, and acceptance audit row. Conflicts plus
+malformed/unauthorized/rate-limited requests leave no evidence row.
 
 ### 4. Implement Studio pairing and transport
 
@@ -152,4 +180,3 @@ content occurs in logs, Temporal history, or public artifacts.
 
 Version endpoint and schema independently. Support v1 until all released Studio
 versions using it are outside the retention/support window.
-

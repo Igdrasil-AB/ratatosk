@@ -1,11 +1,11 @@
 {
   "name": "ratatosk",
-  "version": "0.7.1",
+  "version": "0.8.29",
   "description": "Open-source browser extension that collects supplier invoices and receipts from vendor portals using the user's own session — no credential custody.",
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "scripts": {
     "dev": "npm run dev:collector",
@@ -16,17 +16,22 @@
     "build:studio": "vite build --config studio/vite.config.ts",
     "package:collector": "tsx scripts/package-extension.ts collector",
     "package:studio": "tsx scripts/package-extension.ts studio",
-    "release:collector": "npm run ci && npm run audit:security && npm run validate:release && npm run build:collector && npm run package:collector",
-    "release:studio": "npm run ci && npm run audit:security && npm run build:studio && npm run package:studio",
+    "assert:release-source": "tsx scripts/assert-release-source.ts",
+    "release:collector": "npm run assert:release-source && npm run ci && npm run audit:security && npm run validate:collector-release && npm run build:collector && npm run assert:release-source && npm run package:collector",
+    "release:studio": "npm run assert:release-source && npm run ci && npm run audit:security && npm run validate:studio-release && npm run build:studio && npm run assert:release-source && npm run package:studio",
     "gen:icons": "tsx scripts/build-icons.ts && tsx scripts/build-extension-icons.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -p tsconfig.core.json && tsc -p tsconfig.extension.json && tsc -p tsconfig.node.json && tsc -p tsconfig.test.json && tsc -p tsconfig.boundary-core.json && tsc -p tsconfig.boundary-extension.json && tsc -p tsconfig.boundary-node.json",
+    "check:boundaries": "tsx scripts/check-architecture-boundaries.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "validate": "tsx scripts/validate-vendors.ts",
     "validate:release": "tsx scripts/validate-vendors.ts --release",
+    "validate:collector-release": "npm run validate:release",
+    "validate:studio-release": "npm run validate && tsx scripts/validate-studio-release.ts",
     "validate:pilot": "tsx scripts/validate-pilot-manifest.ts",
+    "verify:collector-artifact": "tsx scripts/verify-collector-artifact.ts",
     "audit:security": "npm audit --audit-level=high",
-    "ci": "npm run gen:icons && npm run typecheck && npm run validate && npm run test"
+    "ci": "npm run gen:icons && npm run typecheck && npm run check:boundaries && npm run validate && npm run test"
   },
   "dependencies": {
     "zod": "^3.23.8"

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { VendorRecipe } from "../core/types";
+import { deepFreeze } from "../core/immutable";
 
 export const VENDOR_LIFECYCLE_SCHEMA = "ratatosk.vendor-lifecycle.v1" as const;
 export const DEFAULT_VERIFICATION_MAX_AGE_DAYS = 90;
@@ -57,7 +58,7 @@ const lifecycleSource: VendorLifecycleManifest = {
 
 export const VENDOR_LIFECYCLE_MANIFEST = parseVendorLifecycleManifest(lifecycleSource);
 export const VENDOR_LIFECYCLE_BY_ID: Readonly<Record<string, VendorLifecycleEntry>> = Object.freeze(
-  Object.fromEntries(VENDOR_LIFECYCLE_MANIFEST.vendors.map((entry) => [entry.vendorId, Object.freeze(entry)])),
+  Object.fromEntries(VENDOR_LIFECYCLE_MANIFEST.vendors.map((entry) => [entry.vendorId, entry])),
 );
 
 export function parseVendorLifecycleManifest(value: unknown, now = new Date()): VendorLifecycleManifest {
@@ -76,6 +77,9 @@ export function parseVendorLifecycleManifest(value: unknown, now = new Date()): 
     if (entry.stage === "retired" && entry.healthReason !== "retired") {
       throw new Error(`${entry.vendorId}: retired vendors must use retired`);
     }
+    if (entry.healthReason === "retired" && entry.stage !== "retired") {
+      throw new Error(`${entry.vendorId}: retired health reason requires retired stage`);
+    }
     if (entry.healthReason === "healthy" && !completeVerification) {
       throw new Error(`${entry.vendorId}: healthy status requires complete live verification evidence`);
     }
@@ -83,13 +87,16 @@ export function parseVendorLifecycleManifest(value: unknown, now = new Date()): 
       throw new Error(`${entry.vendorId}: next review must follow live verification`);
     }
   }
-  return parsed;
+  return deepFreeze(parsed);
 }
 
 export function lifecycleCoverageIssues(recipes: readonly VendorRecipe[], manifest = VENDOR_LIFECYCLE_MANIFEST): string[] {
-  const recipeIds = new Set(recipes.map((recipe) => recipe.id));
+  const recipeIdCounts = new Map<string, number>();
+  for (const recipe of recipes) recipeIdCounts.set(recipe.id, (recipeIdCounts.get(recipe.id) ?? 0) + 1);
+  const recipeIds = new Set(recipeIdCounts.keys());
   const lifecycleIds = new Set(manifest.vendors.map((entry) => entry.vendorId));
   return [
+    ...[...recipeIdCounts].filter(([, count]) => count > 1).map(([id]) => `${id}: duplicate recipe id`),
     ...[...recipeIds].filter((id) => !lifecycleIds.has(id)).map((id) => `${id}: missing lifecycle entry`),
     ...[...lifecycleIds].filter((id) => !recipeIds.has(id)).map((id) => `${id}: lifecycle entry has no recipe`),
   ];
@@ -126,19 +133,68 @@ export function releaseLifecycleIssues(
   });
 }
 
-export function isLifecycleRunnable(entry: VendorLifecycleEntry): boolean {
-  if (entry.stage === "pilot" || entry.stage === "supported") return true;
-  return entry.stage === "degraded" && (entry.healthReason === "verification_stale" || entry.healthReason === "rate_limited");
+/** CI may carry an explicitly unverified pilot until an operator records the
+ * first complete attestation. This does not make the strict release gate pass. */
+export function isExpectedUnverifiedPilotIssue(
+  issue: string,
+  lifecycle = VENDOR_LIFECYCLE_BY_ID,
+): boolean {
+  const separator = issue.indexOf(":");
+  if (separator <= 0) return false;
+  const entry = lifecycle[issue.slice(0, separator)];
+  if (!entry || entry.stage !== "pilot" || entry.healthReason !== "needs_verification") return false;
+  const evidenceEmpty = [entry.lastLiveVerifiedAt, entry.collectorVersion, entry.chromeMajor, entry.evidenceRef, entry.nextReviewAt]
+    .every((field) => field === null);
+  if (!evidenceEmpty) return false;
+  const reason = issue.slice(separator + 1).trim();
+  return reason === "health reason needs_verification is not release-ready"
+    || reason === "complete sanitized live-verification evidence is required";
 }
 
-export function vendorLifecycleLabel(entry: VendorLifecycleEntry, now = new Date()): string {
+export function isLifecycleRunnable(
+  entry: VendorLifecycleEntry,
+  now = new Date(),
+  maxAgeDays = DEFAULT_VERIFICATION_MAX_AGE_DAYS,
+): boolean {
+  // The public registry is an execution boundary, not merely a display of
+  // authoring status. A pilot can be shipped only after complete, current live
+  // evidence has made it healthy; experimental, degraded, held, retired, and
+  // unverified recipes remain available to maintainers but cannot run.
+  if (entry.stage !== "pilot" && entry.stage !== "supported") return false;
+  if (entry.healthReason !== "healthy") return false;
+  if (!entry.lastLiveVerifiedAt || !entry.collectorVersion || !entry.chromeMajor || !entry.evidenceRef || !entry.nextReviewAt) {
+    return false;
+  }
+  return isVerificationFresh(entry, now, maxAgeDays);
+}
+
+export function vendorLifecycleLabel(
+  entry: VendorLifecycleEntry,
+  now = new Date(),
+  maxAgeDays = DEFAULT_VERIFICATION_MAX_AGE_DAYS,
+): string {
   if (entry.stage === "retired") return "Retired";
   if (entry.stage === "experimental") return "Experimental · not in Collector";
   if (entry.stage === "degraded") return `Degraded · ${reasonLabel(entry.healthReason)}`;
   const stage = entry.stage === "supported" ? "Supported" : "Pilot";
   if (!entry.lastLiveVerifiedAt) return `${stage} · verification needed`;
-  if (!entry.nextReviewAt || Date.parse(entry.nextReviewAt) < now.getTime()) return `${stage} · verification stale`;
+  if (!isVerificationFresh(entry, now, maxAgeDays)) return `${stage} · verification stale`;
   return `${stage} · live verified`;
+}
+
+export function isVerificationFresh(
+  entry: Pick<VendorLifecycleEntry, "lastLiveVerifiedAt" | "nextReviewAt">,
+  now = new Date(),
+  maxAgeDays = DEFAULT_VERIFICATION_MAX_AGE_DAYS,
+): boolean {
+  if (!entry.lastLiveVerifiedAt || !entry.nextReviewAt) return false;
+  const verifiedAt = Date.parse(entry.lastLiveVerifiedAt);
+  const reviewAt = Date.parse(entry.nextReviewAt);
+  const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1_000;
+  return Number.isFinite(verifiedAt) && Number.isFinite(reviewAt)
+    && verifiedAt <= now.getTime()
+    && now.getTime() - verifiedAt <= maxAgeMs
+    && reviewAt >= now.getTime();
 }
 
 function unverified(vendorId: string, stage: "experimental" | "pilot"): VendorLifecycleEntry {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { render } from "../../src/core/template";
-import { extract } from "../../src/core/extract";
+import { extract, extractString, MAX_REGEX_INPUT_CHARS } from "../../src/core/extract";
 import { get, getArray } from "../../src/core/jsonpath";
 
 describe("template.render", () => {
@@ -9,6 +9,11 @@ describe("template.render", () => {
   });
   it("throws on a missing variable rather than emitting an empty string", () => {
     expect(() => render("{missing}", {})).toThrow();
+  });
+  it("rejects inherited variables but permits explicitly supplied names", () => {
+    expect(() => render("{constructor}", {})).toThrow(/missing template variable/);
+    expect(() => render("{toString}", {})).toThrow(/missing template variable/);
+    expect(render("{constructor}/{toString}", { constructor: "ctor", toString: "stringifier" })).toBe("ctor/stringifier");
   });
 });
 
@@ -36,5 +41,27 @@ describe("extract transforms", () => {
     expect(
       extract({ ref: "invoice_776" }, { path: "ref", transforms: [{ kind: "regex", pattern: "_(\\d+)$", group: 1 }] }),
     ).toBe("776");
+  });
+  it("does not run recipe regexes over unbounded supplier values", () => {
+    expect(extract(
+      { value: "a".repeat(MAX_REGEX_INPUT_CHARS + 1) },
+      { path: "value", transforms: [{ kind: "regex", pattern: "a+" }] },
+    )).toBeUndefined();
+  });
+  it("preserves absent values through transforms and trims extracted strings", () => {
+    for (const transform of [
+      { kind: "divide", by: 100 },
+      { kind: "date" },
+      { kind: "regex", pattern: "x" },
+      { kind: "template", pattern: "{value}" },
+      { kind: "replace", pattern: "x", with: "y" },
+      { kind: "trim" },
+      { kind: "upper" },
+      { kind: "lower" },
+    ] as const) {
+      expect(extract({}, { path: "missing", transforms: [transform] })).toBeUndefined();
+      expect(extract({ missing: null }, { path: "missing", transforms: [transform] })).toBeNull();
+    }
+    expect(extractString({ value: "  invoice-1  " }, "value")).toBe("invoice-1");
   });
 });

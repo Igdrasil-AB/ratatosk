@@ -100,8 +100,27 @@ until a destination has been confirmed.
 
 Recipes are declarative data, never executable code. The recipe schema is strict,
 bounded, and interpreted only by logic packaged with the extension. Collector
-does not download remote recipes or remotely hosted code; adding or changing a
-vendor requires a reviewed extension release.
+does not download remote recipes or remotely hosted code. Official vendor
+changes require a reviewed extension release. For an unsupported supplier, the
+user can select **Find Invoices** from any page in the supplier app. Collector
+checks that page and at most fourteen same-origin, billing-related pages using at
+most two inactive temporary tabs. A temporary exact-origin `document_start`
+observer captures bounded, sanitized JSON fetch/XHR evidence before the SPA runs,
+so the packaged inference can recognize GET APIs and explicit read-only GraphQL
+POST queries without the Studio recorder or an AI fallback. The bounded planner combines URL intent with visible
+navigation labels and nearby menu context, so an opaque route labelled `Invoices`
+remains discoverable. Observed Settings routes are retained as lower-confidence
+bridges to billing pages, tenant-scoped `settings/billing` routes are prioritized,
+and the best contextual/common route is scheduled after at most two observed-route
+probes so one clue source cannot starve the others. Packaged adapters retain up
+to three proof-ranked, strict local-only candidates spanning JSON APIs, embedded
+data, invoice-context document links, and explicit download controls. DOM-shaped
+leads are verified only after Connect &
+Collect, Ratatosk requests only their bounded exact-origin union, validates a
+real PDF, and falls through candidate-local shape failures before saving the
+integration. Connected local recipes can enumerate cursor, next-URL, numbered,
+offset, localized Load More, and infinite-scroll invoice lists through packaged
+bounded primitives—without storing remote code or cursor values.
 
 ## Repository layout
 
@@ -158,8 +177,11 @@ Build and inspect the independent Studio release artifact with:
 npm run release:studio
 ```
 
-This runs the complete test and security gate before writing a deterministic
-Studio-only ZIP and checksum. Publishing remains an explicit operator action;
+This runs the complete test and security gate, validates every vendor recipe and
+fixture, and checks the Studio-specific authoring manifest before writing a
+deterministic Studio-only ZIP and checksum. Studio does not ship Collector
+support claims, so only `release:collector` requires fresh live supplier
+attestations through the strict `validate:collector-release` gate. Publishing remains an explicit operator action;
 the tag workflow runs only after a matching `v<package-version>` tag is pushed.
 
 ## Vendor status

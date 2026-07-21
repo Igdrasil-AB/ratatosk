@@ -41,4 +41,34 @@ describe("Igdrasil connection intent", () => {
     await expect(consumeIgdrasilConnectIntent(`${intent.state}x`, 1_001)).resolves.toBe(false);
     await expect(consumeIgdrasilConnectIntent(intent.state, 1_000 + 60 * 60_000 + 1)).resolves.toBe(false);
   });
+
+  it("atomically consumes a state once when two bridge requests overlap", async () => {
+    const intent = await createIgdrasilConnectIntent(1_000);
+
+    await expect(Promise.all([
+      consumeIgdrasilConnectIntent(intent.state, 1_001),
+      consumeIgdrasilConnectIntent(intent.state, 1_001),
+    ])).resolves.toEqual([true, false]);
+  });
+
+  it("does not let an older consume delete a newly created intent", async () => {
+    const oldIntent = await createIgdrasilConnectIntent(1_000);
+    let releaseRead: (() => void) | undefined;
+    const readBarrier = new Promise<void>((resolve) => { releaseRead = resolve; });
+    (chrome.storage.session.get as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(async (key: string) => {
+      const snapshot = { [key]: structuredClone(values[key]) };
+      await readBarrier;
+      return snapshot;
+    });
+
+    const consuming = consumeIgdrasilConnectIntent(oldIntent.state, 1_001);
+    await vi.waitFor(() => expect(chrome.storage.session.get).toHaveBeenCalled());
+    const replacement = createIgdrasilConnectIntent(2_000);
+    releaseRead?.();
+
+    await expect(consuming).resolves.toBe(true);
+    const newIntent = await replacement;
+    await expect(validateIgdrasilConnectIntent(newIntent.state, 2_001)).resolves.toBe(true);
+    await expect(consumeIgdrasilConnectIntent(newIntent.state, 2_001)).resolves.toBe(true);
+  });
 });

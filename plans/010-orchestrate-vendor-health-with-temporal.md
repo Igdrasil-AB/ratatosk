@@ -12,14 +12,14 @@
 - **Priority**: P1
 - **Effort**: L
 - **Risk**: MED
-- **Depends on**: Plans 004 and 008
+- **Depends on**: Plans 004, 005, and 008
 - **Category**: reliability, orchestration, direction
 - **Planned at**: Svala `26bfebb`, 2026-07-16
 
 ## Why this matters
 
 Vendor compatibility decays over time and needs durable evaluation, reminders,
-mission creation, and escalation. Svala already has pinned Temporal TypeScript
+approved public-contribution handoffs, and escalation. Svala already has pinned Temporal TypeScript
 SDK 1.20.3 packages, prebuilt production Workflow bundles, task-queue isolation,
 PostgreSQL outbox dispatch, schedules, telemetry, time-skipping tests, and replay
 fixtures. The correct next step is a new supplier-health domain on that platform.
@@ -59,12 +59,16 @@ Temporal Schedule (daily, overlap SKIP)
      -> bounded child/batch evaluations
         -> evaluateSupplierHealthActivity({ supplierId, lifecycleRevision })
         -> persist transition + audit event (idempotent PostgreSQL transaction)
-        -> create mission/reminder command only when policy requires
+        -> create owner-reminder/public-GitHub-handoff command only when policy requires
 ```
 
 The Workflow never logs into a supplier. “Health” means freshness and outcome of
 authorized evidence: Ratatosk release metadata, fingerprint receipts, explicit
-live-verification attestations, recent operational error codes, and mission state.
+live-verification attestations, and recent operational error codes. Plan 009's
+guided Svala missions are retired: this plan must not create mission records,
+mission codes, mission eligibility, claimant state, or Svala mission commands.
+When new external evidence is needed, the only contributor-facing follow-up is
+the already-approved public GitHub contribution path; it grants no Svala access.
 
 ## Commands
 
@@ -82,10 +86,12 @@ Run from `svala-app/` with Node 24:
 
 **In scope**: supplier-health Temporal domain/task queue, contracts, workflows,
 activities, schedule registration/cutover, DB policies/transitions, outbox command
-support, search attributes/metrics, replay/time-skipping/restart tests, runbooks.
+support for internal owner reminders and the public GitHub contribution handoff,
+search attributes/metrics, replay/time-skipping/restart tests, runbooks.
 
 **Out of scope**: Temporal foundation replacement, Temporal Cloud, Go, supplier
-browser access, remote recipe execution, raw fingerprint/history payloads, Gmail,
+browser access, remote recipe execution, raw fingerprint/history payloads,
+guided capture missions or mission codes, Gmail,
 and immediate removal of any legacy/manual health process before parity evidence.
 
 ## Steps
@@ -93,12 +99,16 @@ and immediate removal of any legacy/manual health process before parity evidence
 ### 1. Freeze the health policy and DB transition contract
 
 Define versioned policy inputs: freshness windows by lifecycle stage, qualifying
-attestation types, operational error thresholds, reminder cooldown, mission
-eligibility, and terminal states. Implement a pure evaluator returning previous
-state, next state, reason codes, next evaluation time, and requested follow-ups.
+attestation types, Plan 005's `collector.operational-outcome.v1` operational
+error codes and thresholds, reminder cooldown, approved
+follow-up kinds (`owner_reminder` or `public_github_contribution_handoff`), and
+terminal states. Implement a pure evaluator returning previous state, next state,
+reason codes, next evaluation time, and an optional approved follow-up.
 
 **Verify**: table-driven unit tests cover fresh, stale, degraded, recovered,
-retired, missing evidence, repeated error, cooldown, and clock boundaries.
+retired, missing evidence, repeated error, cooldown, and clock boundaries. A
+missing-evidence case emits only an approved reminder or GitHub handoff; tests
+assert that no mission record, mission code, or Svala mission command is created.
 
 ### 2. Add a dedicated task queue and contracts
 
@@ -117,7 +127,14 @@ evaluate policy, and atomically persist state/audit/follow-up outbox records usi
 an evaluation idempotency key. Use safe retry policy only for DB/idempotent work.
 Treat external notifications as separate commands with ambiguous-effect policy.
 
+The follow-up command schema is a closed union of `owner_reminder` and
+`public_github_contribution_handoff`; the latter contains only the canonical
+public contribution URL plus bounded supplier/reason identifiers and never
+creates contributor identity, claim, mission, or access state.
+
 **Verify**: repeated activity execution produces one transition and one follow-up.
+Contract tests reject every retired mission command/type and prove a
+missing-evidence evaluation produces the approved GitHub handoff or owner reminder.
 
 ### 4. Implement a finite scheduled workflow
 
@@ -165,6 +182,8 @@ in history, bounded schedule lag, and successful worker/server interruption test
 - [ ] Supplier health has a separate task queue and paused schedule.
 - [ ] PostgreSQL holds all product/fingerprint state; histories contain IDs/codes.
 - [ ] Activities are idempotent and ambiguous effects are isolated.
+- [ ] Follow-ups are limited to owner reminders or the public GitHub contribution
+      handoff; no retired mission state or command exists.
 - [ ] Time-skipping, restart, replay, bundle, typecheck, full tests, security, and
   license gates pass.
 - [ ] Shadow evidence and an operator-approved cutover exist before activation.
@@ -178,6 +197,8 @@ in history, bounded schedule lag, and successful worker/server interruption test
 - Any input/history would contain fingerprint JSON, origin paths, contributor
   identity beyond bounded internal IDs, or credential-like data.
 - A follow-up effect cannot be made idempotent or isolated with one-attempt review.
+- Implementation would recreate Plan 009 mission records, codes, claims,
+  eligibility, or a Svala-only contributor workflow.
 - Implementation requires changing Gmail behavior or adding another runtime.
 
 ## Maintenance notes
@@ -185,4 +206,3 @@ in history, bounded schedule lag, and successful worker/server interruption test
 Every production Workflow change must retain replay compatibility or follow the
 repository's safe-deployment/versioning procedure. Review schedule overlap and
 catch-up policy whenever evaluation duration or supplier volume changes.
-

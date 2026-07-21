@@ -1,4 +1,5 @@
 import type { CaptureSession, CapturedEntry, DraftRecipe } from "./types";
+import type { PaginateSpec } from "../types";
 import { redact } from "./redact";
 import { extractEmbeddedJson } from "../strategies/html";
 
@@ -17,7 +18,9 @@ const ID_KEY = /^id$|_id$|invoice.*(id|no|number)|^number$|reference/i;
 const CURRENCY_KEY = /^currency$|^curr$|currency_code/i;
 const PDF_KEY = /pdf|hosted|invoice_url|invoiceurl|download|receipt/i;
 const AUTH_URL = /\/(me|users?\/me|account|session|profile|organizations?|whoami)(\/|\?|$)/i;
-const CURSOR_KEY = /^(next_page|next_cursor|next|cursor|has_more|page_token)$/i;
+const CURSOR_KEY = /^(?:next_page|next_cursor|nextCursor|cursor|endCursor|page_token|nextPageToken)$/;
+const HAS_MORE_KEY = /^(?:has_more|hasMore|has_next_page|hasNextPage)$/;
+const NEXT_URL_KEY = /^(?:next_url|nextUrl)$/;
 const CURSOR_QUERY = new Set(["page", "cursor", "offset", "starting_after", "after", "page_token"]);
 
 type Obj = Record<string, unknown>;
@@ -85,8 +88,8 @@ function inferStructured(session: CaptureSession): DraftRecipe | null {
   // 3. The list request. For a JSON API: replay url + method + (GraphQL) body,
   // with pagination if present. For HTML: GET the page and re-parse it.
   const isHtml = sourceKind === "html";
-  const paginate = isHtml ? undefined : inferPaginate(root);
-  const listUrl = paginate ? withCursorParam(entry.url) : entry.url;
+  const paginate = isHtml ? undefined : inferPaginate(root, entry.url);
+  const listUrl = paginate ? withPaginationParam(entry.url, paginate) : entry.url;
   const listCt = isHtml ? undefined : contentTypeHeader(entry);
   const listRequest: Obj = isHtml
     ? { url: entry.url }
@@ -103,7 +106,9 @@ function inferStructured(session: CaptureSession): DraftRecipe | null {
         : "Invoices were found in the page HTML (an embedded-JSON blob), not a JSON API. Verify the data is in the server HTML (view-source), not injected by JS after load.",
     );
   }
-  if (paginate && listUrl === entry.url) notes.push("Pagination fields present but no obvious cursor query param — verify the page/cursor param.");
+  if (paginate && listUrl === entry.url && paginate.kind !== "next-url") {
+    notes.push("Pagination fields present but no obvious page/cursor query param — verify the pagination variable.");
+  }
   if (pdfKey && /invoice\.stripe\.com\/i\//.test(String(sample[pdfKey]))) {
     notes.push('documentUrl is a Stripe HOSTED invoice page — insert "/pdf" before the "?" (a `replace` transform) to fetch the actual PDF.');
   }
@@ -123,11 +128,14 @@ function inferStructured(session: CaptureSession): DraftRecipe | null {
   // the recipe works for ANY logged-in user, not just whoever recorded it.
   const provenance = isHtml ? [] : traceIdProvenance(session.entries, entry);
   const config: Obj[] = [];
+  const configuredValues = new Set<string>();
   let invoicesUrl = String(listRequest.url);
   let invoicesBody = typeof listRequest.body === "string" ? listRequest.body : undefined;
   for (const pv of provenance) {
-    if (pv.location === "url") invoicesUrl = invoicesUrl.split(pv.value).join(`{${pv.configId}}`);
+    if (pv.location === "url") invoicesUrl = replaceProvenanceInUrl(invoicesUrl, pv);
     else if (invoicesBody) invoicesBody = invoicesBody.split(pv.value).join(`{${pv.configId}}`);
+    if (configuredValues.has(pv.value)) continue;
+    configuredValues.add(pv.value);
     config.push({ id: pv.configId, discover: { request: withHeaders(pv.source, authHeaders), value: pv.path } });
     notes.push(`Multi-tenant: "${pv.configId}" (in the list ${pv.location}) comes from ${pv.source.url as string} at "${pv.path}" — auto-wired via config as {${pv.configId}}.`);
   }
@@ -135,6 +143,11 @@ function inferStructured(session: CaptureSession): DraftRecipe | null {
     { ...listRequest, url: invoicesUrl, ...(invoicesBody !== undefined ? { body: invoicesBody } : {}) },
     authHeaders,
   );
+  // A redacted placeholder is safe to store but never safe to replay. Only
+  // emit a draft when every such URL value was correlated with a runtime config
+  // source above; otherwise a reviewer would receive a recipe guaranteed to
+  // fail (or, worse, scoped to an unknown account).
+  if (containsUnboundRedaction(invoicesUrl) || (invoicesBody !== undefined && containsUnboundRedaction(invoicesBody))) return null;
   const untracedBodyId = !isHtml && bodyIdTokens(entry.requestBody).length > provenance.filter((p) => p.location === "body").length;
   if (untracedBodyId) notes.push("The request body has an id (e.g. workspace/account) whose source wasn't captured — parameterize it via `config` manually, or re-record so the source endpoint is seen.");
   if (!isHtml && !provenance.length && hasIdSegment(entry.url)) {
@@ -184,8 +197,14 @@ function inferStructured(session: CaptureSession): DraftRecipe | null {
           strategy: "network",
           list: { request: invoicesListRequest, items: arrayPath, map, ...(paginate ? { paginate } : {}) },
           document: { contentType: "application/pdf" },
-        },
+    },
   };
+
+  // A `REDACTED` marker is capture evidence, never an executable request
+  // value. The earlier list-request check handles the common case; this final
+  // structural guard covers auth/config/document request URLs assembled from
+  // other captured entries as well.
+  if (containsRecipeRedaction(recipe)) return null;
 
   const confidence = scoreConfidence({ elements, hasPdf: Boolean(pdfKey), realProbe: probe.real });
 
@@ -193,6 +212,10 @@ function inferStructured(session: CaptureSession): DraftRecipe | null {
     recipe,
     fixture: redact(root),
     confidence,
+    identity: {
+      kind: idKey ? "explicit_field" : "date_fallback",
+      path: p(idKey ?? dateKey!),
+    },
     notes,
   };
 }
@@ -219,6 +242,11 @@ interface Provenance {
   path: string;
   /** Where the id sits in the list request: the URL, or the request body. */
   location: "url" | "body";
+  /** A sanitized URL stores the value as REDACTED; this key identifies the
+   * exact query parameter to replace after opaque-alias correlation. */
+  redactedQueryKey?: string;
+  /** Equivalent structural position for a redacted path segment. */
+  redactedPathIndex?: number;
 }
 
 /** A `content-type` request header, if one was captured (POST bodies need it). */
@@ -283,14 +311,28 @@ function locateCredentialPath(entries: CapturedEntry[], exclude: CapturedEntry):
 }
 
 /** id-like tokens in a URL's query values and path segments, with the query key if any. */
-function urlIdTokens(url: string): { value: string; key?: string }[] {
-  const out: { value: string; key?: string }[] = [];
+interface UrlIdToken {
+  value: string;
+  key?: string;
+  redactedQueryKey?: string;
+  redactedPathIndex?: number;
+}
+
+function urlIdTokens(entry: CapturedEntry): UrlIdToken[] {
+  const out: UrlIdToken[] = [];
   try {
-    const u = new URL(url);
+    const u = new URL(entry.url);
     for (const [key, value] of u.searchParams) if (isIdLike(value)) out.push({ value, key });
     for (const seg of u.pathname.split("/")) if (isIdLike(seg)) out.push({ value: seg });
   } catch {
     /* not a URL */
+  }
+  for (const alias of entry.urlValueAliases ?? []) {
+    if (alias.location === "query" && typeof alias.key === "string") {
+      out.push({ value: alias.alias, key: alias.key, redactedQueryKey: alias.key });
+    } else if (alias.location === "path" && typeof alias.pathIndex === "number") {
+      out.push({ value: alias.alias, redactedPathIndex: alias.pathIndex });
+    }
   }
   return out;
 }
@@ -308,7 +350,7 @@ function bodyIdTokens(body: string | undefined): { value: string; key?: string }
   const out: { value: string; key?: string }[] = [];
   const walk = (node: unknown, key?: string): void => {
     if (typeof node === "string") {
-      if (isIdLike(node)) out.push({ value: node, key });
+      if (isIdLike(node) || isOpaqueCaptureAlias(node)) out.push({ value: node, key });
     } else if (Array.isArray(node)) node.forEach((v) => walk(v, key));
     else if (node && typeof node === "object") for (const [k, v] of Object.entries(node as Obj)) walk(v, k);
   };
@@ -324,21 +366,64 @@ function bodyIdTokens(body: string | undefined): { value: string; key?: string }
  */
 function traceIdProvenance(entries: CapturedEntry[], listEntry: CapturedEntry): Provenance[] {
   const found: Provenance[] = [];
-  const seen = new Set<string>();
-  const tokens = [
-    ...urlIdTokens(listEntry.url).map((t) => ({ ...t, location: "url" as const })),
+  const tokens: Array<{ value: string; key?: string; location: "url" | "body"; redactedQueryKey?: string; redactedPathIndex?: number }> = [
+    ...urlIdTokens(listEntry).map((t) => ({ ...t, location: "url" as const })),
     ...bodyIdTokens(listEntry.requestBody).map((t) => ({ ...t, location: "body" as const })),
   ];
-  for (const { value, key, location } of tokens) {
-    if (seen.has(value)) continue;
+  const sourceByValue = new Map<string, SourceHit>();
+  for (const value of new Set(tokens.map((token) => token.value))) {
     const source = locateValue(entries, listEntry, value);
+    if (source) sourceByValue.set(value, source);
+  }
+  for (const { value, key, location, redactedQueryKey, redactedPathIndex } of tokens) {
+    const source = sourceByValue.get(value);
     if (!source) continue;
-    seen.add(value);
     const lastKey = source.path.split(".").pop() ?? "";
-    const configId = sanitizeId(key ?? (/[a-z]/i.test(lastKey) ? lastKey : "scopeId"));
-    found.push({ value, configId, source: sourceRequest(source), path: source.path, location });
+    const preferredKey = tokens.find((token) => token.value === value && token.key)?.key;
+    const configId = sanitizeId(preferredKey ?? (/[a-z]/i.test(lastKey) ? lastKey : "scopeId"));
+    found.push({ value, configId, source: sourceRequest(source), path: source.path, location, redactedQueryKey, redactedPathIndex });
   }
   return found;
+}
+
+function replaceProvenanceInUrl(url: string, provenance: Provenance): string {
+  if (!provenance.redactedQueryKey && provenance.redactedPathIndex === undefined) return url.split(provenance.value).join(`{${provenance.configId}}`);
+  try {
+    const parsed = new URL(url);
+    if (provenance.redactedPathIndex !== undefined) {
+      const segments = parsed.pathname.split("/");
+      if (!isRedactedAliasValue(segments[provenance.redactedPathIndex], provenance.value)) return url;
+      segments[provenance.redactedPathIndex] = `{${provenance.configId}}`;
+      parsed.pathname = segments.join("/");
+      return decodeURIComponent(parsed.toString());
+    }
+    const values = parsed.searchParams.getAll(provenance.redactedQueryKey!);
+    // Duplicated query keys have ambiguous binding. Leave them redacted so the
+    // caller rejects this draft rather than substituting a value into both.
+    if (values.length !== 1 || !isRedactedAliasValue(values[0], provenance.value)) return url;
+    parsed.searchParams.set(provenance.redactedQueryKey!, `{${provenance.configId}}`);
+    return decodeURIComponent(parsed.toString());
+  } catch {
+    return url;
+  }
+}
+
+function containsUnboundRedaction(value: string): boolean {
+  return /(?:^|[?&=:/])REDACTED(?:$|[?&=/])/.test(value);
+}
+
+function containsRecipeRedaction(value: unknown): boolean {
+  if (typeof value === "string") return value.includes("REDACTED") || /(?:__ratatosk_)?ref_\d+(?:__)?/.test(value);
+  if (Array.isArray(value)) return value.some(containsRecipeRedaction);
+  return Boolean(value && typeof value === "object" && Object.values(value as Obj).some(containsRecipeRedaction));
+}
+
+function isRedactedAliasValue(value: string | undefined, alias: string): boolean {
+  return value === "REDACTED" || value === `__ratatosk_${alias}__`;
+}
+
+function isOpaqueCaptureAlias(value: string): boolean {
+  return /^ref_\d+$/.test(value);
 }
 
 /** Find `value` inside another JSON response; return the best (stable, id-ish) path. */
@@ -475,6 +560,7 @@ function inferFromLinks(session: CaptureSession): DraftRecipe | null {
     recipe,
     fixture: redact({ matchedLinks: hrefs.slice(0, 20) }),
     confidence: fromPdf && hrefs.length >= 2 ? "medium" : "low",
+    identity: { kind: "document_url", path: "documentUrl" },
     notes,
   };
 }
@@ -622,7 +708,9 @@ function scoreInvoiceArray(array: unknown[]): number {
     const o = el as Obj;
     const hasMoney = Object.entries(o).some(([k, v]) => MONEY_KEY.test(k) && isNumeric(v));
     const hasDate = Object.entries(o).some(([k, v]) => DATE_KEY.test(k) && isDateish(v));
-    if (hasMoney && hasDate) invoiceLike++;
+    const hasId = Object.entries(o).some(([k, v]) => ID_KEY.test(k) && (typeof v === "string" || typeof v === "number"));
+    const hasDocument = Boolean(findPdfKey(o));
+    if (hasDate && (hasMoney || (hasId && hasDocument))) invoiceLike++;
   }
   return invoiceLike / array.length;
 }
@@ -634,7 +722,7 @@ function findKey(obj: Obj, re: RegExp, valueOk?: (v: unknown) => boolean): strin
 }
 
 function findPdfKey(obj: Obj): string | undefined {
-  const urls = Object.entries(obj).filter(([, v]) => typeof v === "string" && /^https?:\/\//.test(v));
+  const urls = Object.entries(obj).filter(([, v]) => typeof v === "string" && (/^https?:\/\//.test(v) || /^\/(?!\/)/.test(v)));
   // Prefer a field whose value clearly points at a PDF, else a pdf-named field.
   return (
     urls.find(([, v]) => /\/pdf(\?|$)|\.pdf(\?|$)/i.test(v as string))?.[0] ??
@@ -657,25 +745,104 @@ function amountTransforms(sample: unknown): unknown[] | null {
   return null;
 }
 
-function inferPaginate(root: unknown): { cursor: string } | undefined {
-  if (!root || typeof root !== "object" || Array.isArray(root)) return undefined;
-  const cursorKey = Object.keys(root as Obj).find((k) => CURSOR_KEY.test(k) && typeof (root as Obj)[k] === "string");
-  return cursorKey ? { cursor: cursorKey } : undefined;
+function inferPaginate(root: unknown, requestUrl: string): PaginateSpec | undefined {
+  const scalars = findScalarPaths(root);
+  const nextUrl = scalars.find(({ key, value, parent }) => (
+    typeof value === "string" && value.length > 0 &&
+    (NEXT_URL_KEY.test(key) || (key.toLowerCase() === "next" && /(?:^|\.)links?$/i.test(parent))) &&
+    /^(?:https?:\/\/|\/)/.test(value)
+  ));
+  if (nextUrl) return { kind: "next-url", nextUrl: nextUrl.path };
+
+  let query: URLSearchParams;
+  try {
+    query = new URL(requestUrl).searchParams;
+  } catch {
+    return undefined;
+  }
+
+  const cursor = scalars.find(({ key, value }) => CURSOR_KEY.test(key) && typeof value === "string" && value.length > 0);
+  const hasMore = closestHasMore(cursor?.path, scalars);
+  if (cursor && [...query.keys()].some((key) => CURSOR_QUERY.has(key))) {
+    return { cursor: cursor.path, ...(hasMore ? { hasMore } : {}) };
+  }
+
+  const genericHasMore = closestHasMore(undefined, scalars);
+  const offsetKey = [...query.keys()].find((key) => key.toLowerCase() === "offset");
+  if (offsetKey && genericHasMore) {
+    const pageSize = positiveQueryInt(query, ["limit", "per_page", "page_size"]) ?? 50;
+    return { kind: "offset", step: pageSize, pageSize, hasMore: genericHasMore };
+  }
+  const pageKey = [...query.keys()].find((key) => /^(?:page|p)$/i.test(key));
+  if (pageKey && genericHasMore) {
+    const pageSize = positiveQueryInt(query, ["per_page", "limit", "page_size"]);
+    return { kind: "page", ...(pageSize ? { pageSize } : {}), hasMore: genericHasMore };
+  }
+  return undefined;
 }
 
-function withCursorParam(url: string): string {
+function withPaginationParam(url: string, paginate: PaginateSpec): string {
+  if (paginate.kind === "next-url" || paginate.kind === "link-header") return url;
   try {
     const u = new URL(url);
-    for (const key of u.searchParams.keys()) {
-      if (CURSOR_QUERY.has(key)) {
-        u.searchParams.set(key, "{cursor}");
-        return decodeURIComponent(u.toString());
-      }
-    }
+    const key = paginate.kind === "page"
+      ? [...u.searchParams.keys()].find((candidate) => /^(?:page|p)$/i.test(candidate))
+      : paginate.kind === "offset"
+        ? [...u.searchParams.keys()].find((candidate) => candidate.toLowerCase() === "offset")
+        : [...u.searchParams.keys()].find((candidate) => CURSOR_QUERY.has(candidate));
+    if (!key) return url;
+    const variable = paginate.kind === "page" ? paginate.variable ?? "page"
+      : paginate.kind === "offset" ? paginate.variable ?? "offset"
+        : paginate.variable ?? "cursor";
+    u.searchParams.set(key, `{${variable}}`);
+    return decodeURIComponent(u.toString());
   } catch {
     /* keep literal */
   }
   return url;
+}
+
+interface ScalarPath {
+  path: string;
+  parent: string;
+  key: string;
+  value: unknown;
+}
+
+function findScalarPaths(node: unknown, path = "", depth = 0, out: ScalarPath[] = []): ScalarPath[] {
+  if (depth > 8 || !node || typeof node !== "object" || Array.isArray(node)) return out;
+  for (const [key, value] of Object.entries(node as Obj)) {
+    const nextPath = path ? `${path}.${key}` : key;
+    if (value && typeof value === "object" && !Array.isArray(value)) findScalarPaths(value, nextPath, depth + 1, out);
+    else if (!Array.isArray(value)) out.push({ path: nextPath, parent: path, key, value });
+  }
+  return out;
+}
+
+function closestHasMore(cursorPath: string | undefined, scalars: ScalarPath[]): string | undefined {
+  const candidates = scalars.filter(({ key, value }) => HAS_MORE_KEY.test(key) && (
+    typeof value === "boolean" || typeof value === "number" || typeof value === "string"
+  ));
+  if (!candidates.length) return undefined;
+  if (!cursorPath) return candidates[0].path;
+  const cursorParts = cursorPath.split(".");
+  return candidates
+    .map((candidate) => ({ candidate, shared: sharedPrefixLength(cursorParts, candidate.path.split(".")) }))
+    .sort((left, right) => right.shared - left.shared)[0].candidate.path;
+}
+
+function sharedPrefixLength(left: string[], right: string[]): number {
+  let count = 0;
+  while (count < left.length && count < right.length && left[count] === right[count]) count += 1;
+  return count;
+}
+
+function positiveQueryInt(query: URLSearchParams, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = Number(query.get(key));
+    if (Number.isInteger(value) && value > 0 && value <= 500) return value;
+  }
+  return undefined;
 }
 
 function inferAuthProbe(entries: CapturedEntry[], origin: string): { url: string; real: boolean } {

@@ -135,22 +135,31 @@ export interface BuildSupplierFingerprintInput {
 }
 
 export function buildSupplierFingerprint(input: BuildSupplierFingerprintInput): SupplierFingerprintV1 {
-  const listUrl = recipeRequestUrl(input.draft, "list");
-  const authUrl = recipeRequestUrl(input.draft, "auth");
-  const requests = dedupeRequests(input.session.entries.map((entry) => requestFingerprint(entry, listUrl, authUrl)));
+  const sessionOrigin = normalizeOrigin(input.session.origin);
+  // The capture boundary intentionally permits relative requests because
+  // browser APIs commonly report them that way. Resolve once at the
+  // fingerprint boundary so every structural projection has a canonical URL.
+  const entries = input.session.entries.map((entry) => ({
+    ...entry,
+    url: resolveCapturedUrl(entry.url, sessionOrigin),
+  }));
+  const listRequest = recipeRequestIdentity(input.draft, "list");
+  const authRequest = recipeRequestIdentity(input.draft, "auth");
+  const networkEntries = entries.filter((entry) => entry.method !== "DOM");
+  const requests = dedupeRequests(networkEntries.map((entry) => requestFingerprint(entry, listRequest, authRequest)));
   const candidate: SupplierFingerprintV1 = {
     schema: SUPPLIER_FINGERPRINT_SCHEMA,
     fingerprintId: input.fingerprintId,
     capturedAt: input.capturedAt,
     studioVersion: input.studioVersion,
     supplier: {
-      origin: normalizeOrigin(input.session.origin),
+      origin: sessionOrigin,
       idCandidate: supplierIdCandidate(input.session.origin),
     },
     evidence: {
-      requestCount: input.session.entries.length,
-      structuredResponseCount: input.session.entries.filter((entry) => Boolean(entry.responseBody)).length,
-      documentCount: input.session.entries.filter((entry) => baseContentType(entry.contentType) === "application/pdf").length,
+      requestCount: networkEntries.length,
+      structuredResponseCount: networkEntries.filter((entry) => Boolean(entry.responseBody)).length,
+      documentCount: networkEntries.filter((entry) => baseContentType(entry.contentType) === "application/pdf").length,
       confidence: input.draft?.confidence ?? "none",
       requests,
       inferred: inferredFingerprint(input.draft),
@@ -165,6 +174,14 @@ export function buildSupplierFingerprint(input: BuildSupplierFingerprintInput): 
     },
   };
   return parseSupplierFingerprint(candidate);
+}
+
+function resolveCapturedUrl(url: string, sessionOrigin: string): string {
+  try {
+    return new URL(url, sessionOrigin).href;
+  } catch {
+    throw new Error("Captured request URL is invalid");
+  }
 }
 
 export function parseSupplierFingerprint(value: unknown): SupplierFingerprintV1 {
@@ -204,17 +221,28 @@ export function approveSupplierFingerprint(input: {
   });
 }
 
-function requestFingerprint(entry: CapturedEntry, listUrl?: string, authUrl?: string): z.infer<typeof requestFingerprintSchema> {
+interface StructuralRequestIdentity {
+  url: string;
+  method: string;
+  operationName?: string;
+}
+
+function requestFingerprint(
+  entry: CapturedEntry,
+  listRequest?: StructuralRequestIdentity,
+  authRequest?: StructuralRequestIdentity,
+): z.infer<typeof requestFingerprintSchema> {
   const reference = requestReference(entry.url, entry.method);
   const contentType = baseContentType(entry.contentType);
+  const operationName = graphqlOperationName(entry);
+  const actualRequest = { url: entry.url, method: entry.method, ...(operationName ? { operationName } : {}) };
   const role = contentType === "application/pdf"
     ? "document"
-    : sameRequest(entry.url, listUrl)
+    : sameRequest(actualRequest, listRequest)
       ? "invoice_list"
-      : sameRequest(entry.url, authUrl) || AUTH_PATH.test(new URL(entry.url).pathname)
+      : sameRequest(actualRequest, authRequest) || AUTH_PATH.test(new URL(entry.url).pathname)
         ? "auth"
         : "other";
-  const operationName = graphqlOperationName(entry);
   return {
     ...reference,
     role,
@@ -245,16 +273,20 @@ function structuralPath(pathname: string): string {
 }
 
 function graphqlOperationName(entry: CapturedEntry): string | undefined {
-  if (entry.requestBody) {
+  return structuralOperationName(entry.url, entry.requestBody);
+}
+
+function structuralOperationName(url: string, body?: string): string | undefined {
+  if (body) {
     try {
-      const parsed = JSON.parse(entry.requestBody) as { operationName?: unknown };
+      const parsed = JSON.parse(body) as { operationName?: unknown };
       if (typeof parsed.operationName === "string" && SAFE_IDENTIFIER.test(parsed.operationName)) return parsed.operationName;
     } catch {
       // Non-JSON request bodies are deliberately ignored rather than exported.
     }
   }
   try {
-    const candidate = new URL(entry.url).searchParams.get("q") || "";
+    const candidate = new URL(url, "https://invalid.local").searchParams.get("q") || "";
     return SAFE_IDENTIFIER.test(candidate) ? candidate : undefined;
   } catch {
     return undefined;
@@ -309,13 +341,17 @@ function inferredFingerprint(draft: DraftRecipe | null): z.infer<typeof inferred
   });
 }
 
-function recipeRequestUrl(draft: DraftRecipe | null, kind: "list" | "auth"): string | undefined {
+function recipeRequestIdentity(draft: DraftRecipe | null, kind: "list" | "auth"): StructuralRequestIdentity | undefined {
   if (!draft) return undefined;
   const recipe = draft.recipe as Record<string, unknown>;
   const request = kind === "list"
     ? objectValue(objectValue(objectValue(recipe.invoices).list).request)
     : objectValue(objectValue(objectValue(recipe.auth).check).request);
-  return typeof request.url === "string" ? request.url : undefined;
+  if (typeof request.url !== "string") return undefined;
+  const method = typeof request.method === "string" ? request.method : "GET";
+  const body = typeof request.body === "string" ? request.body : undefined;
+  const operationName = structuralOperationName(request.url, body);
+  return { url: request.url, method, ...(operationName ? { operationName } : {}) };
 }
 
 function dedupeRequests(requests: Array<z.infer<typeof requestFingerprintSchema>>): Array<z.infer<typeof requestFingerprintSchema>> {
@@ -328,10 +364,26 @@ function dedupeRequests(requests: Array<z.infer<typeof requestFingerprintSchema>
     seen.add(key);
     unique.push({ request, index });
   }
-  return unique
-    .sort((left, right) => requestPriority(left.request.role) - requestPriority(right.request.role) || left.index - right.index)
-    .slice(0, MAX_REQUESTS)
+  const ordered = unique.sort(comparePrioritizedRequests);
+  const reserved = new Set<number>();
+  for (const role of ["invoice_list", "document", "auth"] as const) {
+    const representative = ordered.find(({ request }) => request.role === role);
+    if (representative) reserved.add(representative.index);
+  }
+  const selected = [
+    ...ordered.filter(({ index }) => reserved.has(index)),
+    ...ordered.filter(({ index }) => !reserved.has(index)),
+  ].slice(0, MAX_REQUESTS);
+  return selected
+    .sort(comparePrioritizedRequests)
     .map(({ request }) => request);
+}
+
+function comparePrioritizedRequests(
+  left: { request: z.infer<typeof requestFingerprintSchema>; index: number },
+  right: { request: z.infer<typeof requestFingerprintSchema>; index: number },
+): number {
+  return requestPriority(left.request.role) - requestPriority(right.request.role) || left.index - right.index;
 }
 
 function requestPriority(role: z.infer<typeof requestRoleSchema>): number {
@@ -369,12 +421,15 @@ function baseContentType(value: string): string {
   return /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(candidate) ? candidate : "application/octet-stream";
 }
 
-function sameRequest(actual: string, expected?: string): boolean {
+function sameRequest(actual: StructuralRequestIdentity, expected?: StructuralRequestIdentity): boolean {
   if (!expected) return false;
   try {
-    const a = new URL(actual);
-    const b = new URL(expected);
-    return a.origin === b.origin && structuralPath(a.pathname) === structuralPath(b.pathname);
+    const a = new URL(actual.url);
+    const b = new URL(expected.url, a.origin);
+    return a.origin === b.origin
+      && structuralPath(a.pathname) === structuralPath(b.pathname)
+      && safeMethod(actual.method) === safeMethod(expected.method)
+      && actual.operationName === expected.operationName;
   } catch {
     return false;
   }

@@ -76,6 +76,11 @@ Save one real list response:
 test/vendors/fixtures/acme.invoices.json
 ```
 
+For an HTML-strategy recipe, save the captured billing page as
+`test/vendors/fixtures/acme.invoices.html` instead. The validator requires one
+of these vendor-specific fixture paths; an empty test-file placeholder is not
+enough.
+
 Then create `test/vendors/acme.test.ts` (copy `slack.test.ts`) and assert the
 mapping. This is **required** — CI fails a vendor with no test.
 
@@ -98,8 +103,10 @@ Promotion into public `VENDORS` requires a current live test, reviewed fixture,
 least-privilege host list, complete lifecycle attestation, and explicit release
 decision. Keep both arrays alphabetical. `npm run validate:release` enforces the
 configured verification window (90 days unless
-`VENDOR_VERIFICATION_MAX_AGE_DAYS` is set by release policy) and intentionally
-fails while public entries still say `needs_verification`.
+`VENDOR_VERIFICATION_MAX_AGE_DAYS` is set by release policy to a whole number
+from 1 through 365). Invalid or malformed policy values fail the release gate;
+they never fall back silently. The gate intentionally fails while public entries
+still say `needs_verification`.
 
 ## 6. Verify end to end
 

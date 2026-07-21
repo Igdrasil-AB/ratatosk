@@ -14,8 +14,8 @@ import { defineVendor } from "./define";
  *   • If a Sync returns 0 invoices, the billing page is likely rendered
  *     client-side — add `fetchContext: "page"` so it's fetched first-party in a
  *     tab (and if that still yields nothing, it needs the DOM strategy).
- *   • The auth check follows redirects, so a logged-out fetch lands on the login
- *     page (200) and simply yields 0 receipts rather than prompting a reconnect.
+ *   • Redirect metadata is checked before the 200 predicate, so a logged-out
+ *     fetch that lands on GitHub's login page prompts a reconnect.
  */
 const BILLING_HISTORY = "https://github.com/account/billing/history";
 
@@ -29,7 +29,8 @@ export default defineVendor({
   notes: "Recorder-authored (HTML strategy). Receipt links scraped from the billing history page; PDFs served at /account/receipt/ch_….",
 
   auth: {
-    // The billing page load is the login check — a 200 means the session is alive.
+    // The billing page load is the login check. Redirect classification rejects
+    // GitHub's 200 login destination before this status predicate is evaluated.
     check: { request: { url: BILLING_HISTORY }, expect: { statusIn: [200] } },
     loginUrl: "https://github.com/login",
   },

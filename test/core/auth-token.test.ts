@@ -4,6 +4,7 @@ import { networkStrategy } from "../../src/core/strategies/network";
 import { htmlStrategy } from "../../src/core/strategies/html";
 import { unavailableDomStrategy } from "../../src/core/strategies/dom";
 import { renderHeaders } from "../../src/core/template";
+import { AuthFailure } from "../../src/core/errors";
 import type { HttpResponse, RequestSpec, RunContext, SeenStore, VendorRecipe } from "../../src/core/types";
 
 /**
@@ -57,7 +58,7 @@ describe("auth.token pre-flight", () => {
       });
     };
 
-    const seen: SeenStore = { has: async () => false, add: async () => {} };
+    const seen: SeenStore = { has: async () => false, claimIfAbsent: async () => "test-reservation", release: async () => undefined, add: async () => {} };
     const ctx: RunContext = { companyId: "co", vars: {}, seen, fetch };
     const result = await runVendor(recipe, ctx, { network: networkStrategy, dom: unavailableDomStrategy, html: htmlStrategy });
 
@@ -65,6 +66,35 @@ describe("auth.token pre-flight", () => {
     expect(authSeen["/session"]).toBeUndefined(); // the token call itself has no bearer yet
     expect(authSeen["/me"]).toBe("Bearer TESTTOKEN"); // auth check carries it
     expect(authSeen["/invoices"]).toBe("Bearer TESTTOKEN"); // and so does the list
+  });
+
+  it.each([
+    ["object", { opaque: "token" }],
+    ["array", ["token"]],
+    ["boolean", true],
+    ["number", 42],
+    ["whitespace", "   "],
+    ["surrounding whitespace", " token "],
+  ])("rejects a malformed %s token before any downstream request", async (_label, accessToken) => {
+    let downstreamCalled = false;
+    const ctx: RunContext = {
+      companyId: "co",
+      vars: {},
+      seen: { has: async () => false, claimIfAbsent: async () => "reservation", release: async () => undefined, add: async () => undefined },
+      fetch: async (spec) => {
+        if (spec.url.endsWith("/session")) return json(200, { accessToken });
+        downstreamCalled = true;
+        return json(200, {});
+      },
+    };
+
+    await expect(runVendor(recipe, ctx, {
+      network: networkStrategy,
+      dom: unavailableDomStrategy,
+      html: htmlStrategy,
+    })).rejects.toBeInstanceOf(AuthFailure);
+    expect(downstreamCalled).toBe(false);
+    expect(ctx.vars).not.toHaveProperty("token");
   });
 });
 

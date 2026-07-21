@@ -26,6 +26,21 @@ export interface CapturedEntry {
   redactedRequestPaths?: string[];
   /** Bounded structural paths whose response JSON values were redacted. */
   redactedResponsePaths?: string[];
+  /** Opaque, capture-session-local aliases for identifier-shaped values in a
+   * sanitized URL. They permit multi-tenant inference to correlate a list
+   * request with a discovery response without retaining the identifier. */
+  urlValueAliases?: Array<{
+    location: "path" | "query";
+    alias: string;
+    /** Segment index for a path alias; lets inference replace one REDACTED
+     * segment without treating an entire URL as a string template. */
+    pathIndex?: number;
+    /** Present for query aliases so inference can replace only that parameter. */
+    key?: string;
+  }>;
+  /** Opaque aliases for identifier-shaped response values, indexed by their
+   * structural JSON path. Raw identifier values are never stored. */
+  responseValueAliases?: Array<{ path: string; alias: string }>;
   /** Response body as text — populated only for JSON-ish responses. */
   responseBody?: string;
 }
@@ -43,6 +58,12 @@ export interface DraftRecipe {
   /** The captured invoice-list JSON (PII-redacted) — becomes the test fixture. */
   fixture: unknown;
   confidence: "high" | "medium" | "low";
+  /** Structural evidence used for the dedup identity. Automatic promotion may
+   * accept explicit fields and normalized document URLs, never date fallbacks. */
+  identity: {
+    kind: "explicit_field" | "date_fallback" | "document_url";
+    path: string;
+  };
   /** What was inferred vs. guessed, and what a human must verify. */
   notes: string[];
 }

@@ -28,7 +28,7 @@ export default defineVendor({
   invoices: {
     strategy: "network",
     list: {
-      request: { url: "https://vercel.com/api/billing/invoices?limit=100" },
+      request: { url: "https://vercel.com/api/billing/invoices?limit=100&page={page}" },
       items: "invoices",
       map: {
         id: "id",
@@ -37,6 +37,10 @@ export default defineVendor({
         currency: "currency",
         documentRef: "id",
       },
+      // Illustrative until recaptured live: traverse full 100-row pages instead
+      // of silently declaring the first response complete. The engine reports
+      // partial retrieval if the bounded page cap is reached.
+      paginate: { kind: "page", pageSize: 100, maxPages: 20 },
     },
     document: {
       request: { url: "https://vercel.com/api/billing/invoices/{documentRef}/pdf" },

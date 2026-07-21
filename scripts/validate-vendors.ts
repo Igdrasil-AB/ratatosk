@@ -5,27 +5,28 @@
  *
  *   npm run validate
  */
-import { existsSync } from "node:fs";
 import { ALL_VENDORS, VENDORS } from "../src/vendors";
-import { ICONS } from "../src/vendors/icons.generated";
+import { brandIcon } from "../src/vendors/icons";
 import pkg from "../package.json";
 import {
+  isExpectedUnverifiedPilotIssue,
   lifecycleCoverageIssues,
   publicVendorCapabilityIssues,
   releaseLifecycleIssues,
 } from "../src/vendors/lifecycle";
+import { parseVerificationMaxAgeDays, vendorFileIssues } from "./vendor-validation-files";
 
 let failures = 0;
 const release = process.argv.includes("--release");
+const allowUnverifiedPilotBaseline = process.argv.includes("--allow-unverified-pilot-baseline");
 
 for (const vendor of ALL_VENDORS) {
-  const testPath = `test/vendors/${vendor.id}.test.ts`;
-  if (!existsSync(testPath)) {
-    console.error(`✗ ${vendor.id}: missing required test at ${testPath}`);
+  for (const issue of vendorFileIssues(vendor.id)) {
+    console.error(`✗ ${issue}`);
     failures++;
   }
   // A declared icon slug must resolve, or the logo silently falls back — usually a typo.
-  if (vendor.icon && !ICONS[vendor.icon]) {
+  if (vendor.icon && !brandIcon(vendor.icon)) {
     console.error(`✗ ${vendor.id}: icon "${vendor.icon}" isn't in simple-icons (run npm run gen:icons; check the slug).`);
     failures++;
   }
@@ -55,11 +56,20 @@ for (const vendor of VENDORS) {
 }
 
 if (release) {
-  const configuredMaxAge = Number.parseInt(process.env.VENDOR_VERIFICATION_MAX_AGE_DAYS ?? "", 10);
-  const maxAgeDays = Number.isFinite(configuredMaxAge) && configuredMaxAge > 0 ? configuredMaxAge : undefined;
-  for (const issue of releaseLifecycleIssues(VENDORS.map((vendor) => vendor.id), { collectorVersion: pkg.version, maxAgeDays })) {
-    console.error(`✗ release: ${issue}`);
+  let maxAgeDays: number | undefined;
+  try {
+    maxAgeDays = parseVerificationMaxAgeDays(process.env.VENDOR_VERIFICATION_MAX_AGE_DAYS);
+  } catch (error) {
+    console.error(`✗ release: ${error instanceof Error ? error.message : "invalid verification age policy"}`);
     failures++;
+  }
+  for (const issue of releaseLifecycleIssues(VENDORS.map((vendor) => vendor.id), { collectorVersion: pkg.version, maxAgeDays })) {
+    if (allowUnverifiedPilotBaseline && isExpectedUnverifiedPilotIssue(issue)) {
+      console.warn(`! release baseline: ${issue}`);
+    } else {
+      console.error(`✗ release: ${issue}`);
+      failures++;
+    }
   }
 }
 

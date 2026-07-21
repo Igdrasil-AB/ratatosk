@@ -18,9 +18,10 @@ export async function captureDomSnapshot(tabId: number): Promise<CapturedEntry |
   try {
     const [injection] = await chrome.scripting.executeScript({
       target: { tabId },
-      func: () => ({ url: location.href, html: document.documentElement.outerHTML }),
+      func: captureBoundedDomInPage,
+      args: [MAX_BODY_CHARS],
     });
-    const result = injection?.result as { url: string; html: string } | undefined;
+    const result = injection?.result as { url: string; html: string; truncated: boolean } | undefined;
     if (!result?.html) return undefined;
     console.info(`[recorder] DOM snapshot ${result.html.length} chars captured`);
     return {
@@ -34,4 +35,68 @@ export async function captureDomSnapshot(tabId: number): Promise<CapturedEntry |
     console.warn(`[recorder] DOM snapshot failed: ${String(error)}`);
     return undefined;
   }
+}
+
+/** Self-contained traversal serialized into the inspected page. It never asks
+ * the browser to construct `outerHTML`, and stops visiting nodes once the
+ * transfer budget is full. Extension-side sanitization remains mandatory. */
+export function captureBoundedDomInPage(maxChars: number): {
+  url: string;
+  html: string;
+  truncated: boolean;
+} {
+  const limit = Math.max(1, Math.min(1_500_000, Math.trunc(maxChars)));
+  const chunks: string[] = [];
+  let length = 0;
+  let truncated = false;
+
+  const append = (value: string, escape: "text" | "attribute" | "none" = "none"): void => {
+    for (let index = 0; index < value.length; index += 1) {
+      const character = value[index];
+      const encoded = character === "&" ? "&amp;"
+        : character === "<" ? "&lt;"
+        : character === ">" ? "&gt;"
+        : escape === "attribute" && character === '"' ? "&quot;"
+        : character;
+      if (length + encoded.length > limit) {
+        truncated = true;
+        return;
+      }
+      chunks.push(encoded);
+      length += encoded.length;
+    }
+  };
+
+  const serialize = (node: Node): void => {
+    if (length >= limit) {
+      truncated = true;
+      return;
+    }
+    if (node.nodeType === 3) {
+      const parentName = node.parentNode && "localName" in node.parentNode
+        ? String((node.parentNode as Element).localName).toLowerCase()
+        : "";
+      append(node.nodeValue ?? "", parentName === "script" || parentName === "style" ? "none" : "text");
+      return;
+    }
+    if (node.nodeType !== 1) return;
+    const element = node as Element;
+    const tag = element.localName.toLowerCase();
+    append(`<${tag}`);
+    for (const attribute of Array.from(element.attributes)) {
+      append(` ${attribute.name}="`);
+      append(attribute.value, "attribute");
+      append('"');
+      if (truncated) return;
+    }
+    append(">");
+    for (const child of Array.from(element.childNodes)) {
+      serialize(child);
+      if (truncated) return;
+    }
+    append(`</${tag}>`);
+  };
+
+  serialize(document.documentElement);
+  return { url: location.href.slice(0, 2_048), html: chunks.join(""), truncated };
 }

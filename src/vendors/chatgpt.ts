@@ -1,4 +1,5 @@
 import { defineVendor } from "./define";
+import { STRIPE_KNOWN_DOCUMENT_HOSTS } from "../core/document-provider";
 
 /**
  * ChatGPT / OpenAI — recorder-authored (Deep capture found the real billing JSON
@@ -17,8 +18,10 @@ import { defineVendor } from "./define";
  *     a chatgpt.com tab (`fetchContext: "page"`).
  *
  * Invoice objects are Stripe-shaped: `invoice_pdf` is the direct PDF
- * (pay.stripe.com, which redirects through files.stripe.com). `limit` is 100 to pull
- * the whole history (no user has >100 ChatGPT invoices; no pagination wired).
+ * (pay.stripe.com, which redirects through files.stripe.com). The endpoint keeps
+ * Stripe's list envelope, so its `has_more` flag and last invoice ID let the
+ * collector continue past the first 100 records without treating a capped page
+ * as a complete invoice history.
  */
 const BEARER = { authorization: "Bearer {token}" };
 
@@ -31,8 +34,7 @@ export default defineVendor({
   fetchContext: "page", // Cloudflare-fronted — fetch first-party from a chatgpt.com tab
   hosts: [
     "https://chatgpt.com/*",
-    "https://pay.stripe.com/*", // invoice_pdf lives here…
-    "https://files.stripe.com/*", // …and redirects here
+    ...STRIPE_KNOWN_DOCUMENT_HOSTS,
   ],
   notes: "Recorder-authored, multi-tenant. Bearer token from /api/auth/session; account_id discovered per user from accounts/check.",
 
@@ -64,7 +66,7 @@ export default defineVendor({
     strategy: "network",
     list: {
       request: {
-        url: "https://chatgpt.com/backend-api/invoices?limit=100&account_id={account_id}",
+        url: "https://chatgpt.com/backend-api/invoices?limit=100&account_id={account_id}&starting_after={cursor}",
         headers: BEARER,
       },
       items: "data",
@@ -75,6 +77,10 @@ export default defineVendor({
         currency: { path: "currency", transforms: [{ kind: "upper" }] },
         documentUrl: "invoice_pdf", // direct Stripe PDF (not the hosted invoice page)
       },
+      // The API returns Stripe's { data, has_more } list envelope. A full page
+      // continues after its last stable invoice ID; the runner marks a missing
+      // cursor or exhausted page cap partial rather than silently complete.
+      paginate: { cursor: "data.99.id", hasMore: "has_more", pageSize: 100, maxPages: 20 },
     },
     document: { contentType: "application/pdf" },
   },

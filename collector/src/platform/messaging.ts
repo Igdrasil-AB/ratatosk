@@ -2,6 +2,9 @@ import type { Connection, LedgerEntry, SinkConfig } from "./storage";
 import type { VendorRunSummary } from "./collector";
 import type { VendorLifecycleEntry } from "../../../src/vendors/lifecycle";
 import type { CollectorDiagnostic } from "./diagnostics";
+import type { DiscoveryStatusView } from "./discovery-state";
+import type { DiscoveryDiagnosticV1 } from "./discovery-diagnostic";
+export type { DiscoveryStatusView } from "./discovery-state";
 
 /**
  * The popup ↔ service-worker message contract. One discriminated union in, one
@@ -15,8 +18,18 @@ export type Message =
   | { type: "beginConnect"; vendorId: string }
   | { type: "completeConnect"; vendorId: string }
   | { type: "cancelConnect"; vendorId: string }
+  | { type: "getDiscoveryStatus" }
+  | { type: "getDiscoveryDiagnostic" }
+  | { type: "beginDiscovery"; tabId: number; origin: string }
+  | { type: "completeDiscovery" }
+  | { type: "cancelDiscovery" }
+  | { type: "beginDiscoveryConnect"; vendorId: string }
+  | { type: "completeDiscoveryConnect"; vendorId: string }
+  | { type: "cancelDiscoveryConnect" }
+  | { type: "dismissDiscovery" }
   | { type: "connect"; vendorId: string }
   | { type: "disconnect"; vendorId: string }
+  | { type: "forgetVendorHistory"; vendorId: string }
   | { type: "runNow"; vendorId?: string }
   | { type: "getVendorDiagnostic"; vendorId: string }
   | { type: "getLedger" }
@@ -29,6 +42,7 @@ export interface ScheduleInfo {
 }
 
 export interface SourceView {
+  kind: "official" | "discovered";
   id: string;
   name: string;
   category?: string;
@@ -36,7 +50,10 @@ export interface SourceView {
   icon?: string;
   /** Preloaded so the popup can request access directly inside the Connect click gesture. */
   hosts: readonly string[];
-  lifecycle: VendorLifecycleEntry;
+  /** Recipe hosts added after connection, or permissions the user later revoked. */
+  missingHosts: readonly string[];
+  lifecycle?: VendorLifecycleEntry;
+  primaryOrigin: string;
   runnable: boolean;
   connection: Connection | null;
 }
@@ -49,6 +66,8 @@ export type Response =
   | { ok: true; ledger: LedgerEntry[] }
   | { ok: true; schedule: ScheduleInfo }
   | { ok: true; connectUrl: string }
+  | { ok: true; discovery: DiscoveryStatusView }
+  | { ok: true; discoveryDiagnostic: DiscoveryDiagnosticV1 }
   | { ok: true }
   | { ok: false; error: string };
 

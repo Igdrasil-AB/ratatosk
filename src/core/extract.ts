@@ -2,6 +2,9 @@ import type { Extractor, Transform } from "./types";
 import { get } from "./jsonpath";
 import { render } from "./template";
 
+/** Scalar invoice fields may be regex-transformed; response bodies may not. */
+export const MAX_REGEX_INPUT_CHARS = 16_384;
+
 /**
  * Apply an {@link Extractor} to a JSON node: read a path, then run the optional
  * transform pipeline. Pure and synchronous — this is the heart of what vendor
@@ -10,6 +13,9 @@ import { render } from "./template";
 export function extract(node: unknown, ex: Extractor): unknown {
   const spec = typeof ex === "string" ? { path: ex, transforms: undefined } : ex;
   let value = get(node, spec.path);
+  // A missing path is not data. Transforms such as Number(null) and
+  // String(undefined) must not turn absence into a plausible invoice field.
+  if (value === undefined || value === null) return value;
   for (const t of spec.transforms ?? []) value = applyTransform(value, t);
   return value;
 }
@@ -18,7 +24,7 @@ export function extract(node: unknown, ex: Extractor): unknown {
 export function extractString(node: unknown, ex: Extractor | undefined): string | undefined {
   if (ex === undefined) return undefined;
   const v = extract(node, ex);
-  return v === undefined || v === null ? undefined : String(v);
+  return v === undefined || v === null ? undefined : String(v).trim();
 }
 
 function applyTransform(value: unknown, t: Transform): unknown {
@@ -37,13 +43,15 @@ function applyTransform(value: unknown, t: Transform): unknown {
       return d.toISOString().slice(0, 10); // YYYY-MM-DD
     }
     case "regex": {
-      const m = String(value).match(new RegExp(t.pattern));
+      const input = boundedRegexInput(value);
+      if (input === undefined) return undefined;
+      const m = input.match(new RegExp(t.pattern));
       return m ? m[t.group ?? 0] : undefined;
     }
     case "template":
       return render(t.pattern, { value: value as unknown });
     case "replace":
-      return String(value).replace(new RegExp(t.pattern), t.with);
+      return boundedRegexInput(value)?.replace(new RegExp(t.pattern), t.with);
     case "trim":
       return String(value).trim();
     case "upper":
@@ -51,4 +59,9 @@ function applyTransform(value: unknown, t: Transform): unknown {
     case "lower":
       return String(value).toLowerCase();
   }
+}
+
+function boundedRegexInput(value: unknown): string | undefined {
+  const input = String(value);
+  return input.length <= MAX_REGEX_INPUT_CHARS ? input : undefined;
 }

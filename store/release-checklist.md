@@ -23,16 +23,21 @@ unzip -l artifacts/ratatosk-collector-*.zip
 - [ ] The archive contains no `studio`, `.map`, private key, environment file, or
       development fixture.
 - [ ] Manifest permissions are exactly `storage`, `alarms`, `notifications`,
-      `scripting`, and `downloads`.
-- [ ] Manifest has optional vendor hosts only and no `<all_urls>`.
+      `scripting`, `downloads`, `activeTab`, observation-only `webRequest`, and
+      `sidePanel` for the persistent Collector UI;
+      `webRequestBlocking` is absent.
+- [ ] Manifest has only the reviewed optional HTTPS envelope and no `<all_urls>`;
+      verify installation grants no supplier-site access.
+- [ ] Optional `tabs` metadata access is not granted at install time; verify the
+      side panel explains the Chrome warning before requesting it and supports revocation.
 
 ## Fresh-profile Chrome test
 
 Use the current stable Chrome release and a fresh profile.
 
 - [ ] Load only `dist/collector` from `chrome://extensions`.
-- [ ] Confirm the install and extensions page show no all-sites or debugging
-      capability.
+- [ ] Confirm the install and extensions page show no granted supplier sites or
+      debugging capability before an exact-site prompt is approved.
 - [ ] Open the popup and confirm a destination is required before vendor connect.
 - [ ] Choose local Downloads and confirm the destination wording before saving.
 - [ ] Deny one vendor's host prompt; confirm it remains disconnected and no fetch
@@ -42,6 +47,12 @@ Use the current stable Chrome release and a fresh profile.
 - [ ] Run again; confirm duplicates are not downloaded.
 - [ ] Sign out of the vendor; confirm the reconnect state and notification.
 - [ ] Disconnect the vendor; confirm its optional host permission is revoked.
+- [ ] From an unsupported synthetic supplier home page, select **Search This
+      App**; verify the exact-origin prompt, maximum fifteen-page/depth-three search,
+      temporary-tab cleanup, domain/candidate preview, redacted failure diagnostic,
+      paginated-collection completeness, second exact-host confirmation if needed,
+      valid-PDF gate, provisional source row, explicit Forget History cleanup, and
+      source-profile/unused-host cleanup on disconnect without implicit history deletion.
 - [ ] Set schedule to off, restart Chrome, and confirm it remains off.
 - [ ] Set each supported schedule and confirm the displayed next-run state.
 
