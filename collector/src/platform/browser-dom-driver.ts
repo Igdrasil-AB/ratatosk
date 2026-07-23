@@ -9,6 +9,11 @@ import {
   normalizeDomContinuation,
   safeContinuationUrl,
 } from "./dom-continuation";
+import {
+  DISCOVERY_DOM_POLICY,
+  isSafeSemanticInvoiceSection,
+} from "./discovery-dom-policy";
+import { acquireForegroundTabVisibility, type ReleaseForegroundTab } from "./tab-visibility";
 
 type DomRunErrorCode = "auth_expired" | "blocked_or_challenged" | "selector_miss";
 type DomPageRetrievalEvidence = { observedItems: number; resolvedItems: number; unresolvedItems: number };
@@ -25,10 +30,8 @@ const INLINE_PDF_PREFIX = "data:application/pdf;base64,";
 const MAX_INLINE_PDF_BYTES = 8 * 1024 * 1024;
 const MAX_INLINE_PDF_TOTAL_BYTES = 24 * 1024 * 1024;
 const INLINE_DOCUMENT_ORIGIN = "https://inline.ratatosk.invalid";
-const INVOICE_SECTION_LABEL_PATTERN = "^(?:invoices?|invoice history|receipts?|receipt history|billing history)$";
-
 export function isSafeInvoiceSectionLabel(value: string): boolean {
-  return new RegExp(INVOICE_SECTION_LABEL_PATTERN, "i").test(value.replace(/\s+/g, " ").trim());
+  return isSafeSemanticInvoiceSection(value);
 }
 
 /**
@@ -75,7 +78,15 @@ export class BrowserDomDriver implements DomDriver {
     let resolvedItems = 0;
     let unresolvedItems = 0;
     let termination: "explicit_end" | "continuation_failed" | "repeated_state" | "action_cap" | "document_cap" | "time_cap" = "explicit_end";
+    let releaseForegroundTab: ReleaseForegroundTab = async () => undefined;
     try {
+      if (usesSemanticActions) {
+        try {
+          releaseForegroundTab = await acquireForegroundTabVisibility(tabId);
+        } catch {
+          console.warn("[collector] semantic action visibility unavailable; continuing in the disposable tab");
+        }
+      }
       for (let action = 0; ; action += 1) {
         if (runDeadline !== null && Date.now() >= runDeadline) {
           termination = "time_cap";
@@ -88,7 +99,7 @@ export class BrowserDomDriver implements DomDriver {
             target: { tabId },
             world: usesSemanticActions ? "MAIN" : "ISOLATED",
             func: runDomStepsInPage,
-            args: [steps, [...this.allowedOrigins], INVOICE_SECTION_LABEL_PATTERN, runDeadline],
+            args: [steps, [...this.allowedOrigins], DISCOVERY_DOM_POLICY, runDeadline],
           }), runDeadline);
         } catch (error) {
           if (!(error instanceof DomRunDeadlineExceeded)) throw error;
@@ -177,6 +188,7 @@ export class BrowserDomDriver implements DomDriver {
         }),
       };
     } finally {
+      await releaseForegroundTab();
       if (created) await chrome.tabs.remove(tabId).catch(() => undefined);
     }
   }
@@ -385,7 +397,7 @@ export function parseDomAdvanceResult(value: unknown): DomAdvanceResult {
 export async function runDomStepsInPage(
   steps: DomStep[],
   allowedOrigins: string[],
-  invoiceSectionLabelPattern: string,
+  semanticPolicy: typeof DISCOVERY_DOM_POLICY,
   runDeadline: number | null,
 ): Promise<PageDomRunResult> {
   const collected: Record<string, string[]> = {};
@@ -479,12 +491,15 @@ export async function runDomStepsInPage(
     unresolvedItems: number;
   }> {
     const MAX_INLINE_PDF_BYTES = 8 * 1024 * 1024;
-    const explicitAction = /(?:download|save|pdf|ladda\s*ner|hämta|herunterladen|télécharger|descargar|baixar|scarica|downloaden)/i;
-    const strongDocumentLabel = /(?:pdf|receipt|invoice|kvitto|faktura|beleg|rechnung|reçu|facture|recibo|factura|ricevuta|fattura)/i;
-    const invoiceContext = /(?:billing|payment|statement|receipt|invoice|kvitto|faktura|beleg|rechnung|reçu|facture|recibo|factura|ricevuta|fattura|\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b|\b(?:USD|EUR|SEK|NOK|DKK|GBP|CHF)\b)/i;
-    const unsafe = /(?:\b(?:delete|remove|cancel|pay|purchase|checkout|upgrade|downgrade)\b|sign\s*out|log\s*out)/i;
-    const unsafePath = /(?:^|\/)(?:logout|signout|delete|cancel|checkout|purchase|upgrade|downgrade)(?:\/|$)/i;
-    const invoiceSectionLabel = new RegExp(invoiceSectionLabelPattern, "i");
+    const explicitAction = new RegExp(semanticPolicy.explicitActionPattern, "i");
+    const strongDocumentLabel = new RegExp(semanticPolicy.strongDocumentPattern, "i");
+    const documentIcon = new RegExp(semanticPolicy.documentIconPattern, "i");
+    const invoiceContext = new RegExp(semanticPolicy.invoiceContextPattern, "i");
+    const invoiceRow = new RegExp(semanticPolicy.invoiceRowPattern, "i");
+    const actionColumn = new RegExp(semanticPolicy.actionColumnPattern, "i");
+    const unsafe = new RegExp(semanticPolicy.unsafeLabelPattern, "i");
+    const unsafePath = new RegExp(semanticPolicy.unsafePathPattern, "i");
+    const invoiceSectionLabel = new RegExp(semanticPolicy.invoiceSectionPattern, "i");
     const allowed = new Set(allowedOrigins.slice(0, 9));
     const values = new Set<string>();
     const semanticCaptureDeadline = Math.min(Date.now() + 30_000, runDeadline ?? Number.POSITIVE_INFINITY);
@@ -520,16 +535,21 @@ export async function runDomStepsInPage(
       reader.readAsDataURL(blob.type === "application/pdf" ? blob : new Blob([blob], { type: "application/pdf" }));
     });
     const labelOf = (element: Element): string => {
-      const icon = element.querySelector("[icon],[name]");
+      const icon = element.querySelector("svg,[icon],[name],[data-lucide]");
       return [
         element.getAttribute("aria-label"),
         element.getAttribute("title"),
         element.getAttribute("value"),
         element.getAttribute("data-test"),
         element.getAttribute("data-testid"),
-        element.getAttribute("class"),
+        element.getAttribute("data-lucide"),
+        icon?.getAttribute("class"),
+        icon?.getAttribute("data-lucide"),
         icon?.getAttribute("icon"),
         icon?.getAttribute("name"),
+        icon?.getAttribute("aria-label"),
+        icon?.getAttribute("title"),
+        element.getAttribute("class"),
         element.textContent,
       ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim().slice(0, 320);
     };
@@ -539,15 +559,53 @@ export async function runDomStepsInPage(
       return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0 &&
         !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true";
     };
+    const rowContextOf = (element: Element): string => (
+      element.closest(semanticPolicy.contextSelector)?.textContent || ""
+    ).replace(/\s+/g, " ").trim().slice(0, 500);
+    const columnContextOf = (element: Element): string => {
+      const cell = element.closest('td,th,[role="cell"],[role="gridcell"],[role="columnheader"]');
+      const row = cell?.closest('tr,[role="row"]');
+      const table = row?.closest(semanticPolicy.tableSelector);
+      if (!cell || !row || !table) return "";
+      const cells = Array.from(row.querySelectorAll(':scope > td,:scope > th,:scope > [role="cell"],:scope > [role="gridcell"],:scope > [role="columnheader"]'));
+      const index = cells.indexOf(cell);
+      if (index < 0) return "";
+      for (const headerRow of Array.from(table.querySelectorAll('thead tr,[role="row"]')).slice(0, 5)) {
+        const headers = Array.from(headerRow.querySelectorAll(':scope > th,:scope > [role="columnheader"]'));
+        const text = headers[index]?.textContent?.replace(/\s+/g, " ").trim().slice(0, 120);
+        if (text) return text;
+      }
+      return "";
+    };
+    const tableContextOf = (element: Element): string => (
+      Array.from(element.closest(semanticPolicy.tableSelector)?.querySelectorAll(
+        'thead th,[role="columnheader"]',
+      ) || [])
+        .slice(0, 20)
+        .map((header) => header.textContent)
+        .join(" ")
+    ).replace(/\s+/g, " ").trim().slice(0, 500);
+    const pageContext = (): string => `${location.pathname} ${document.title} ${
+      Array.from(document.querySelectorAll("h1,h2,h3,caption"))
+        .slice(0, 12)
+        .map((element) => element.textContent)
+        .join(" ")
+    }`.replace(/\s+/g, " ").trim().slice(0, 240);
     const downloadControls = (): HTMLElement[] => Array.from(document.querySelectorAll<HTMLElement>(
-      'button,a,[role="button"],[role="menuitem"],input[type="button"],input[type="submit"],[data-href],[data-url]',
+      semanticPolicy.controlSelector,
     )).filter((element) => {
       const label = labelOf(element);
-      if (!label || !explicitAction.test(label) || unsafe.test(label)) return false;
-      const context = (element.closest('tr,[role="row"],li,[role="listitem"],article,section')?.textContent || "")
-        .replace(/\s+/g, " ").trim().slice(0, 500);
-      if (!strongDocumentLabel.test(label) && !invoiceContext.test(context)) return false;
-      return visible(element);
+      if (!label || unsafe.test(label) || element.closest("form") || !visible(element)) return false;
+      const row = rowContextOf(element);
+      const table = tableContextOf(element);
+      const page = pageContext();
+      const explicit = explicitAction.test(label) &&
+        (strongDocumentLabel.test(label) || invoiceContext.test(`${row} ${page}`));
+      const contextualIcon = documentIcon.test(label) &&
+        actionColumn.test(columnContextOf(element)) &&
+        (invoiceRow.test(row) || invoiceContext.test(table)) &&
+        invoiceContext.test(page);
+      return explicit || contextualIcon;
     });
     const sectionLabelOf = (element: Element): string => [
       element.getAttribute("aria-label"),
@@ -557,7 +615,7 @@ export async function runDomStepsInPage(
     const revealInvoiceSection = async (): Promise<boolean> => {
       if (downloadControls().length > 0) return false;
       const section = Array.from(document.querySelectorAll<HTMLElement>(
-        '[role="tab"],[role="tablist"] button,[role="tablist"] a,button[aria-controls],a[aria-controls],[data-test*="tab" i],[data-testid*="tab" i]',
+        semanticPolicy.sectionSelector,
       )).find((element) => {
         const label = sectionLabelOf(element);
         if (!label || !invoiceSectionLabel.test(label) || unsafe.test(label) || element.closest("form") || !visible(element)) return false;
@@ -594,7 +652,7 @@ export async function runDomStepsInPage(
           if (availableControls.length !== stableControlCount) {
             stableControlCount = availableControls.length;
             stableControlCountSince = Date.now();
-          } else if (Date.now() - stableControlCountSince >= 350) {
+          } else if (Date.now() - stableControlCountSince >= semanticPolicy.stableMs) {
             break;
           }
         }
@@ -777,16 +835,30 @@ async function advanceDomPageInPage(
 ): Promise<DomAdvanceResult> {
   const label = new RegExp(labelPattern, "i");
   const documentElements = Array.from(document.querySelectorAll(documentSelector)).slice(0, 500);
-  const fingerprint = (): string => Array.from(document.querySelectorAll(documentSelector))
-    .slice(0, 500)
-    .map((element) => [
-      element.getAttribute("href") ?? "",
-      element.getAttribute("data-href") ?? "",
-      element.getAttribute("data-url") ?? "",
-      (element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 120),
-    ].join("\u0000"))
-    .sort()
-    .join("\n");
+  const fingerprint = (): string => {
+    const elements = Array.from(document.querySelectorAll(documentSelector)).slice(0, 500);
+    const roots = [...new Set(elements.map((element) =>
+      element.closest('tr,[role="row"],li,[role="listitem"],article') ?? element))];
+    return [
+      `${location.pathname}${location.search}`,
+      ...roots.map((root) => {
+        const controls = Array.from(root.querySelectorAll(
+          'a,button,[role="button"],[data-href],[data-url],svg,[data-lucide]',
+        )).slice(0, 20);
+        return [
+          (root.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 320),
+          ...controls.map((element) => [
+            element.getAttribute("href") ?? "",
+            element.getAttribute("data-href") ?? "",
+            element.getAttribute("data-url") ?? "",
+            element.getAttribute("aria-label") ?? "",
+            element.getAttribute("class") ?? "",
+            element.getAttribute("data-lucide") ?? "",
+          ].join("\u0000")),
+        ].join("\u0001");
+      }).sort(),
+    ].join("\n");
+  };
   const before = fingerprint();
   const documentNext = document.querySelector<HTMLLinkElement>('link[rel~="next"][href]');
   if (documentNext?.href) return { kind: "navigate", url: documentNext.href };

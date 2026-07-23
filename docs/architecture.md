@@ -174,17 +174,28 @@ Collector uses a two-confirmation state machine in `chrome.storage.session` so
 Chrome may close the popup during either permission prompt without losing the
 user's intent:
 
-1. **Find Invoices** requests the active tab's exact HTTPS origin. Before any
-   temporary exploration tab loads, Collector dynamically registers a packaged
+1. **Find Invoices** requests the active tab's exact HTTPS origin and snapshots
+   the rendered page without navigating, reloading, scrolling, or closing it.
+   Collector then dynamically registers a packaged
    `document_start` MAIN-world observer for that exact origin. It keeps a bounded,
    sanitized, in-memory sample of JSON fetch/XHR responses, including the method,
    JSON content type, and request body needed to replay an explicit GraphQL query.
    A closed allowlist of bounded static query controls (for example `limit`,
    `status`, and `page`) is preserved for replay; account identifiers,
    signatures, credentials, and unknown query values remain redacted.
-   This captures early, cached, POST, and cross-origin API evidence that cannot be
-   reconstructed from `performance` URLs. Registration and page hooks are removed
-   in `finally`; no captured response is persisted or uploaded.
+   After registration succeeds, Collector reopens the exact canonical entry URL
+   once in an inactive disposable tab before it tries speculative routes. That
+   cold replay captures early, cached, POST, and cross-origin API evidence that
+   cannot be reconstructed from `performance` URLs. Generic hydration JSON does
+   not end observation: the probe waits for bounded request-shape quiescence or
+   its existing deadline. If a high-confidence billing route still exposes only
+   an empty shell, it may consume the one discovery-wide visibility lease. The
+   disposable tab is activated for that bounded probe, the prior active tab is
+   restored afterward, and a user-initiated tab switch always wins over
+   restoration. The same lease remains active during semantic candidate
+   verification and click capture; otherwise a visibility-gated SPA could be
+   discoverable but not collectable. Registration and page hooks are removed in `finally`;
+   no captured response is persisted or uploaded.
 2. A deterministic planner scores same-origin routes from path intent, bounded
    visible/accessibility labels, nearby menu context, tenant shape, depth, and
    route-family confidence. Semantic controls such as `Invoices` can therefore
@@ -196,7 +207,10 @@ user's intent:
    routes, preventing a saturated menu or slow probes from starving an independent
    route source. For account-scoped apps it preserves one bounded tenant prefix, so
    shapes such as `/<account-id>/billing/subscriptions` remain navigable and
-   reusable. A best-first queue repeats this process from every inspected page,
+   reusable. An opaque tenant segment is bound only when the exact observed route
+   placed it directly behind a trusted container such as `org`, `workspace`, or
+   `account`; arbitrary opaque path segments are never promoted. A best-first
+   queue repeats this process from every inspected page,
    prioritizing invoice/receipt paths over billing history and broader payment or
    subscription paths. It checks at most fifteen pages, depth three, and thirty
    seconds. After the active entry page, it probes deterministic waves of at most
@@ -206,8 +220,13 @@ user's intent:
    document candidates. Search navigation is GET-only; it
    never clicks controls, submits forms, or follows logout, checkout, purchase,
    cancellation, deletion, or authorization paths. The tab is always closed.
-3. Packaged adapters compile observed/replayed network JSON, embedded JSON, rendered invoice links,
-   or explicit download controls into recipes. Discovery retains at most three
+3. Packaged adapters compile observed/replayed network JSON, embedded JSON,
+   rendered invoice links, or semantic document controls into recipes. Discovery
+   and verification receive the same packaged semantic policy. Accessible names
+   remain the primary signal; an icon-only control is eligible only when its
+   document icon, invoice-shaped row, invoice-page context, and action/document
+   column agree. A status button or identical icon outside that context is
+   rejected. Discovery retains at most three
    proof-ranked, identity-compatible candidates rather than trusting the first
    link-shaped result. Generic downloads outside invoice-shaped page, path, label,
    or nearby context are rejected. Search remains read-only: DOM candidates and
@@ -224,7 +243,7 @@ user's intent:
    requests, token exchange, arbitrary DOM clicks/selectors, broad/private hosts, and
    credential-like stored URL values. A semantic fallback may first reveal an
    exact invoice/receipt-history tab-like section, then activate only visible,
-   enabled, explicitly download-labelled controls after confirmation;
+   enabled controls admitted by that same contextual policy after confirmation;
    payment, purchase, cancellation, deletion, logout, and form mutations are
    excluded. The only persisted POST shape is a bounded `application/json`
    GraphQL body whose operation starts with explicit `query`; mutations,
@@ -239,7 +258,9 @@ user's intent:
    an existing supplier tab. Collection follows API cursors, returned next URLs, HTTP/HTML
    `rel=next`, numbered/offset pages, localized visible Next/Load More controls
    outside forms, or bounded infinite scroll. Ephemeral cursor values are never
-   stored or logged.
+   stored or logged. DOM advancement fingerprints invoice-row content and
+   document-control structure in page memory, so icon-only tables can prove that
+   a Next action changed rows even when the action buttons themselves are identical.
 5. Each valid PDF is streamed to the chosen destination instead of buffering the
    whole supplier run. Stable document identity includes the canonical URL for
    generic endpoints, so distinct query-addressed invoices do not collapse or
@@ -255,9 +276,11 @@ user's intent:
 Failed searches or candidate verification attempts retain only a bounded
 structural diagnostic in session storage:
 runtime/discovery-engine identity, termination cause, bounded timings,
-page/source counts, observed-versus-replayed JSON request counts, retained candidate count, packaged adapter/outcome codes,
+page/source counts (including exact-entry replay), observed-versus-replayed JSON
+request counts, retained candidate count, packaged adapter/outcome codes,
 per-route evidence counts, privacy-safe requested/resolved route templates, and
-up to eight cross-origin hostnames. Route templates preserve only recognized
+coverage families distinguished as attempted, exhausted, or unavailable, and up
+to eight cross-origin hostnames. Route templates preserve only recognized
 billing/navigation words and replace tenant, account, workspace, and other opaque
 segments with `:id` or `:segment`. Origins, raw paths, queries, fragments,
 headers, bodies, tokens, account identifiers, invoice identifiers, and financial

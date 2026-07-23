@@ -103,18 +103,28 @@ bounded, and interpreted only by logic packaged with the extension. Collector
 does not download remote recipes or remotely hosted code. Official vendor
 changes require a reviewed extension release. For an unsupported supplier, the
 user can select **Find Invoices** from any page in the supplier app. Collector
-checks that page and at most fourteen same-origin, billing-related pages using at
-most two inactive temporary tabs. A temporary exact-origin `document_start`
-observer captures bounded, sanitized JSON fetch/XHR evidence before the SPA runs,
+first snapshots that page without navigating it, then reopens the exact approved
+entry once in an inactive disposable tab before checking other same-origin,
+billing-related pages. A temporary exact-origin `document_start`
+observer is installed before that replay and captures bounded, sanitized JSON
+fetch/XHR evidence while the SPA boots,
 so the packaged inference can recognize GET APIs and explicit read-only GraphQL
 POST queries without the Studio recorder or an AI fallback. The bounded planner combines URL intent with visible
 navigation labels and nearby menu context, so an opaque route labelled `Invoices`
-remains discoverable. Observed Settings routes are retained as lower-confidence
+remains discoverable. If one high-confidence billing route renders only an empty
+shell while inactive, Collector may give that disposable tab one bounded
+visibility lease; it restores the previous tab afterward unless the user changed
+tabs during the probe. Semantic verification uses the same lease through control
+enumeration and document capture, so visibility-gated evidence remains
+reproducible instead of disappearing after discovery. Opaque tenant values are reusable only when the exact
+approved route placed them behind a trusted structural container such as
+`/dashboard/org/{tenant}`. Observed Settings routes are retained as lower-confidence
 bridges to billing pages, tenant-scoped `settings/billing` routes are prioritized,
 and the best contextual/common route is scheduled after at most two observed-route
 probes so one clue source cannot starve the others. Packaged adapters retain up
 to three proof-ranked, strict local-only candidates spanning JSON APIs, embedded
-data, invoice-context document links, and explicit download controls. DOM-shaped
+data, invoice-context document links, explicit download controls, and icon-only
+document actions proven by invoice-table, row, and action-column context. DOM-shaped
 leads are verified only after Connect &
 Collect, Ratatosk requests only their bounded exact-origin union, validates a
 real PDF, and falls through candidate-local shape failures before saving the

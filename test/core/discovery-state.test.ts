@@ -6,6 +6,7 @@ import {
   beginSupplierDiscovery,
   beginSupplierDiscoveryConnect,
   cancelSupplierDiscovery,
+  checkpointSupplierDiscovery,
   clearSupplierDiscovery,
   completeSupplierDiscovery,
   failSupplierDiscovery,
@@ -17,6 +18,7 @@ import {
   setSupplierDiscoveryPreview,
 } from "../../collector/src/platform/discovery-state";
 import { DISCOVERY_DIAGNOSTIC_SCHEMA } from "../../collector/src/platform/discovery-diagnostic";
+import { createExplorationCheckpoint } from "../../collector/src/platform/discovery-explorer";
 
 describe("durable supplier discovery handoff", () => {
   const values: Record<string, unknown> = {};
@@ -43,6 +45,32 @@ describe("durable supplier discovery handoff", () => {
     await expect(markSupplierDiscoveryScanning()).resolves.toEqual({ runId, tabId: 42, origin: "https://vendor.example" });
     await expect(cancelSupplierDiscovery()).resolves.toEqual(["https://vendor.example/*"]);
     await expect(getSupplierDiscoveryStatus()).resolves.toEqual({ stage: "idle" });
+  });
+
+  it("retains only structural frontier progress across a worker restart", async () => {
+    const runId = await beginSupplierDiscovery(42, "https://vendor.example");
+    await markSupplierDiscoveryScanning();
+    const checkpoint = createExplorationCheckpoint({
+      mode: "deep",
+      pagesAttempted: 4,
+      linkedPagesAttempted: 2,
+      commonRoutePagesAttempted: 1,
+      elapsedMs: 2_000,
+      frontier: [{ key: "common_billing_route|/account/billing/history", family: "common_billing_route", score: 90, depth: 1 }],
+      completedTargetKeys: ["common_billing_route|/account/billing/history"],
+      attemptedFamilies: ["exact_entry", "observed_navigation", "common_billing_route"],
+      slicesCompleted: 0,
+    });
+
+    await expect(checkpointSupplierDiscovery(runId, checkpoint)).resolves.toBe(true);
+    await expect(markSupplierDiscoveryScanning()).resolves.toEqual({
+      runId,
+      tabId: 42,
+      origin: "https://vendor.example",
+      checkpoint,
+    });
+    expect(JSON.stringify((values["supplierDiscovery.v1"] as { checkpoint?: unknown }).checkpoint))
+      .not.toMatch(/https?:|token|responseBody|9012345678/i);
   });
 
   it("keeps the strict profile only in session until confirmation succeeds", async () => {
@@ -100,6 +128,7 @@ describe("durable supplier discovery handoff", () => {
     await expect(getSupplierDiscoveryStatus()).resolves.toEqual({
       stage: "failed",
       message: "No reusable invoice path was found after checking this app's likely billing pages.",
+      reason: "not_found",
       diagnosticAvailable: true,
     });
     await expect(getSupplierDiscoveryDiagnostic()).resolves.toEqual(diagnostic);
@@ -163,6 +192,7 @@ describe("durable supplier discovery handoff", () => {
     await expect(getSupplierDiscoveryStatus()).resolves.toEqual({
       stage: "failed",
       message: "Supplier returned an invalid document",
+      reason: "failed",
       diagnosticAvailable: false,
     });
   });
@@ -208,6 +238,27 @@ describe("durable supplier discovery handoff", () => {
   ])("preserves the detailed closed discovery failure: %s", async (message) => {
     await failSupplierDiscovery(undefined, message, ["https://vendor.example/*"]);
     await expect(getSupplierDiscoveryStatus()).resolves.toMatchObject({ stage: "failed", message });
+  });
+
+  it("exposes a search-limit outcome separately from a technical failure", async () => {
+    await failSupplierDiscovery(undefined, DISCOVERY_FAILURE_MESSAGES.pageCap, ["https://vendor.example/*"], {
+      schema: DISCOVERY_DIAGNOSTIC_SCHEMA,
+      site: "vendor.example",
+      runtime: { collectorVersion: "0.8.32", discoveryEngine: 22 },
+      limits: { pages: 15, depth: 3, durationMs: 30_000 },
+      timing: { elapsedMs: 30_000 },
+      pages: { attempted: 15, linked: 8, commonRoutes: 6 },
+      evidence: { jsonResources: 52, observedRequests: 52, replayedRequests: 0, documentLinks: 2, structuredDataPages: 0, crossOriginHosts: ["api.vendor.example"] },
+      candidates: { compiled: 0, previewed: 0, retained: 0 },
+      attempts: [],
+      termination: "page_cap",
+      result: "limit_reached",
+    });
+
+    await expect(getSupplierDiscoveryStatus()).resolves.toMatchObject({
+      stage: "failed",
+      reason: "limit_reached",
+    });
   });
 });
 

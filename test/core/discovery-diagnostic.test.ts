@@ -63,6 +63,74 @@ describe("redacted supplier-discovery diagnostics", () => {
     expect(serialized).not.toMatch(/https?:|[?&](?:token|code|session)=|authorization|responseBody|a473171df3249291b4be6fca57bb8444/i);
   });
 
+  it("records broad exploration coverage without adding page or tenant data", () => {
+    const diagnostic = parseDiscoveryDiagnostic({
+      schema: DISCOVERY_DIAGNOSTIC_SCHEMA,
+      site: "app.vendor.example",
+      runtime: { collectorVersion: "0.8.33", discoveryEngine: 22 },
+      limits: { pages: 60, depth: 5, durationMs: 180_000 },
+      timing: { elapsedMs: 42_000 },
+      pages: { attempted: 20, linked: 10, commonRoutes: 8 },
+      evidence: { jsonResources: 30, observedRequests: 20, replayedRequests: 0, documentLinks: 0, structuredDataPages: 4, crossOriginHosts: [] },
+      candidates: { compiled: 0, previewed: 0, retained: 0 },
+      coverage: {
+        mode: "deep",
+        attemptedFamilies: ["exact_entry", "observed_navigation", "tenant_contextual_route", "common_billing_route", "observed_network", "embedded_data", "document_provider", "semantic_download"],
+        exhaustedFamilies: ["exact_entry", "observed_navigation", "tenant_contextual_route", "common_billing_route", "observed_network", "embedded_data", "document_provider", "semantic_download"],
+        unavailableFamilies: [],
+        slicesCompleted: 0,
+      },
+      attempts: [],
+      termination: "queue_exhausted",
+      result: "not_found",
+    });
+
+    expect(diagnostic.coverage).toEqual({
+      mode: "deep",
+      attemptedFamilies: ["exact_entry", "observed_navigation", "tenant_contextual_route", "common_billing_route", "observed_network", "embedded_data", "document_provider", "semantic_download"],
+      exhaustedFamilies: ["exact_entry", "observed_navigation", "tenant_contextual_route", "common_billing_route", "observed_network", "embedded_data", "document_provider", "semantic_download"],
+      unavailableFamilies: [],
+      slicesCompleted: 0,
+    });
+  });
+
+  it("distinguishes unavailable families and an exact-entry replay attempt from exhaustion", () => {
+    const diagnostic = parseDiscoveryDiagnostic({
+      schema: DISCOVERY_DIAGNOSTIC_SCHEMA,
+      site: "vendor.example",
+      runtime: { collectorVersion: "0.8.35", discoveryEngine: 24 },
+      limits: { pages: 60, depth: 5, durationMs: 180_000 },
+      timing: { elapsedMs: 5_000 },
+      pages: { attempted: 2, linked: 0, commonRoutes: 0 },
+      evidence: { jsonResources: 1, observedRequests: 1, replayedRequests: 0, documentLinks: 0, structuredDataPages: 1, crossOriginHosts: [] },
+      candidates: { compiled: 0, previewed: 0, retained: 0 },
+      coverage: {
+        mode: "deep",
+        attemptedFamilies: ["exact_entry", "observed_network", "embedded_data", "document_provider", "semantic_download"],
+        exhaustedFamilies: ["exact_entry", "observed_network", "embedded_data", "document_provider", "semantic_download"],
+        unavailableFamilies: ["observed_navigation", "tenant_contextual_route", "common_billing_route"],
+        slicesCompleted: 0,
+      },
+      attempts: [{
+        page: 2,
+        source: "entry_replay",
+        route: "/dashboard/org/:segment/billing",
+        result: "no_candidate",
+        durationMs: 1_000,
+        evidence: { jsonResources: 1, observedRequests: 1, replayedRequests: 0, documentLinks: 0, structuredData: 1, semanticControls: 0 },
+      }],
+      termination: "queue_exhausted",
+      result: "not_found",
+    });
+
+    expect(diagnostic.attempts[0].source).toBe("entry_replay");
+    expect(diagnostic.coverage?.unavailableFamilies).toEqual([
+      "observed_navigation",
+      "tenant_contextual_route",
+      "common_billing_route",
+    ]);
+  });
+
   it("migrates the previous diagnostic schema with zero traffic-source counts", () => {
     const diagnostic = parseDiscoveryDiagnostic({
       schema: "ratatosk.discovery-diagnostic.v4",

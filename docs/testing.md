@@ -52,21 +52,35 @@ Open the popup and connect the vendor.
 5. Sign out of the vendor and run again; confirm `Reconnect` and the notification.
 6. Disconnect the vendor and confirm Chrome revoked its optional host permission.
 
-For an unsupported supplier, open its signed-in home page and select **Search
-This App**. Confirm Chrome names only that exact site and that at most two inactive
-tabs check no more than fourteen additional same-origin billing-related pages
-before they are closed. Saturate the entry page with at least nine billing-shaped links and
+For an unsupported supplier, open its signed-in home or billing page and select
+**Search This App**. Confirm Chrome names only that exact site, the active tab is
+not navigated/reloaded/scrolled/closed, and an inactive tab replays the exact
+entry once after the `document_start` observer is registered. The remaining
+inactive probes must stay within the selected global page/time budget and close
+afterward. For a fixture that withholds its invoice table while
+`document.visibilityState` is hidden, confirm only the highest-ranked billing
+route receives one bounded foreground lease, the prior tab is restored, and a
+manual user tab switch during the lease is never overridden. Connect the
+resulting semantic candidate and confirm verification keeps its disposable tab
+visible until controls are enumerated and document captures finish, then
+restores the prior tab before cleanup. Saturate the entry
+page with at least nine billing-shaped links and
 confirm a contextual/common route is still among the first three probes. Include
 an exact-origin opaque route such as `/app/section/42` labelled `Invoices` and
 confirm it is explored; the same path without semantic billing evidence must be
 ignored. Include a tenant URL such as `/<workspace-id>/home` and confirm
-`/<workspace-id>/settings/billing` is the first contextual fallback. Verify an
+`/<workspace-id>/settings/billing` is the first contextual fallback. Include
+`/dashboard/org/opaqueorganization/billing` and confirm the exact organization
+prefix is retained; `/dashboard/arbitrary/billing` must not become a tenant
+prefix. Verify an
 observed `Workspace settings` route survives as a lower-confidence bridge, and
 that a generic task/export PDF outside invoice context does not compile a
 candidate or consume the search deadline. The preview must show the supplier domain and possible-document count
 without downloading. For an SPA fixture, issue an invoice-list fetch/XHR during
 page startup and verify a GET API and an explicit read-only GraphQL POST can both
-produce a network candidate. Verify approved static controls such as
+produce a network candidate through cold replay. Seed generic hydration JSON
+before a delayed invoice response and confirm hydration does not end the probe
+early. Verify approved static controls such as
 `limit=100&status=paid`
 survive replay while account identifiers, tokens, signatures, and unknown query
 values remain redacted.
@@ -75,7 +89,12 @@ A GraphQL mutation or arbitrary POST must not produce a network candidate.
 additional exact document hosts. Verify the first structurally valid but
 non-PDF candidate falls through to the next ranked candidate. Test both direct
 links and an explicit download button without an `href`; search must not click
-the button, while Connect & Collect may activate it. Also test a billing page
+the button, while Connect & Collect may activate it. Add an invoice table whose
+Actions column uses unlabeled `receipt`, `scroll-text`, or `file-text` SVG icons:
+the document actions must be retained, while a `Paid` status button and the same
+icons outside an invoice-shaped row must be rejected. Paginate that table with
+identical action icons on every page and confirm row changes prove advancement.
+Also test a billing page
 whose invoice rows appear only after selecting an `Invoices` tab: verification
 must reveal that exact tab in its disposable page, then collect every row's
 download control. A single resolved invoice must be accepted when traversal
@@ -94,8 +113,10 @@ failure, **Copy Diagnostic** must contain only structural counts (including
 number, packaged adapter/outcome codes, and hostnames—never page URLs, queries,
 headers, bodies, tokens, identifiers, or financial values. Disconnect the
 provisional supplier and confirm its local profile and host access are gone. The
-diagnostic must identify `page_cap`, `time_cap`, `queue_exhausted`, or
-`candidate_set_complete`, include the Collector/discovery-engine version, and
+diagnostic must identify `page_cap`, `time_cap`, `queue_exhausted`,
+`coverage_incomplete`, `candidate_primary_found`, or `candidate_set_complete`;
+include the Collector/discovery-engine version; distinguish attempted/exhausted
+families from unavailable families; and
 contain only bounded timings.
 
 ## 4. Inspect extension logs safely

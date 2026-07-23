@@ -42,7 +42,9 @@ describe("Collector popup layout regressions", () => {
   it("groups invoice history by supplier with expandable rows and a date filter", () => {
     expect(popupSource).toContain('class="supplier-group"');
     expect(popupSource).toContain('class="date-filter"');
-    expect(popupSource).toContain('name="ledger-range"');
+    expect(popupSource).toContain('class="date-filter-options"');
+    expect(popupSource).toContain('data-action="set-ledger-range"');
+    expect(popupSource).not.toContain('name="ledger-range"');
     expect(popupSource).toContain("groupLedgerBySupplier");
     expect(popupStyles).toMatch(/\.supplier-group summary \{[^}]*min-height:\s*56px/s);
     expect(popupStyles).toMatch(/\.invoice-history \{[^}]*padding:\s*0 14px/s);
@@ -50,6 +52,24 @@ describe("Collector popup layout regressions", () => {
     expect(popupStyles).toContain('.supplier-group summary::marker { content: ""; }');
     expect(popupStyles).toMatch(/\.supplier-updated \{[^}]*text-align:\s*right/s);
     expect(popupSource).toContain('${esc(amount(entry.total, entry.currency))}');
+    expect(popupStyles).toMatch(/\.date-filter-options \{[^}]*right:\s*0/s);
+  });
+
+  it("keeps vendor utility actions readable in the narrow side panel", () => {
+    expect(popupStyles).toMatch(/\.diagnostic-link \{[^}]*white-space:\s*nowrap/s);
+    expect(popupStyles).toMatch(/\.vendor-links \{[^}]*flex-wrap:\s*wrap/s);
+    expect(popupStyles).toMatch(/\.vrow \.vs \{[^}]*white-space:\s*normal/s);
+    expect(popupSource).toContain("skipped");
+  });
+
+  it("keeps bundled pilot governance metadata out of the customer-facing rows", () => {
+    expect(popupSource).toContain('source.lifecycle?.stage === "pilot"');
+    expect(popupStyles).toMatch(/\.vrow \.vn \+ \.vs \{[^}]*margin-top:\s*3px/s);
+  });
+
+  it("does not show implementation-detail tab switching copy below the vendor list", () => {
+    expect(popupSource).not.toContain("Chrome may briefly hide this window");
+    expect(popupSource).not.toContain("Setup continues safely in the background");
   });
 
   it("uses a persistent side panel and preserves the actual sync error", () => {
@@ -110,14 +130,17 @@ describe("Collector popup layout regressions", () => {
   it("offers local discovery with a reviewed-recipe fallback", () => {
     expect(popupSource).toContain("Supplier not listed?");
     expect(popupSource).toContain("Find Invoices");
-    expect(popupSource).toContain("Copy Diagnostic");
+    expect(popupSource).toContain("Copy details");
     expect(popupSource).toContain("Connect &amp; Collect");
-    expect(popupSource).toContain("Build a reviewed recipe instead");
-    expect(popupSource).toContain("https://github.com/Igdrasil-AB/ratatosk#download-studio-to-add-a-new-supplier");
-    expect(popupSource).toContain('data-action="open-add-supplier"');
+    expect(popupSource).not.toContain("Studio on GitHub");
+    expect(popupSource).not.toContain("Build a reviewed recipe instead");
+    expect(popupSource).not.toContain('data-action="open-add-supplier"');
     expect(popupSource).toContain("Found a possible invoice source");
+    expect(popupSource).toContain("No invoices found");
     expect(popupSource).not.toContain("possible invoice${");
     expect(popupStyles).toMatch(/\.supplier-request-link \{[^}]*min-height:\s*40px/s);
+    expect(popupStyles).toMatch(/\.discovery-failed \.discovery-actions \{[^}]*grid-column:\s*2/s);
+    expect(popupStyles).toMatch(/\.discovery-failed \.discovery-actions \{[^}]*flex-direction:\s*row/s);
     expect(popupStyles).toContain("prefers-reduced-motion: reduce");
   });
 });

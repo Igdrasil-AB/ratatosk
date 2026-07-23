@@ -9,6 +9,7 @@ import {
 } from "../../../src/core/discovery";
 import { OPERATIONAL_OUTCOME_CODES, operationalOutcomeLabel } from "../../../src/core/errors";
 import { parseDiscoveryDiagnostic, type DiscoveryDiagnosticV1 } from "./discovery-diagnostic";
+import { parseExplorationCheckpoint, type ExplorationCheckpoint } from "./discovery-explorer";
 
 const KEY = "supplierDiscovery.v1";
 const ACTIVE_TTL_MS = 15 * 60_000;
@@ -31,7 +32,7 @@ export const DISCOVERY_FAILURE_MESSAGES = {
 } as const;
 
 type DiscoveryState =
-  | { stage: "awaiting_permission" | "scanning"; runId: string; tabId: number; origin: string; updatedAt: number }
+  | { stage: "awaiting_permission" | "scanning"; runId: string; tabId: number; origin: string; checkpoint?: ExplorationCheckpoint; updatedAt: number }
   | { stage: "preview" | "confirming"; runId: string; candidates: DiscoveredSupplierCandidateSetV1; diagnostic: DiscoveryDiagnosticV1; updatedAt: number }
   | { stage: "complete"; runId: string; vendorId: string; name: string; count: number; updatedAt: number }
   | { stage: "failed"; runId: string; message: string; origins: string[]; diagnostic?: DiscoveryDiagnosticV1; updatedAt: number };
@@ -55,7 +56,12 @@ export type DiscoveryStatusView =
   }
   | { stage: "connecting"; name: string }
   | { stage: "complete"; vendorId: string; name: string; count: number }
-  | { stage: "failed"; message: string; diagnosticAvailable: boolean };
+  | {
+    stage: "failed";
+    message: string;
+    reason: "not_found" | "limit_reached" | "failed";
+    diagnosticAvailable: boolean;
+  };
 
 export async function beginSupplierDiscovery(tabId: number, origin: string): Promise<string> {
   return transition(async () => {
@@ -67,12 +73,27 @@ export async function beginSupplierDiscovery(tabId: number, origin: string): Pro
   });
 }
 
-export async function markSupplierDiscoveryScanning(): Promise<{ runId: string; tabId: number; origin: string } | undefined> {
+export async function markSupplierDiscoveryScanning(): Promise<{ runId: string; tabId: number; origin: string; checkpoint?: ExplorationCheckpoint } | undefined> {
   return transition(async () => {
     const state = await read();
     if (!state || (state.stage !== "awaiting_permission" && state.stage !== "scanning")) return undefined;
     await write({ ...state, stage: "scanning", updatedAt: Date.now() });
-    return { runId: state.runId, tabId: state.tabId, origin: state.origin };
+    return { runId: state.runId, tabId: state.tabId, origin: state.origin, ...(state.checkpoint ? { checkpoint: state.checkpoint } : {}) };
+  });
+}
+
+/** Store only the validated structural scheduler state while a scan is active. */
+export async function checkpointSupplierDiscovery(
+  runId: string,
+  checkpoint: ExplorationCheckpoint,
+): Promise<boolean> {
+  return transition(async () => {
+    const state = await read();
+    if (!state || state.stage !== "scanning" || state.runId !== runId) return false;
+    const safeCheckpoint = parseExplorationCheckpoint(checkpoint);
+    if (!safeCheckpoint) return false;
+    await write({ ...state, checkpoint: safeCheckpoint, updatedAt: Date.now() });
+    return true;
   });
 }
 
@@ -223,7 +244,14 @@ export async function getSupplierDiscoveryStatus(): Promise<DiscoveryStatusView>
     };
     case "confirming": return { stage: "connecting", name: state.candidates.displayName };
     case "complete": return { stage: "complete", vendorId: state.vendorId, name: state.name, count: state.count };
-    case "failed": return { stage: "failed", message: state.message, diagnosticAvailable: Boolean(state.diagnostic) };
+    case "failed": return {
+      stage: "failed",
+      message: state.message,
+      reason: state.diagnostic?.result === "not_found" || state.diagnostic?.result === "limit_reached"
+        ? state.diagnostic.result
+        : "failed",
+      diagnosticAvailable: Boolean(state.diagnostic),
+    };
   }
 }
 
@@ -251,7 +279,9 @@ function parseState(value: unknown): DiscoveryState | undefined {
   if (raw.stage === "awaiting_permission" || raw.stage === "scanning") {
     if (!Number.isInteger(raw.tabId) || Number(raw.tabId) < 0 || typeof raw.origin !== "string") return undefined;
     try { exactOriginPattern(raw.origin); } catch { return undefined; }
-    return { stage: raw.stage, runId: raw.runId, tabId: Number(raw.tabId), origin: raw.origin, updatedAt };
+    const checkpoint = raw.checkpoint === undefined ? undefined : parseExplorationCheckpoint(raw.checkpoint);
+    if (raw.checkpoint !== undefined && !checkpoint) return undefined;
+    return { stage: raw.stage, runId: raw.runId, tabId: Number(raw.tabId), origin: raw.origin, ...(checkpoint ? { checkpoint } : {}), updatedAt };
   }
   if (raw.stage === "preview" || raw.stage === "confirming") {
     try {

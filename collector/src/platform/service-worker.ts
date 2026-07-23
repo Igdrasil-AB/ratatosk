@@ -40,6 +40,7 @@ import {
   beginSupplierDiscovery,
   beginSupplierDiscoveryConnect,
   cancelSupplierDiscovery,
+  checkpointSupplierDiscovery,
   clearSupplierDiscovery,
   completeSupplierDiscovery,
   DISCOVERY_FAILURE_MESSAGES,
@@ -477,6 +478,12 @@ async function completeSupplierScan(): Promise<void> {
     try {
       console.info(`[collector] discovery start ${formatCollectorRuntimeIdentity()}`);
       const discovery = await discoverSupplierInTab(pending.tabId, pending.origin, {
+        // A user explicitly chose Find Invoices. Use the deep envelope here so
+        // that route-family coverage is meaningful instead of failing after a
+        // handful of SPA guesses; scheduled syncs never enter this pathway.
+        mode: pending.checkpoint?.mode ?? "deep",
+        checkpoint: pending.checkpoint,
+        onCheckpoint: (checkpoint) => checkpointSupplierDiscovery(pending.runId, checkpoint).then(() => undefined),
         shouldContinue: () => canContinueSupplierDiscovery(pending.origin),
       });
       const current = await getSupplierDiscoveryStatus();

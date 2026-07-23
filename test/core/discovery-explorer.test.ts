@@ -1,13 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   capExplorationProbeOptions,
+  createExplorationCheckpoint,
   EXPLORATION_DEADLINE_MS,
+  EXPLORATION_BUDGETS,
   MAX_EXPLORATION_DEPTH,
   MAX_EXPLORATION_PAGES,
   explorationProbeOptions,
   planExplorationTargets,
   rankExplorationQueue,
   runWithinExplorationBudget,
+  explorationTargetKey,
+  parseExplorationCheckpoint,
   safeExplorationUrl,
 } from "../../collector/src/platform/discovery-explorer";
 
@@ -18,7 +22,12 @@ describe("bounded same-origin discovery exploration", () => {
     expect(EXPLORATION_DEADLINE_MS).toBe(30_000);
   });
 
-  it("prioritizes linked invoice and billing pages ahead of packaged common routes", () => {
+  it("keeps a substantially broader, still bounded deep coverage envelope", () => {
+    expect(EXPLORATION_BUDGETS.deep).toEqual({ pages: 60, depth: 5, durationMs: 180_000, slices: 1 });
+    expect(EXPLORATION_BUDGETS.self_heal).toEqual({ pages: 80, depth: 5, durationMs: 300_000, slices: 5 });
+  });
+
+  it("keeps linked invoice evidence first while guaranteeing a common-route turn", () => {
     const origin = "https://vendor.example";
     const targets = planExplorationTargets({
       origin,
@@ -34,7 +43,7 @@ describe("bounded same-origin discovery exploration", () => {
     });
 
     expect(targets[0]).toMatchObject({ url: `${origin}/account/invoices`, source: "linked", depth: 1 });
-    expect(targets[1]).toMatchObject({ url: `${origin}/billing`, source: "linked", depth: 1 });
+    expect(targets[1]).toMatchObject({ source: "common_route", family: "common_billing_route", depth: 1 });
     expect(targets.every((target) => new URL(target.url).origin === origin)).toBe(true);
     expect(JSON.stringify(targets)).not.toContain("token");
     expect(targets.length).toBeLessThanOrEqual(MAX_EXPLORATION_PAGES - 1);
@@ -96,6 +105,62 @@ describe("bounded same-origin discovery exploration", () => {
     }));
   });
 
+  it("does not let observed navigation starve tenant-aware or common billing families", () => {
+    const origin = "https://app.vendor.example";
+    const ranked = rankExplorationQueue([
+      ...Array.from({ length: 12 }, (_, index) => ({
+        url: `${origin}/settings/billing/invoices-${index}`,
+        source: "linked" as const,
+        depth: 2,
+        score: 120 - index,
+      })),
+      {
+        url: `${origin}/123456789/settings/billing`,
+        source: "common_route" as const,
+        family: "tenant_contextual_route" as const,
+        depth: 1,
+        score: 90,
+      },
+      {
+        url: `${origin}/account/billing/history`,
+        source: "common_route" as const,
+        family: "common_billing_route" as const,
+        depth: 1,
+        score: 80,
+      },
+    ]);
+
+    expect(ranked.slice(0, 4).map((target) => target.family ?? target.source)).toEqual([
+      "linked", "tenant_contextual_route", "common_billing_route", "linked",
+    ]);
+  });
+
+  it("checkpoints only a structural route key and rejects raw routes or malformed progress", () => {
+    const target = {
+      url: "https://app.vendor.example/9012345678/settings/billing?token=secret",
+      source: "common_route" as const,
+      family: "tenant_contextual_route" as const,
+      depth: 1,
+      score: 100,
+    };
+    const key = explorationTargetKey(target);
+    expect(key).toBe("tenant_contextual_route|/:id/settings/billing");
+    const checkpoint = createExplorationCheckpoint({
+      mode: "deep",
+      pagesAttempted: 3,
+      linkedPagesAttempted: 1,
+      commonRoutePagesAttempted: 1,
+      elapsedMs: 1_200,
+      frontier: [{ key, family: "tenant_contextual_route", score: 100, depth: 1 }],
+      completedTargetKeys: [key],
+      attemptedFamilies: ["exact_entry", "tenant_contextual_route"],
+      slicesCompleted: 0,
+    });
+    expect(JSON.stringify(checkpoint)).not.toMatch(/9012345678|token|https?:/i);
+    expect(parseExplorationCheckpoint(checkpoint)).toEqual(checkpoint);
+    expect(parseExplorationCheckpoint({ ...checkpoint, completedTargetKeys: ["tenant_contextual_route|https://app.vendor.example/private"] })).toBeUndefined();
+  });
+
   it("preserves an account prefix when planning common billing routes", () => {
     const origin = "https://dash.cloudflare.com";
     const account = "a473171df3249291b4be6fca57bb8444";
@@ -128,6 +193,47 @@ describe("bounded same-origin discovery exploration", () => {
       url: `${origin}/${workspace}/settings/billing`,
       source: "common_route",
     });
+  });
+
+  it("keeps a typed tenant prefix behind a safe dashboard/org route shape", () => {
+    const origin = "https://supabase.com";
+    const organization = "123456789";
+    const targets = planExplorationTargets({
+      origin,
+      contextUrl: `${origin}/dashboard/org/${organization}/billing`,
+      links: [],
+      visited: new Set([`${origin}/dashboard/org/${organization}/billing`]),
+      nextDepth: 1,
+      includeCommonRoutes: true,
+    });
+
+    expect(targets.map((target) => target.url)).toContain(`${origin}/dashboard/org/${organization}/settings/billing`);
+  });
+
+  it("binds an opaque tenant only when its exact route position is behind a trusted container", () => {
+    const origin = "https://supabase.com";
+    const organization = "opaqueorganizationid";
+    const targets = planExplorationTargets({
+      origin,
+      contextUrl: `${origin}/dashboard/org/${organization}/billing`,
+      links: [],
+      visited: new Set([`${origin}/dashboard/org/${organization}/billing`]),
+      nextDepth: 1,
+      includeCommonRoutes: true,
+    });
+
+    expect(targets.map((target) => target.url)).toContain(
+      `${origin}/dashboard/org/${organization}/settings/billing`,
+    );
+    const unsafe = planExplorationTargets({
+      origin,
+      contextUrl: `${origin}/dashboard/settings/billing`,
+      links: [],
+      visited: new Set(),
+      nextDepth: 1,
+      includeCommonRoutes: true,
+    });
+    expect(unsafe.some((target) => target.url.includes("/dashboard/settings/"))).toBe(false);
   });
 
   it("gives a tenant-scoped ClickUp billing route an adaptive SPA evidence budget", () => {

@@ -2,6 +2,13 @@ import type { LedgerEntry } from "../../platform/storage";
 
 export type LedgerDateFilter = "all" | "30d" | "90d" | "year";
 
+const LEDGER_DATE_FILTER_LABELS: Record<LedgerDateFilter, string> = {
+  all: "All dates",
+  "30d": "Last 30 days",
+  "90d": "Last 90 days",
+  year: "This year",
+};
+
 export interface LedgerSupplierGroup {
   vendorId: string;
   vendorName: string;
@@ -54,6 +61,18 @@ export function groupLedgerBySupplier(entries: readonly LedgerEntry[]): LedgerSu
         ledgerDateTimestamp(right) - ledgerDateTimestamp(left) || right.collectedAt - left.collectedAt),
     }))
     .sort((left, right) => right.latestCollectedAt - left.latestCollectedAt || left.vendorName.localeCompare(right.vendorName));
+}
+
+export function isRecentlyCollected(collectedAt: number, now = Date.now()): boolean {
+  return collectedAt >= now - 60_000 && collectedAt <= now;
+}
+
+export function invoiceCountLabel(visible: number, total: number): string {
+  return visible === total ? `${total} invoice${total === 1 ? "" : "s"}` : `${visible} of ${total}`;
+}
+
+export function ledgerDateFilterLabel(filter: LedgerDateFilter): string {
+  return LEDGER_DATE_FILTER_LABELS[filter];
 }
 
 function ledgerDateTimestamp(entry: LedgerEntry): number {
