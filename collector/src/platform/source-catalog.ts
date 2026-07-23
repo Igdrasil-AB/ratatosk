@@ -43,10 +43,6 @@ export async function resolveCollectorSource(id: string): Promise<CollectorSourc
     : undefined;
 }
 
-export async function officialSourceForOrigin(origin: string): Promise<CollectorSource | undefined> {
-  return (await listCollectorSources()).find((source) => source.kind === "official" && source.primaryOrigin === origin);
-}
-
 function originOf(value: string): string {
   try { return new URL(value).origin; } catch { return ""; }
 }
