@@ -25,6 +25,8 @@ import type {
 } from "./types";
 import {
   AuthExpired,
+  collectionFailureEvidence,
+  type CollectionFailureEvidence,
   DocumentPermissionRequired,
   operationalCodeForError,
   RateLimited,
@@ -79,6 +81,9 @@ export interface StreamVendorOptions {
   /** Candidate verification must not deliver from a path whose traversal could
    * not be exhausted; another retained candidate should be tried first. */
   requireCompleteRetrieval?: boolean;
+  /** Closed evidence emitted before a boundary failure is recovered or thrown.
+   * Callers decide whether a recovered scope failure is relevant to their UI. */
+  onFailure?: (failure: CollectionFailureEvidence) => void;
 }
 
 /** Keeps memory bounded to at most three materialized PDFs per vendor run. */
@@ -131,15 +136,26 @@ async function executeVendor(
   emit: (document: FetchedDocument) => Promise<void>,
   options: StreamVendorOptions = {},
 ): Promise<StreamRunResult> {
-  await resolveAuthToken(recipe, ctx);
-  // A rendered-list strategy proves authentication by finding its document
-  // structure in the exact supplier tab. A second scripted GET is weaker and
-  // is commonly challenged even when the visible session is valid.
-  if (recipe.invoices.strategy !== "dom") await assertAuthenticated(recipe, ctx);
+  try {
+    await resolveAuthToken(recipe, ctx);
+    // A rendered-list strategy proves authentication by finding its document
+    // structure in the exact supplier tab. A second scripted GET is weaker and
+    // is commonly challenged even when the visible session is valid.
+    if (recipe.invoices.strategy !== "dom") await assertAuthenticated(recipe, ctx);
+  } catch (error) {
+    options.onFailure?.(collectionFailureEvidence(error, "authentication"));
+    throw error;
+  }
 
   const strategy = strategies[recipe.invoices.strategy];
   const source = `ext:${recipe.id}`;
-  const scopes = await resolveScopes(recipe, ctx);
+  let scopes: Record<string, unknown>[];
+  try {
+    scopes = await resolveScopes(recipe, ctx);
+  } catch (error) {
+    options.onFailure?.(collectionFailureEvidence(error, "scope_discovery"));
+    throw error;
+  }
 
   const emittedThisRun = new Set<string>();
   const scopeErrors: unknown[] = [];
@@ -169,6 +185,7 @@ async function executeVendor(
       if (list.refs.length === 0) emptyScopes++;
       plans.push({ vars, list, identityScope: configIdentityScope(recipe, scopeVars) });
     } catch (err) {
+      options.onFailure?.(collectionFailureEvidence(err, "invoice_list"));
       // A dead session or missing document-provider permission is vendor-wide,
       // so abort. Any other per-scope failure
       // (e.g. one org with no billing 404s) must NOT sink the sibling scopes.
@@ -252,6 +269,7 @@ async function executeVendor(
         }
         if (outcome.status === "rejected") {
           await releaseClaims(ctx, identityClaims);
+          options.onFailure?.(collectionFailureEvidence(outcome.error, "document_fetch", list.retrieval));
           if (
             outcome.error instanceof AuthExpired || outcome.error instanceof RateLimited ||
             outcome.error instanceof DocumentPermissionRequired
@@ -280,7 +298,12 @@ async function executeVendor(
           continue;
         }
         try {
-          await emit(document);
+          try {
+            await emit(document);
+          } catch (error) {
+            options.onFailure?.(collectionFailureEvidence(error, "delivery", list.retrieval));
+            throw error;
+          }
           emittedThisRun.add(document.idempotencyKey);
           emittedThisRun.add(document.contentIdempotencyKey);
           documentCount++;
@@ -390,7 +413,14 @@ async function resolveScopes(
     for (let page = 0; page < (paginate ? maxPages : 1); page++) {
       const res = await ctx.fetch(option.discover.request, { ...ctx.vars, ...(paginate ? { [cursorVariable]: cursor } : {}) });
       if (res.status === 401) throw new AuthExpired(recipe.id);
-      if (!res.ok) throw new UnexpectedResponse(res.status, `configuration discovery failed for "${option.id}"`, recipe.id);
+      if (!res.ok) {
+        throw new UnexpectedResponse(
+          res.status,
+          `configuration discovery failed for "${option.id}"`,
+          recipe.id,
+          res.headers.get("content-type") ?? undefined,
+        );
+      }
       const root = await res.json();
       // With `items` it's a list (one scope per element); without, a single scalar
       // read off the root (e.g. `account_id` for a single-account API).

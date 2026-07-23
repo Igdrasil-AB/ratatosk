@@ -283,8 +283,18 @@ coverage families distinguished as attempted, exhausted, or unavailable, and up
 to eight cross-origin hostnames. Route templates preserve only recognized
 billing/navigation words and replace tenant, account, workspace, and other opaque
 segments with `:id` or `:segment`. Origins, raw paths, queries, fragments,
-headers, bodies, tokens, account identifiers, invoice identifiers, and financial
-values are excluded.
+headers, bodies, selectors, identifiers, and free-form error messages are never
+included.
+
+Candidate verification also carries a closed root-cause trace across the engine
+boundary. The trace records the failed stage (`authentication`,
+`scope_discovery`, `invoice_list`, `document_fetch`, `document_validation`,
+`delivery`, or `admission`), a finite cause code, an optional bounded HTTP
+status/content-type family, and any structural list proof completed before a
+later document failure. This keeps `recipe_incompatible` useful as a stable UI
+outcome while distinguishing a selector miss from a rejected fetch or invalid
+PDF in copied diagnostics. The trace contains no supplier-provided strings,
+URLs, or response content.
 
 The source catalog merges official registry recipes with these validated local
 profiles, so scheduling and sync use one engine rather than a parallel scraper.

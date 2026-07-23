@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AuthExpired, DocumentPermissionRequired, RateLimited } from "../../src/core/errors";
+import { AuthExpired, DocumentPermissionRequired, RateLimited, UnexpectedResponse } from "../../src/core/errors";
 import type { IngestResult } from "../../src/ingest/sink";
 
 const mocks = vi.hoisted(() => ({
@@ -246,6 +246,43 @@ describe("Collector per-vendor run coordinator", () => {
     expect(mocks.recordRun).not.toHaveBeenCalled();
   });
 
+  it("preserves a privacy-safe engine failure trace in discovered-candidate summaries", async () => {
+    mocks.streamVendor.mockImplementationOnce(async (_recipe, _ctx, _strategies, _emit, options) => {
+      options.onFailure({
+        stage: "document_fetch",
+        cause: "unexpected_response",
+        httpStatus: 403,
+        retrieval: {
+          completeness: "complete",
+          termination: "explicit_end",
+          pagesVisited: 1,
+          observedItems: 8,
+          resolvedItems: 8,
+          unresolvedItems: 0,
+        },
+      });
+      throw new UnexpectedResponse(403, "document unavailable", "discovered-trace");
+    });
+
+    await expect(runDiscoveredCandidate(
+      { id: "discovered-trace", name: "Discovered" } as never,
+      async () => undefined,
+    )).resolves.toMatchObject({
+      status: "error",
+      code: "recipe_incompatible",
+      retrievalProof: {
+        completeness: "complete",
+        observedItems: 8,
+        resolvedItems: 8,
+      },
+      failure: {
+        stage: "document_fetch",
+        cause: "unexpected_response",
+        httpStatus: 403,
+      },
+    });
+  });
+
   it("records partial scope truth and stable rate-limit eligibility", async () => {
     mocks.streamVendor.mockImplementationOnce(async (_recipe, _ctx, _strategies, emit) => {
       await emit(document("vendor-c"));
@@ -269,6 +306,10 @@ describe("Collector per-vendor run coordinator", () => {
       count: 0,
       code: "rate_limited",
       nextEligibleRunAt: 1_800_000,
+      failure: {
+        stage: "authentication",
+        cause: "rate_limited",
+      },
     });
   });
 

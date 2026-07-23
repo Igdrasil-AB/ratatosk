@@ -110,7 +110,9 @@ appear only after at least one valid PDF reaches the selected destination. Denia
 an HTML login response, or a site with no candidates must save no supplier. On
 failure, **Copy Diagnostic** must contain only structural counts (including
 `observedRequests` versus `replayedRequests`), candidate
-number, packaged adapter/outcome codes, and hostnames—never page URLs, queries,
+number, packaged adapter/outcome codes, closed verification stage/cause codes,
+optional HTTP status/content-type families, completed retrieval proof, and
+hostnames—never page URLs, selectors, free-form errors, queries,
 headers, bodies, tokens, identifiers, or financial values. Disconnect the
 provisional supplier and confirm its local profile and host access are gone. The
 diagnostic must identify `page_cap`, `time_cap`, `queue_exhausted`,
@@ -140,9 +142,10 @@ issue.
   the persisted per-vendor eligibility time; another vendor must still run.
 - Use **Copy diagnostic** on a non-OK vendor and inspect the JSON. It may contain
   only vendor ID, Collector/lifecycle revisions, stable outcome code, timestamps,
-  counts, hostnames, and privacy-safe route templates with opaque segments shown
+  counts, closed verification stage/cause codes, HTTP status/content-type
+  families, hostnames, and privacy-safe route templates with opaque segments shown
   as `:id` or `:segment`—never origins, raw paths, queries, fragments, headers,
-  bodies, invoice/company IDs, or tokens.
+  bodies, selectors, free-form error messages, invoice/company IDs, or tokens.
 
 ## 6. Record the verification
 

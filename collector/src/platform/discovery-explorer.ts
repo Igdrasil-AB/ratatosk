@@ -11,7 +11,7 @@ import { isBoundedTenantIdentifierSegment } from "../../../src/core/discovery";
 export const MAX_EXPLORATION_PAGES = 15;
 export const MAX_EXPLORATION_DEPTH = 3;
 export const EXPLORATION_DEADLINE_MS = 30_000;
-export const DISCOVERY_ENGINE_REVISION = 26;
+export const DISCOVERY_ENGINE_REVISION = 27;
 
 /**
  * A scan starts in the inexpensive fast lane, but its policy is deliberately

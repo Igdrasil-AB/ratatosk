@@ -3,7 +3,10 @@ import type { FetchedDocument, RetrievalCompleteness, RetrievalProof, VendorReci
 import {
   AuthExpired,
   AuthFailure,
+  type CollectionFailureEvidence,
+  type CollectionFailureStage,
   DocumentPermissionRequired,
+  collectionFailureEvidence,
   operationalCodeForError,
   operationalOutcomeLabel,
   RateLimited,
@@ -39,6 +42,8 @@ export interface VendorRunSummary {
   nextEligibleRunAt?: number;
   error?: string;
   requiredOrigins?: readonly string[];
+  /** Closed stage/cause evidence for diagnostics; never contains supplier data. */
+  failure?: CollectionFailureEvidence;
 }
 
 /**
@@ -110,6 +115,7 @@ async function executeRecipeRun(
   let verifiedCount = 0;
   let retrieval: RetrievalCompleteness | undefined;
   let retrievalProof: RetrievalProof | undefined;
+  let failure: CollectionFailureEvidence | undefined;
 
   try {
     let firstDeliveryCommitted = false;
@@ -170,7 +176,12 @@ async function executeRecipeRun(
       } catch (error) {
         throw new DestinationDeliveryError(error);
       }
-    }, { requireCompleteRetrieval });
+    }, {
+      requireCompleteRetrieval,
+      onFailure: (evidence) => {
+        failure ??= evidence;
+      },
+    });
     const { scopes } = result;
     retrieval = result.retrieval;
     retrievalProof = result.retrievalProof;
@@ -199,6 +210,22 @@ async function executeRecipeRun(
       emptyScopes: scopes.empty,
     };
   } catch (err) {
+    if (err instanceof DestinationDeliveryError) {
+      failure = {
+        ...collectionFailureEvidence(err.cause, "delivery", failure?.retrieval),
+        stage: "delivery",
+        cause: "destination_rejected",
+      };
+    } else if (err instanceof DiscoveryAdmissionError) {
+      failure = {
+        ...collectionFailureEvidence(err.cause, "admission", failure?.retrieval),
+        stage: "admission",
+        cause: "state_persistence",
+      };
+    } else {
+      failure ??= collectionFailureEvidence(err, fallbackFailureStage(err));
+    }
+    retrievalProof ??= failure.retrieval;
     if (err instanceof RetrievalIncomplete) retrievalProof = err.proof;
     if (err instanceof DiscoveryAdmissionError) {
       const code = "connection_persistence_failed" as const;
@@ -211,6 +238,7 @@ async function executeRecipeRun(
         verifiedCount,
         retrieval,
         ...(retrievalProof ? { retrievalProof } : {}),
+        ...(failure ? { failure } : {}),
         code,
         error: message,
       };
@@ -227,10 +255,18 @@ async function executeRecipeRun(
           lastError: message,
           nextEligibleRunAt: undefined,
         });
-        return { vendorId, status: "partial", count: acceptedCount, retrieval, code: "auth_expired", error: message };
+        return {
+          vendorId,
+          status: "partial",
+          count: acceptedCount,
+          retrieval,
+          code: "auth_expired",
+          error: message,
+          ...(failure ? { failure } : {}),
+        };
       }
       await recordRun(vendorId, { lastStatus: "auth_expired", lastCode: "auth_expired", nextEligibleRunAt: undefined });
-      return { vendorId, status: "auth_expired", count: 0, code: "auth_expired" };
+      return { vendorId, status: "auth_expired", count: 0, code: "auth_expired", ...(failure ? { failure } : {}) };
     }
     if (err instanceof AuthFailure) {
       const code = operationalCodeForError(err);
@@ -238,10 +274,10 @@ async function executeRecipeRun(
       console.warn(`[collector] "${vendorId}": ${message.toLowerCase()}`);
       if (acceptedCount > 0) {
         await recordRun(vendorId, { lastStatus: "partial", lastCount: acceptedCount, lastCode: code, lastError: message, nextEligibleRunAt: undefined });
-        return { vendorId, status: "partial", count: acceptedCount, retrieval, code, error: message };
+        return { vendorId, status: "partial", count: acceptedCount, retrieval, code, error: message, ...(failure ? { failure } : {}) };
       }
       await recordRun(vendorId, { lastStatus: "error", lastCode: code, lastError: message, nextEligibleRunAt: undefined });
-      return { vendorId, status: "error", count: 0, code, error: message };
+      return { vendorId, status: "error", count: 0, code, error: message, ...(failure ? { failure } : {}) };
     }
     if (err instanceof RateLimited) {
       const eligibleAt = boundedNextEligibleRunAt(err.retryAfterMs);
@@ -253,8 +289,24 @@ async function executeRecipeRun(
         nextEligibleRunAt: eligibleAt,
       });
       return acceptedCount > 0
-        ? { vendorId, status: "partial", count: acceptedCount, retrieval, code: "rate_limited", error: operationalOutcomeLabel("rate_limited"), nextEligibleRunAt: eligibleAt }
-        : { vendorId, status: "rate_limited", count: 0, code: "rate_limited", nextEligibleRunAt: eligibleAt };
+        ? {
+            vendorId,
+            status: "partial",
+            count: acceptedCount,
+            retrieval,
+            code: "rate_limited",
+            error: operationalOutcomeLabel("rate_limited"),
+            nextEligibleRunAt: eligibleAt,
+            ...(failure ? { failure } : {}),
+          }
+        : {
+            vendorId,
+            status: "rate_limited",
+            count: 0,
+            code: "rate_limited",
+            nextEligibleRunAt: eligibleAt,
+            ...(failure ? { failure } : {}),
+          };
     }
     if (err instanceof DocumentPermissionRequired) {
       const code = "document_permission_required" as const;
@@ -278,6 +330,7 @@ async function executeRecipeRun(
         code,
         error: message,
         requiredOrigins: err.requiredOrigins,
+        ...(failure ? { failure } : {}),
       };
     }
     const code: OperationalOutcomeCode = err instanceof DestinationDeliveryError ? "destination_unavailable" : operationalCodeForError(err);
@@ -291,6 +344,7 @@ async function executeRecipeRun(
         count: acceptedCount,
         retrieval: retrieval ?? (code === "retrieval_incomplete" ? "partial" : undefined),
         ...(retrievalProof ? { retrievalProof } : {}),
+        ...(failure ? { failure } : {}),
         code,
         error: message,
       };
@@ -302,12 +356,20 @@ async function executeRecipeRun(
       count: 0,
       retrieval: code === "retrieval_incomplete" ? "partial" : retrieval,
       ...(retrievalProof ? { retrievalProof } : {}),
+      ...(failure ? { failure } : {}),
       code,
       error: message,
     };
   } finally {
     await dispose();
   }
+}
+
+function fallbackFailureStage(error: unknown): CollectionFailureStage {
+  if (error instanceof AuthExpired || error instanceof AuthFailure || error instanceof RateLimited) return "authentication";
+  if (error instanceof DocumentPermissionRequired) return "document_fetch";
+  if (error instanceof RetrievalIncomplete) return "invoice_list";
+  return "invoice_list";
 }
 
 /** Run every connected vendor in sequence (keeps concurrency gentle on the host). */

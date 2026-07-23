@@ -1,13 +1,21 @@
 import type { DiscoveryAdapterId } from "../../../src/core/discovery";
 import type { RetrievalProof } from "../../../src/core/types";
-import { OPERATIONAL_OUTCOME_CODES, type OperationalOutcomeCode } from "../../../src/core/errors";
+import {
+  COLLECTION_FAILURE_CAUSES,
+  COLLECTION_FAILURE_STAGES,
+  COLLECTION_RESPONSE_TYPES,
+  OPERATIONAL_OUTCOME_CODES,
+  type CollectionFailureEvidence,
+  type OperationalOutcomeCode,
+} from "../../../src/core/errors";
 import type { ExplorationFamily, ExplorationMode, ExplorationPageSource } from "./discovery-explorer";
 
-export const DISCOVERY_DIAGNOSTIC_SCHEMA = "ratatosk.discovery-diagnostic.v7" as const;
+export const DISCOVERY_DIAGNOSTIC_SCHEMA = "ratatosk.discovery-diagnostic.v8" as const;
 const LEGACY_DISCOVERY_DIAGNOSTIC_SCHEMAS = new Set([
   "ratatosk.discovery-diagnostic.v4",
   "ratatosk.discovery-diagnostic.v5",
   "ratatosk.discovery-diagnostic.v6",
+  "ratatosk.discovery-diagnostic.v7",
 ]);
 
 export type DiscoveryAttemptResult =
@@ -36,6 +44,7 @@ export interface CandidateVerificationAttempt {
   candidate: number;
   adapter: DiscoveryAdapterId;
   result: CandidateVerificationResult;
+  failure?: Omit<CollectionFailureEvidence, "retrieval">;
   retrieval?: Omit<RetrievalProof, "completeness">;
 }
 
@@ -285,15 +294,38 @@ function parseVerification(
       !["network-json", "embedded-json", "dom-links", "dom-actions"].includes(outcome.adapter) ||
       !isVerificationResult(outcome.result)
     ) throw new Error("invalid discovery verification outcome");
+    const failure = outcome.failure === undefined ? undefined : parseVerificationFailure(outcome.failure);
+    if (failure && (outcome.result === "collected" || outcome.result === "no_documents")) {
+      throw new Error("inconsistent discovery verification failure");
+    }
     const retrieval = outcome.retrieval === undefined ? undefined : parseVerificationRetrieval(outcome.retrieval);
     return {
       candidate: outcome.candidate,
       adapter: outcome.adapter,
       result: outcome.result,
+      ...(failure ? { failure } : {}),
       ...(retrieval ? { retrieval } : {}),
     };
   });
   return { attempted: value.attempted, outcomes };
+}
+
+function parseVerificationFailure(
+  value: Omit<CollectionFailureEvidence, "retrieval">,
+): Omit<CollectionFailureEvidence, "retrieval"> {
+  if (
+    !value ||
+    !COLLECTION_FAILURE_STAGES.includes(value.stage) ||
+    !COLLECTION_FAILURE_CAUSES.includes(value.cause) ||
+    (value.httpStatus !== undefined && !boundedInt(value.httpStatus, 0, 599)) ||
+    (value.responseType !== undefined && !COLLECTION_RESPONSE_TYPES.includes(value.responseType))
+  ) throw new Error("invalid discovery verification failure");
+  return {
+    stage: value.stage,
+    cause: value.cause,
+    ...(value.httpStatus !== undefined ? { httpStatus: value.httpStatus } : {}),
+    ...(value.responseType !== undefined ? { responseType: value.responseType } : {}),
+  };
 }
 
 function parseVerificationRetrieval(

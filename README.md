@@ -132,6 +132,12 @@ integration. Connected local recipes can enumerate cursor, next-URL, numbered,
 offset, localized Load More, and infinite-scroll invoice lists through packaged
 bounded primitives—without storing remote code or cursor values.
 
+When verification fails, the copied discovery diagnostic retains a closed,
+privacy-safe root-cause trace: the failed collection stage, finite cause code,
+optional HTTP status/content-type family, and structural retrieval proof
+completed before the failure. It never includes URLs, selectors, response
+content, tokens, or invoice identifiers.
+
 ## Repository layout
 
 ```text

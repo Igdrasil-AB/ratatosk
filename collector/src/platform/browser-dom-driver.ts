@@ -201,7 +201,14 @@ export class BrowserDomDriver implements DomDriver {
     const fetcher = new PageFetcher(this.recipe);
     try {
       const response = await fetcher.fetch({ url }, {});
-      if (!response.ok) throw new UnexpectedResponse(response.status, "DOM document download failed", this.recipe.id);
+      if (!response.ok) {
+        throw new UnexpectedResponse(
+          response.status,
+          "DOM document download failed",
+          this.recipe.id,
+          response.headers.get("content-type") ?? undefined,
+        );
+      }
       return {
         bytes: await readDocumentBytes(response, this.recipe.id),
         contentType: response.headers.get("content-type") ?? "",
