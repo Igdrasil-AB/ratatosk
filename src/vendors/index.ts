@@ -44,8 +44,3 @@ export function getVendor(
 }
 
 export { VENDOR_LIFECYCLE_BY_ID } from "./lifecycle";
-
-/** All host match patterns across every vendor — used to build manifest permissions. */
-export function allHosts(): string[] {
-  return [...new Set(VENDORS.flatMap((v) => v.hosts))].sort();
-}

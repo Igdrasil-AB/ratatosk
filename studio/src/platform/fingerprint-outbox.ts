@@ -3,6 +3,7 @@ import {
   type SupplierFingerprintSubmissionV1,
 } from "../../../src/core/recorder/supplier-fingerprint";
 import {
+  isExactRecord,
   svalaFingerprintTransport,
   type SvalaFingerprintDeliveryResult,
   type SvalaFingerprintReceipt,
@@ -257,12 +258,6 @@ function isRecordWithOnly(value: unknown, keys: string[]): value is Record<strin
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
     && Object.keys(value as Record<string, unknown>).every((key) => keys.includes(key))
     && ["queuedAt", "expiresAt", "submission"].every((key) => Object.prototype.hasOwnProperty.call(value, key));
-}
-
-function isExactRecord(value: unknown, keys: string[]): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
-    && Object.keys(value as Record<string, unknown>).every((key) => keys.includes(key))
-    && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
 }
 
 async function persist(items: StoredItem[]): Promise<void> {

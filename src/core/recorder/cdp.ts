@@ -31,10 +31,6 @@ export function isCapturableBody(contentType: string): boolean {
   return isJsonContentType(contentType) || isHtmlContentType(contentType);
 }
 
-export function isPdfContentType(contentType: string): boolean {
-  return contentType.includes("pdf");
-}
-
 const SENSITIVE_KEY = /(token|secret|password|passwd|passcode|credential|private[_-]?key|cookie|session|authorization|api[_-]?key|csrf|xsrf)/i;
 const PII_KEY = /(?:^|_)(?:email|name|recipient|address|phone|vat|tax|ssn|personnummer|customer)(?:_|$)/i;
 const NON_PII_STRUCTURAL_NAME_KEYS = new Set(["operation_name", "file_name", "filename"]);

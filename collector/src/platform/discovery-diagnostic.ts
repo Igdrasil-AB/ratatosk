@@ -120,10 +120,7 @@ export interface DiscoveryDiagnosticV6 {
   result: "not_found" | "limit_reached" | "candidates_found";
 }
 
-/** Internal source-compatibility aliases for callers created before v6. */
-export type DiscoveryDiagnosticV5 = DiscoveryDiagnosticV6;
-export type DiscoveryDiagnosticV4 = DiscoveryDiagnosticV6;
-export type DiscoveryDiagnosticV2 = DiscoveryDiagnosticV6;
+/** Internal source-compatibility alias for callers created before v6. */
 export type DiscoveryDiagnosticV1 = DiscoveryDiagnosticV6;
 
 export function parseDiscoveryDiagnostic(value: unknown): DiscoveryDiagnosticV6 {

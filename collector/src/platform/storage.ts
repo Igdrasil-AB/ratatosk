@@ -274,11 +274,6 @@ export async function clearLedgerForVendor(vendorId: string): Promise<void> {
   await mutate<LedgerEntry[]>(KEY.ledger, [], (existing) => existing.filter((entry) => entry.vendorId !== vendorId));
 }
 
-/** How many entries were added in the most recent run (collectedAt within the window). */
-export async function newSince(sinceMs: number): Promise<number> {
-  return (await getLedger()).filter((e) => e.collectedAt >= sinceMs).length;
-}
-
 // ---- low-level ------------------------------------------------------------
 
 function validateSinkConfig(cfg: SinkConfig): SinkConfig {

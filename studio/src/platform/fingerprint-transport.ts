@@ -172,7 +172,7 @@ function parseReceiptResponse(text: string): { delivered: true; receipt: SvalaFi
   return { delivered: true, receipt: receipt as unknown as SvalaFingerprintReceipt, replayed: root.replayed };
 }
 
-function isExactRecord(value: unknown, keys: string[]): value is Record<string, unknown> {
+export function isExactRecord(value: unknown, keys: string[]): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
     && Object.keys(value as Record<string, unknown>).every((key) => keys.includes(key))
     && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
