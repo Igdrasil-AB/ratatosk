@@ -108,9 +108,132 @@ export class RetrievalIncomplete extends CollectorError {
 
 /** The vendor responded in a way the recipe did not anticipate. */
 export class UnexpectedResponse extends CollectorError {
-  constructor(readonly status: number, message: string, vendorId?: string) {
+  constructor(
+    readonly status: number,
+    message: string,
+    vendorId?: string,
+    readonly responseContentType?: string,
+  ) {
     super(`unexpected response (${status}): ${message}`, vendorId);
   }
+}
+
+export const COLLECTION_FAILURE_STAGES = [
+  "authentication",
+  "scope_discovery",
+  "invoice_list",
+  "document_fetch",
+  "document_validation",
+  "delivery",
+  "admission",
+] as const;
+
+export type CollectionFailureStage = typeof COLLECTION_FAILURE_STAGES[number];
+
+export const COLLECTION_FAILURE_CAUSES = [
+  "auth_expired",
+  "auth_blocked",
+  "insufficient_scope",
+  "transport_failed",
+  "rate_limited",
+  "selector_miss",
+  "unexpected_response",
+  "schema_invalid",
+  "template_invalid",
+  "document_not_found",
+  "document_invalid",
+  "document_too_large",
+  "document_permission_required",
+  "document_redirect_rejected",
+  "retrieval_incomplete",
+  "destination_rejected",
+  "state_persistence",
+  "unknown",
+] as const;
+
+export type CollectionFailureCause = typeof COLLECTION_FAILURE_CAUSES[number];
+
+export const COLLECTION_RESPONSE_TYPES = [
+  "pdf",
+  "html",
+  "json",
+  "text",
+  "image",
+  "binary",
+  "missing",
+  "other",
+] as const;
+
+export type CollectionResponseType = typeof COLLECTION_RESPONSE_TYPES[number];
+
+/**
+ * Closed, privacy-safe evidence for one failed collection boundary. It carries
+ * no URL, selector, response body, identifier, token, or free-form message.
+ */
+export interface CollectionFailureEvidence {
+  stage: CollectionFailureStage;
+  cause: CollectionFailureCause;
+  httpStatus?: number;
+  responseType?: CollectionResponseType;
+  retrieval?: RetrievalProof;
+}
+
+export function collectionFailureEvidence(
+  error: unknown,
+  stage: CollectionFailureStage,
+  retrieval?: RetrievalProof,
+): CollectionFailureEvidence {
+  let cause: CollectionFailureCause = "unknown";
+  let httpStatus: number | undefined;
+  let responseType: CollectionResponseType | undefined;
+  let resolvedStage = stage;
+
+  if (error instanceof AuthExpired) cause = "auth_expired";
+  else if (error instanceof AuthFailure) {
+    cause = error.kind === "blocked_or_challenged" ? "auth_blocked" : error.kind;
+  } else if (error instanceof RateLimited) cause = "rate_limited";
+  else if (error instanceof SelectorMiss) cause = "selector_miss";
+  else if (error instanceof UnexpectedResponse) {
+    cause = "unexpected_response";
+    if (Number.isInteger(error.status) && error.status >= 0 && error.status <= 599) httpStatus = error.status;
+    if (error.responseContentType !== undefined) responseType = classifyResponseType(error.responseContentType);
+  } else if (error instanceof SchemaError) cause = "schema_invalid";
+  else if (error instanceof TemplateError) cause = "template_invalid";
+  else if (error instanceof DocumentNotFound) cause = "document_not_found";
+  else if (error instanceof DocumentInvalid) {
+    cause = "document_invalid";
+    resolvedStage = "document_validation";
+    if (Number.isInteger(error.status) && error.status >= 0 && error.status <= 599) httpStatus = error.status;
+    responseType = classifyResponseType(error.responseContentType);
+  } else if (error instanceof DocumentTooLarge) {
+    cause = "document_too_large";
+    resolvedStage = "document_validation";
+  } else if (error instanceof DocumentPermissionRequired) cause = "document_permission_required";
+  else if (error instanceof DocumentRedirectRejected) cause = "document_redirect_rejected";
+  else if (error instanceof RetrievalIncomplete) {
+    cause = "retrieval_incomplete";
+    retrieval ??= error.proof;
+  }
+
+  return {
+    stage: resolvedStage,
+    cause,
+    ...(httpStatus !== undefined ? { httpStatus } : {}),
+    ...(responseType ? { responseType } : {}),
+    ...(retrieval ? { retrieval } : {}),
+  };
+}
+
+function classifyResponseType(value: string): CollectionResponseType {
+  const type = value.split(";", 1)[0].trim().toLowerCase();
+  if (!type) return "missing";
+  if (type === "application/pdf") return "pdf";
+  if (type === "text/html" || type === "application/xhtml+xml") return "html";
+  if (type === "application/json" || type.endsWith("+json")) return "json";
+  if (type.startsWith("text/")) return "text";
+  if (type.startsWith("image/")) return "image";
+  if (type === "application/octet-stream") return "binary";
+  return "other";
 }
 
 export const OPERATIONAL_OUTCOME_CODES = [

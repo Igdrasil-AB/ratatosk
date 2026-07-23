@@ -271,12 +271,8 @@
       .feed-toolbar strong { font-size: 12.5px; font-weight: 680; }
       .feed-toolbar small { color: var(--muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
       .date-filter {
-        min-height: 40px;
-        max-width: 142px;
-        padding: 0 9px;
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
+        position: relative;
+        flex: none;
         border-radius: 9px;
         background: var(--surface-raised);
         color: var(--muted);
@@ -286,10 +282,17 @@
         transition-timing-function: ease-out;
       }
       .date-filter:hover { background: var(--surface); box-shadow: var(--shadow-border-hover); }
-      .date-filter:active { scale: 0.96; }
-      .date-filter:focus-within { outline: 2px solid var(--ring); outline-offset: 2px; }
-      .date-filter svg { width: 14px; height: 14px; flex: none; opacity: 0.72; }
-      .date-filter select { min-width: 0; max-width: 105px; min-height: 38px; padding: 0; border: 0; outline: 0; appearance: none; background: transparent; color: var(--fg); cursor: pointer; font-size: 11.5px; font-weight: 600; }
+      .date-filter summary { min-height: 40px; padding: 0 9px; display: flex; align-items: center; gap: 5px; list-style: none; color: var(--fg); cursor: pointer; font-size: 11.5px; font-weight: 600; }
+      .date-filter summary::-webkit-details-marker { display: none; }
+      .date-filter summary:active { scale: 0.96; }
+      .date-filter summary > svg:first-child { width: 14px; height: 14px; opacity: 0.72; }
+      .date-filter summary > svg:last-child { width: 12px; height: 12px; opacity: 0.58; transition: transform 140ms ease-out; }
+      .date-filter[open] summary > svg:last-child { transform: rotate(90deg); }
+      .date-filter-options { position: absolute; z-index: 20; top: calc(100% + 6px); right: 0; width: 148px; padding: 4px; border-radius: 11px; background: var(--surface-raised); box-shadow: 0 12px 28px rgb(44 34 24 / 0.16), var(--shadow-border); }
+      .date-filter-option { width: 100%; min-height: 36px; padding: 0 8px; display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: center; gap: 6px; border: 0; border-radius: 8px; background: transparent; color: var(--fg); cursor: pointer; font-family: var(--ui); font-size: 11.5px; font-weight: 560; text-align: left; }
+      .date-filter-option:hover { background: var(--surface); }
+      .date-filter-option.selected { color: var(--primary); font-weight: 650; }
+      .date-filter-option svg { width: 14px; height: 14px; }
       .supplier-groups { min-height: 0; margin: 0 -1px; padding: 1px 1px 4px; overflow-y: auto; flex: 1; }
       .supplier-group { margin: 0 0 7px; overflow: clip; border-radius: 14px; background: var(--surface-raised); box-shadow: var(--shadow-border); }
       .supplier-group summary {
@@ -345,10 +348,11 @@
       .vrow .mid { flex: 1; min-width: 0; }
       .vrow .vn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 620; }
       .vrow .vlifecycle { margin-top: 1px; color: var(--copper); font-size: 10.5px; font-weight: 620; }
+      .vrow .vn + .vs { margin-top: 3px; }
       .local-badge { display: inline-flex; align-items: center; min-height: 16px; padding: 0 6px; border-radius: 999px; background: var(--primary-soft); color: var(--primary); font-size: 9.5px; letter-spacing: 0.01em; }
-      .vrow .vs { margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11.5px; }
-      .vendor-links { display: flex; align-items: center; gap: 10px; }
-      .diagnostic-link { width: auto; min-height: 40px; margin: -8px 0; padding: 8px 0; border: 0; background: transparent; color: var(--primary); cursor: pointer; font: 600 10.5px/1.4 inherit; }
+      .vrow .vs { margin-top: 1px; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; color: var(--muted); font-size: 11.5px; line-height: 1.35; }
+      .vendor-links { display: flex; flex-wrap: wrap; align-items: center; column-gap: 10px; row-gap: 0; }
+      .diagnostic-link { width: auto; min-height: 40px; margin: 0; padding: 8px 0; border: 0; background: transparent; color: var(--primary); cursor: pointer; font-family: var(--ui); font-size: 10.5px; font-weight: 600; line-height: 1.4; white-space: nowrap; }
       .diagnostic-link.subtle { color: var(--muted); }
       .vrow .actions { width: 124px; flex: none; display: grid; grid-template-columns: 86px 32px; align-items: center; gap: 6px; }
       .vrow .actions .btn { width: 86px; padding-inline: 8px; }
@@ -424,12 +428,14 @@
       .supplier-request-link svg { width: 13px; height: 13px; flex: none; }
       .supplier-request-link:disabled { background: var(--muted); cursor: not-allowed; opacity: 0.55; box-shadow: none; }
       .tab-awareness .supplier-request-link { max-width: 132px; justify-content: center; text-align: center; white-space: normal; }
-      .supplier-help-link { width: fit-content; margin-top: 4px; padding: 0; border: 0; background: transparent; color: var(--primary); cursor: pointer; font: 600 9.5px/1.35 inherit; text-align: left; }
-      .supplier-help-link svg { width: 11px; height: 11px; vertical-align: -2px; }
       .discovery-actions { display: flex; flex-direction: column; align-items: stretch; gap: 2px; }
       .quiet-link.compact { min-height: 28px; padding: 4px 7px; font-size: 10.5px; }
       .discovery-progress, .discovery-found, .discovery-complete { background: linear-gradient(135deg, var(--primary-soft), var(--surface-raised) 68%); }
-      .discovery-failed { background: var(--surface-raised); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--danger) 28%, transparent); }
+      .discovery-failed { padding: 12px; grid-template-columns: 32px minmax(0, 1fr); align-items: start; row-gap: 7px; background: var(--surface-raised); box-shadow: var(--shadow-border); }
+      .discovery-failed .supplier-request-mark { color: var(--muted); }
+      .discovery-failed .supplier-request-copy small { margin-top: 3px; line-height: 1.45; }
+      .discovery-failed .discovery-actions { grid-column: 2; flex-direction: row; align-items: center; gap: 6px; margin-top: 2px; }
+      .discovery-failed .quiet-link.compact { min-height: 40px; }
       .discovery-spinner { width: 18px; height: 18px; margin: 7px; border: 2px solid color-mix(in oklab, var(--primary) 22%, transparent); border-top-color: var(--primary); border-radius: 50%; animation: discovery-spin 800ms linear infinite; }
       @keyframes discovery-spin { to { transform: rotate(360deg); } }
 

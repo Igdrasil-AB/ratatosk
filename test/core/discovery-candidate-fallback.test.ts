@@ -110,6 +110,34 @@ describe("discovered candidate fallback", () => {
     });
   });
 
+  it("carries a closed failure stage and cause into candidate diagnostics", async () => {
+    const candidates = set();
+    const run = vi.fn().mockResolvedValue({
+      vendorId: candidates.id,
+      status: "error",
+      count: 0,
+      code: "recipe_incompatible",
+      failure: {
+        stage: "document_fetch",
+        cause: "unexpected_response",
+        httpStatus: 403,
+      },
+    });
+
+    const result = await collectFirstWorkingCandidate(candidates, run);
+
+    expect(result.outcomes[0]).toEqual({
+      candidate: 1,
+      adapter: "dom-links",
+      result: "recipe_incompatible",
+      failure: {
+        stage: "document_fetch",
+        cause: "unexpected_response",
+        httpStatus: 403,
+      },
+    });
+  });
+
   it("accepts one invoice when its retrieval path is complete", async () => {
     const candidates = set();
     const run = vi.fn().mockResolvedValue({

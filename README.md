@@ -103,24 +103,40 @@ bounded, and interpreted only by logic packaged with the extension. Collector
 does not download remote recipes or remotely hosted code. Official vendor
 changes require a reviewed extension release. For an unsupported supplier, the
 user can select **Find Invoices** from any page in the supplier app. Collector
-checks that page and at most fourteen same-origin, billing-related pages using at
-most two inactive temporary tabs. A temporary exact-origin `document_start`
-observer captures bounded, sanitized JSON fetch/XHR evidence before the SPA runs,
+first snapshots that page without navigating it, then reopens the exact approved
+entry once in an inactive disposable tab before checking other same-origin,
+billing-related pages. A temporary exact-origin `document_start`
+observer is installed before that replay and captures bounded, sanitized JSON
+fetch/XHR evidence while the SPA boots,
 so the packaged inference can recognize GET APIs and explicit read-only GraphQL
 POST queries without the Studio recorder or an AI fallback. The bounded planner combines URL intent with visible
 navigation labels and nearby menu context, so an opaque route labelled `Invoices`
-remains discoverable. Observed Settings routes are retained as lower-confidence
+remains discoverable. If one high-confidence billing route renders only an empty
+shell while inactive, Collector may give that disposable tab one bounded
+visibility lease; it restores the previous tab afterward unless the user changed
+tabs during the probe. Semantic verification uses the same lease through control
+enumeration and document capture, so visibility-gated evidence remains
+reproducible instead of disappearing after discovery. Opaque tenant values are reusable only when the exact
+approved route placed them behind a trusted structural container such as
+`/dashboard/org/{tenant}`. Observed Settings routes are retained as lower-confidence
 bridges to billing pages, tenant-scoped `settings/billing` routes are prioritized,
 and the best contextual/common route is scheduled after at most two observed-route
 probes so one clue source cannot starve the others. Packaged adapters retain up
 to three proof-ranked, strict local-only candidates spanning JSON APIs, embedded
-data, invoice-context document links, and explicit download controls. DOM-shaped
+data, invoice-context document links, explicit download controls, and icon-only
+document actions proven by invoice-table, row, and action-column context. DOM-shaped
 leads are verified only after Connect &
 Collect, Ratatosk requests only their bounded exact-origin union, validates a
 real PDF, and falls through candidate-local shape failures before saving the
 integration. Connected local recipes can enumerate cursor, next-URL, numbered,
 offset, localized Load More, and infinite-scroll invoice lists through packaged
 bounded primitives—without storing remote code or cursor values.
+
+When verification fails, the copied discovery diagnostic retains a closed,
+privacy-safe root-cause trace: the failed collection stage, finite cause code,
+optional HTTP status/content-type family, and structural retrieval proof
+completed before the failure. It never includes URLs, selectors, response
+content, tokens, or invoice identifiers.
 
 ## Repository layout
 
@@ -179,17 +195,16 @@ npm run release:studio
 
 This runs the complete test and security gate, validates every vendor recipe and
 fixture, and checks the Studio-specific authoring manifest before writing a
-deterministic Studio-only ZIP and checksum. Studio does not ship Collector
-support claims, so only `release:collector` requires fresh live supplier
-attestations through the strict `validate:collector-release` gate. Publishing remains an explicit operator action;
+deterministic Studio-only ZIP and checksum. Collector release validation blocks
+explicit health holds and malformed lifecycle metadata; live attestations remain
+useful operational evidence but are not required for bundled pilot recipes. Publishing remains an explicit operator action;
 the tag workflow runs only after a matching `v<package-version>` tag is pushed.
 
 ## Vendor status
 
 Collector currently exposes Anthropic, ChatGPT, and Railway as pilot recipes.
-Their parsing behavior is fixture-tested, but live vendor endpoints and auth flows
-are explicitly marked `needs_verification`; the Collector release gate remains
-closed until sanitized current attestations are recorded. GitHub, Slack, and
+Their parsing behavior is fixture-tested, and users may connect them directly;
+optional live-verification metadata does not gate pilot execution. GitHub, Slack, and
 Vercel remain contributor examples and are not shipped by Collector.
 
 See [testing a vendor](docs/testing.md), [adding a vendor](docs/adding-a-vendor.md),

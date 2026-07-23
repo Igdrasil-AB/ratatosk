@@ -10,9 +10,11 @@ import {
   requiresDisposableDomTab,
   runDomStepsInPage,
 } from "../../collector/src/platform/browser-dom-driver";
+import { DISCOVERY_DOM_POLICY } from "../../collector/src/platform/discovery-dom-policy";
 
 const driverSource = readFileSync("collector/src/platform/browser-dom-driver.ts", "utf8");
 const discoverySource = readFileSync("collector/src/platform/discovery.ts", "utf8");
+const policySource = readFileSync("collector/src/platform/discovery-dom-policy.ts", "utf8");
 const pageRetrieval = { observedItems: 1, resolvedItems: 1, unresolvedItems: 0 };
 
 describe("browser DOM boundary", () => {
@@ -87,6 +89,42 @@ describe("browser DOM boundary", () => {
       [{ action: "click", selector: "button.load-more" }],
       undefined,
     )).toBe(true);
+  });
+
+  it("keeps a semantic verification tab visible and restores the previous tab", async () => {
+    let activeTabId = 11;
+    const update = vi.fn(async (tabId: number, properties: chrome.tabs.UpdateProperties) => {
+      if (properties.active) activeTabId = tabId;
+      return { id: tabId, windowId: 7, status: "complete" } as chrome.tabs.Tab;
+    });
+    const executeScript = vi.fn(async () => {
+      expect(activeTabId).toBe(42);
+      return [{ result: {
+        ok: true,
+        collected: { documents: [] },
+        retrieval: { observedItems: 0, resolvedItems: 0, unresolvedItems: 0 },
+      } }];
+    });
+    vi.stubGlobal("chrome", {
+      tabs: {
+        create: vi.fn(async () => ({ id: 42, windowId: 7, status: "complete" })),
+        get: vi.fn(async () => ({ id: 42, windowId: 7, status: "complete" })),
+        query: vi.fn(async () => [{ id: activeTabId, windowId: 7, status: "complete" }]),
+        update,
+        remove: vi.fn(async () => undefined),
+        onUpdated: { addListener: vi.fn(), removeListener: vi.fn() },
+      },
+      scripting: { executeScript },
+    });
+
+    const driver = new BrowserDomDriver(domRecipe());
+    await driver.run("https://vendor.example/billing", [
+      { action: "extractSemanticDownloads", as: "documents", maxActions: 8 },
+    ]);
+
+    expect(update).toHaveBeenNthCalledWith(1, 42, { active: true });
+    expect(update).toHaveBeenNthCalledWith(2, 11, { active: true });
+    expect(activeTabId).toBe(11);
   });
 
   it("enforces one retained inline-PDF budget across page passes", async () => {
@@ -188,7 +226,7 @@ describe("browser DOM boundary", () => {
     const execution = runDomStepsInPage([
       { action: "waitFor", selector: "#first", timeoutMs: 10_000 },
       { action: "waitFor", selector: "#later", timeoutMs: 10_000 },
-    ], ["https://vendor.example"], "^Invoices$", deadline);
+    ], ["https://vendor.example"], DISCOVERY_DOM_POLICY, deadline);
 
     await vi.advanceTimersByTimeAsync(1_000);
     await expect(execution).resolves.toMatchObject({ ok: true, timedOut: true });
@@ -256,15 +294,19 @@ describe("browser DOM boundary", () => {
   it("requires generic download controls to sit in invoice-shaped context", () => {
     expect(driverSource).toContain("invoiceContext");
     expect(driverSource).toContain("strongDocumentLabel");
-    expect(driverSource).toContain("\\b(?:delete|remove|cancel|pay|purchase|checkout|upgrade|downgrade)\\b");
+    expect(policySource).toContain("(?:delete|remove|cancel|pay|purchase|checkout|upgrade|downgrade|authorize|logout)");
   });
 
   it("recognizes framework download anchors from bounded structural semantics", () => {
+    expect(policySource).toContain('a:not([href])');
+    expect(policySource).toContain('data-test');
+    expect(policySource).toContain('data-testid');
     for (const source of [discoverySource, driverSource]) {
-      expect(source).toContain('a:not([href])');
-      expect(source).toContain('data-test');
-      expect(source).toContain('data-testid');
-      expect(source).toContain('querySelector("[icon],[name]")');
+      expect(source).toContain("DISCOVERY_DOM_POLICY");
+      expect(source).toContain('querySelector("svg,[icon],[name],[data-lucide]")');
+      expect(source.indexOf('icon?.getAttribute("class")')).toBeLessThan(
+        source.indexOf('element.getAttribute("class")'),
+      );
     }
   });
 
@@ -309,7 +351,7 @@ describe("browser DOM boundary", () => {
   });
 
   it("applies the action cap after excluding view-only invoice controls", () => {
-    expect(driverSource).toMatch(/const downloadControls =[\s\S]{0,500}!explicitAction\.test\(label\)/);
+    expect(driverSource).toMatch(/const downloadControls =[\s\S]{0,1600}?return explicit \|\| contextualIcon/);
     expect(driverSource).toContain("const controls = availableControls.slice");
   });
 

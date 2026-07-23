@@ -32,7 +32,9 @@ export const htmlStrategy: Strategy = {
     const renderedRequestUrl = render(spec.request.url, requestVars);
     const res = await ctx.fetch(spec.request, requestVars);
     if (res.status === 401) throw new AuthExpired(recipe.id);
-    if (!res.ok) throw new UnexpectedResponse(res.status, "html list failed", recipe.id);
+    if (!res.ok) {
+      throw new UnexpectedResponse(res.status, "html list failed", recipe.id, res.headers.get("content-type") ?? undefined);
+    }
 
     const html = new TextDecoder().decode(await res.arrayBuffer());
     const rows = extractRows(spec, html);

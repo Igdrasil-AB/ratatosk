@@ -50,7 +50,9 @@ export const networkStrategy: Strategy = {
       // this scope/org isn't allowed the resource → a per-scope failure the engine
       // skips, NOT a dead session. (The recipe's auth.check already verified login.)
       if (res.status === 401) throw new AuthExpired(recipe.id);
-      if (!res.ok) throw new UnexpectedResponse(res.status, "invoice list failed", recipe.id);
+      if (!res.ok) {
+        throw new UnexpectedResponse(res.status, "invoice list failed", recipe.id, res.headers.get("content-type") ?? undefined);
+      }
 
       const json = await res.json();
       const rawItemCount = getArray(json, spec.items).length;
@@ -116,7 +118,9 @@ export const networkStrategy: Strategy = {
 
     if (res.status === 404) throw new DocumentNotFound("document unavailable", recipe.id);
     if (res.status === 401) throw new AuthExpired(recipe.id);
-    if (!res.ok) throw new UnexpectedResponse(res.status, "document fetch failed", recipe.id);
+    if (!res.ok) {
+      throw new UnexpectedResponse(res.status, "document fetch failed", recipe.id, res.headers.get("content-type") ?? undefined);
+    }
 
     const bytes = await readDocumentBytes(res, recipe.id);
     const head = new Uint8Array(bytes.slice(0, 4));

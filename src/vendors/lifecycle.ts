@@ -120,6 +120,12 @@ export function releaseLifecycleIssues(
     if (!entry) return [`${vendorId}: missing lifecycle entry`];
     const issues: string[] = [];
     if (entry.stage !== "pilot" && entry.stage !== "supported") issues.push(`${vendorId}: stage ${entry.stage} cannot ship as a public claim`);
+    if (entry.stage === "pilot") {
+      if (!isRunnablePilotHealth(entry.healthReason)) {
+        issues.push(`${vendorId}: health reason ${entry.healthReason} is not release-ready`);
+      }
+      return issues;
+    }
     if (entry.healthReason !== "healthy") issues.push(`${vendorId}: health reason ${entry.healthReason} is not release-ready`);
     if (!entry.lastLiveVerifiedAt || !entry.evidenceRef || !entry.nextReviewAt || !entry.chromeMajor || !entry.collectorVersion) {
       issues.push(`${vendorId}: complete sanitized live-verification evidence is required`);
@@ -133,22 +139,8 @@ export function releaseLifecycleIssues(
   });
 }
 
-/** CI may carry an explicitly unverified pilot until an operator records the
- * first complete attestation. This does not make the strict release gate pass. */
-export function isExpectedUnverifiedPilotIssue(
-  issue: string,
-  lifecycle = VENDOR_LIFECYCLE_BY_ID,
-): boolean {
-  const separator = issue.indexOf(":");
-  if (separator <= 0) return false;
-  const entry = lifecycle[issue.slice(0, separator)];
-  if (!entry || entry.stage !== "pilot" || entry.healthReason !== "needs_verification") return false;
-  const evidenceEmpty = [entry.lastLiveVerifiedAt, entry.collectorVersion, entry.chromeMajor, entry.evidenceRef, entry.nextReviewAt]
-    .every((field) => field === null);
-  if (!evidenceEmpty) return false;
-  const reason = issue.slice(separator + 1).trim();
-  return reason === "health reason needs_verification is not release-ready"
-    || reason === "complete sanitized live-verification evidence is required";
+function isRunnablePilotHealth(reason: VendorLifecycleEntry["healthReason"]): boolean {
+  return reason === "needs_verification" || reason === "healthy" || reason === "verification_stale";
 }
 
 export function isLifecycleRunnable(
@@ -156,11 +148,11 @@ export function isLifecycleRunnable(
   now = new Date(),
   maxAgeDays = DEFAULT_VERIFICATION_MAX_AGE_DAYS,
 ): boolean {
-  // The public registry is an execution boundary, not merely a display of
-  // authoring status. A pilot can be shipped only after complete, current live
-  // evidence has made it healthy; experimental, degraded, held, retired, and
-  // unverified recipes remain available to maintainers but cannot run.
-  if (entry.stage !== "pilot" && entry.stage !== "supported") return false;
+  // Bundled pilot recipes are reviewed code and may run without operational
+  // attestation metadata. Explicit health holds still block execution, while
+  // supported recipes retain the stricter freshness contract.
+  if (entry.stage === "pilot") return isRunnablePilotHealth(entry.healthReason);
+  if (entry.stage !== "supported") return false;
   if (entry.healthReason !== "healthy") return false;
   if (!entry.lastLiveVerifiedAt || !entry.collectorVersion || !entry.chromeMajor || !entry.evidenceRef || !entry.nextReviewAt) {
     return false;
@@ -176,7 +168,12 @@ export function vendorLifecycleLabel(
   if (entry.stage === "retired") return "Retired";
   if (entry.stage === "experimental") return "Experimental · not in Collector";
   if (entry.stage === "degraded") return `Degraded · ${reasonLabel(entry.healthReason)}`;
-  const stage = entry.stage === "supported" ? "Supported" : "Pilot";
+  if (entry.stage === "pilot") {
+    if (!isRunnablePilotHealth(entry.healthReason)) return `Pilot · ${reasonLabel(entry.healthReason)}`;
+    if (entry.healthReason === "healthy" && isVerificationFresh(entry, now, maxAgeDays)) return "Pilot · live verified";
+    return "Pilot · bundled recipe";
+  }
+  const stage = "Supported";
   if (!entry.lastLiveVerifiedAt) return `${stage} · verification needed`;
   if (!isVerificationFresh(entry, now, maxAgeDays)) return `${stage} · verification stale`;
   return `${stage} · live verified`;

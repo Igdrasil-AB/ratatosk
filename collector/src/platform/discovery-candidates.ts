@@ -26,6 +26,14 @@ export async function collectFirstWorkingCandidate(
       candidate: index + 1,
       adapter: profile.adapter.id,
       result: verificationResult(summary),
+      ...(summary.failure ? {
+        failure: {
+          stage: summary.failure.stage,
+          cause: summary.failure.cause,
+          ...(summary.failure.httpStatus !== undefined ? { httpStatus: summary.failure.httpStatus } : {}),
+          ...(summary.failure.responseType ? { responseType: summary.failure.responseType } : {}),
+        },
+      } : {}),
       ...(summary.retrievalProof ? {
         retrieval: {
           termination: summary.retrievalProof.termination,

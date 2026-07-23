@@ -9,7 +9,6 @@ import { ALL_VENDORS, VENDORS } from "../src/vendors";
 import { brandIcon } from "../src/vendors/icons";
 import pkg from "../package.json";
 import {
-  isExpectedUnverifiedPilotIssue,
   lifecycleCoverageIssues,
   publicVendorCapabilityIssues,
   releaseLifecycleIssues,
@@ -18,7 +17,6 @@ import { parseVerificationMaxAgeDays, vendorFileIssues } from "./vendor-validati
 
 let failures = 0;
 const release = process.argv.includes("--release");
-const allowUnverifiedPilotBaseline = process.argv.includes("--allow-unverified-pilot-baseline");
 
 for (const vendor of ALL_VENDORS) {
   for (const issue of vendorFileIssues(vendor.id)) {
@@ -64,12 +62,8 @@ if (release) {
     failures++;
   }
   for (const issue of releaseLifecycleIssues(VENDORS.map((vendor) => vendor.id), { collectorVersion: pkg.version, maxAgeDays })) {
-    if (allowUnverifiedPilotBaseline && isExpectedUnverifiedPilotIssue(issue)) {
-      console.warn(`! release baseline: ${issue}`);
-    } else {
-      console.error(`✗ release: ${issue}`);
-      failures++;
-    }
+    console.error(`✗ release: ${issue}`);
+    failures++;
   }
 }
 

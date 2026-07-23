@@ -12,7 +12,14 @@ import {
   revokeTabAwarenessPermission,
 } from "../../platform/permissions";
 import { brandIcon } from "../../../../src/vendors/icons";
-import { filterLedgerByDate, groupLedgerBySupplier, type LedgerDateFilter } from "./ledger-view";
+import {
+  filterLedgerByDate,
+  groupLedgerBySupplier,
+  invoiceCountLabel,
+  isRecentlyCollected,
+  ledgerDateFilterLabel,
+  type LedgerDateFilter,
+} from "./ledger-view";
 import { PANEL_UI_STATE_KEY, parsePanelUiState, type PanelScreen } from "./panel-state";
 import {
   queryActiveSupplierTab,
@@ -34,7 +41,6 @@ const historyName = document.getElementById("history-name") as HTMLElement;
 const confirmHistory = document.getElementById("confirm-history") as HTMLButtonElement;
 const cancelHistory = document.getElementById("cancel-history") as HTMLButtonElement;
 const VENDOR_GUIDANCE_SEEN = "ui.vendorGuidanceSeen.v1";
-const ADD_SUPPLIER_URL = "https://github.com/Igdrasil-AB/ratatosk#download-studio-to-add-a-new-supplier";
 
 let screen: PanelScreen = "home";
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -249,14 +255,13 @@ function renderHome(): void {
 
   let body: string;
   if (state.ledger.length) {
-    const newest = Math.max(...state.ledger.map((entry) => entry.collectedAt));
     const visibleEntries = filterLedgerByDate(state.ledger, state.ledgerDateFilter);
     const groups = groupLedgerBySupplier(visibleEntries);
     const groupRows = groups.map((group) => {
       const isOpen = expandedSupplierIds.has(group.vendorId);
-      const hasFresh = group.entries.some((entry) => entry.collectedAt >= newest - 60_000);
+      const hasFresh = group.entries.some((entry) => isRecentlyCollected(entry.collectedAt));
       const rows = group.entries.map((entry) => {
-        const fresh = entry.collectedAt >= newest - 60_000 ? '<span class="new" aria-label="New"></span>' : "";
+        const fresh = isRecentlyCollected(entry.collectedAt) ? '<span class="new" aria-label="New"></span>' : "";
         const datetime = entry.issuedAt?.slice(0, 10) ?? new Date(entry.collectedAt).toISOString();
         const collected = entry.issuedAt ? `Collected ${relTime(entry.collectedAt)}` : "Invoice date unavailable";
         return `<li class="invoice-row"><span class="invoice-row-copy"><span class="invoice-label">Invoice ${fresh}</span><small>${esc(collected)}</small></span><time class="invoice-date" datetime="${esc(datetime)}">${invoiceDate(entry)}</time><span class="invoice-amount">${esc(amount(entry.total, entry.currency))}</span></li>`;
@@ -270,7 +275,7 @@ function renderHome(): void {
       ? `<div class="supplier-groups">${groupRows}</div>`
       : `<div class="feed-empty"><strong>No invoices in this period</strong><span>Choose a wider date range to see older invoices.</span></div>`;
     body = `<section class="invoice-history" aria-labelledby="invoice-history-title">
-      <div class="feed-toolbar"><span><strong id="invoice-history-title">Invoices</strong><small>${visibleEntries.length} of ${state.ledger.length}</small></span><label class="date-filter">${filterIcon()}<span class="sr-only">Filter invoices by date</span><select name="ledger-range" aria-label="Filter invoices by date">${ledgerDateOption("All dates", "all")}${ledgerDateOption("Last 30 days", "30d")}${ledgerDateOption("Last 90 days", "90d")}${ledgerDateOption("This year", "year")}</select></label></div>
+      <div class="feed-toolbar"><span><strong id="invoice-history-title">Invoices</strong><small>${invoiceCountLabel(visibleEntries.length, state.ledger.length)}</small></span>${ledgerDateFilter()}</div>
       ${history}
     </section><div class="add"><button type="button" class="ghost" data-action="open-vendors">Manage Vendors <span aria-hidden="true">→</span></button></div>`;
   } else if (connected.length) {
@@ -334,9 +339,7 @@ function renderVendors(): void {
     } else if (connection) {
       const count = connection.lastCount ?? 0;
       sub = connection.lastStatus === "partial"
-        ? connection.lastError
-          ? `Collected ${count}; ${connection.lastError}`
-          : `Collected ${count}; ${connection.lastFailedScopes ?? 0} account scope${connection.lastFailedScopes === 1 ? "" : "s"} need attention`
+        ? `${count > 0 ? `${count} collected` : "No new invoices"} · ${connection.lastFailedScopes ?? 0} account scope${connection.lastFailedScopes === 1 ? "" : "s"} skipped`
         : connection.lastStatus === "rate_limited"
           ? `Supplier asked Ratatosk to wait · resumes ${relTime(connection.nextEligibleRunAt)}`
           : connection.lastStatus === "error"
@@ -348,13 +351,15 @@ function renderVendors(): void {
     const error = state.inlineError?.scope === "vendor" && state.inlineError.vendorId === source.id
       ? `<div class="inline-error" id="vendor-error-${esc(source.id)}" role="alert" tabindex="-1">${esc(state.inlineError.message)}</div>` : "";
     const diagnostic = connection?.lastStatus && connection.lastStatus !== "ok"
-      ? `<button type="button" class="diagnostic-link" data-action="copy-diagnostic" data-id="${esc(source.id)}">Copy diagnostic</button>` : "";
+      ? `<button type="button" class="diagnostic-link" data-action="copy-diagnostic" data-id="${esc(source.id)}">Copy details</button>` : "";
     const history = connection
       ? `<button type="button" class="diagnostic-link subtle" data-action="forget-history" data-id="${esc(source.id)}">Forget history</button>`
       : "";
     const vendorLinks = diagnostic || history ? `<div class="vendor-links">${diagnostic}${history}</div>` : "";
     const lifecycle = source.kind === "discovered"
       ? `<div class="vlifecycle"><span class="local-badge">Discovered · this browser</span></div>`
+      : source.lifecycle?.stage === "pilot"
+        ? ""
       : `<div class="vlifecycle">${esc(source.lifecycle ? vendorLifecycleLabel(source.lifecycle) : "Unavailable")}</div>`;
     return `<li class="vrow">${logo(source.icon, source.name)}<div class="mid"><div class="vn">${esc(source.name)}</div>${lifecycle}<div class="vs" id="vendor-status-${esc(source.id)}">${esc(sub)}</div>${vendorLinks}${error}</div><div class="actions">${action}${secondaryAction}</div></li>`;
   }).join("");
@@ -362,7 +367,7 @@ function renderVendors(): void {
   const infoButton = state.vendorGuidanceSeen && !showGuidance
     ? `<button type="button" class="icon-btn" data-action="show-vendor-guidance" aria-label="How vendor connections work">${infoIcon()}</button>` : "";
   const missingSupplier = discoveryCard();
-  app.innerHTML = `${sheetHeader("Vendors", infoButton)}${guidance}<ul class="vendor-list">${rows}</ul>${missingSupplier}<p class="foot">Chrome may briefly hide this window while confirming vendor access. Setup continues safely in the background.</p>`;
+  app.innerHTML = `${sheetHeader("Vendors", infoButton)}${guidance}<ul class="vendor-list">${rows}</ul>${missingSupplier}`;
 }
 
 function discoveryCard(): string {
@@ -384,10 +389,17 @@ function discoveryCard(): string {
     return `<aside class="supplier-request discovery-complete" role="status"><span class="supplier-request-mark success" aria-hidden="true">✓</span><span class="supplier-request-copy"><strong>${esc(discovery.name)} is connected</strong><small>Collected ${discovery.count} verified invoice${discovery.count === 1 ? "" : "s"}. The supplier is now in your list.</small></span><button type="button" class="quiet-link compact" data-action="dismiss-discovery">Done</button></aside>`;
   }
   if (discovery.stage === "failed") {
+    const emptyResult = discovery.reason === "not_found" || discovery.reason === "limit_reached";
+    const title = emptyResult ? "No invoices found" : "Couldn’t check this supplier";
+    const detail = discovery.reason === "limit_reached"
+      ? "Ratatosk checked the likely billing pages within its safe search limit. No downloadable invoices were found for this account."
+      : discovery.reason === "not_found"
+        ? "Ratatosk checked this app’s likely billing pages but found no downloadable invoices for this account."
+        : discovery.message;
     const diagnostic = discovery.diagnosticAvailable
-      ? `<button type="button" class="quiet-link compact" data-action="copy-discovery-diagnostic">Copy Diagnostic</button>`
+      ? `<button type="button" class="quiet-link compact" data-action="copy-discovery-diagnostic">Copy details</button>`
       : "";
-    return `<aside class="supplier-request discovery-failed" role="alert"><span class="supplier-request-mark" aria-hidden="true">!</span><span class="supplier-request-copy"><strong>Couldn’t verify this supplier</strong><small>${esc(discovery.message)}</small><button type="button" class="supplier-help-link" data-action="open-add-supplier">Add it with Studio on GitHub ${externalIcon()}</button></span><span class="discovery-actions"><button type="button" class="btn tonal sm" data-action="cancel-discovery">Try Again</button>${diagnostic}</span></aside>`;
+    return `<aside class="supplier-request discovery-failed" role="${emptyResult ? "status" : "alert"}"><span class="supplier-request-mark" aria-hidden="true">${emptyResult ? "–" : "!"}</span><span class="supplier-request-copy"><strong>${title}</strong><small>${esc(detail)}</small></span><span class="discovery-actions"><button type="button" class="btn tonal sm" data-action="cancel-discovery">${emptyResult ? "Search Again" : "Try Again"}</button>${diagnostic}</span></aside>`;
   }
   if (state.config && !page && !state.tabAwarenessEnabled) {
     return `<aside class="supplier-request tab-awareness" aria-labelledby="tab-awareness-title"><span class="supplier-request-mark" aria-hidden="true">${branchIcon()}</span><span class="supplier-request-copy"><strong id="tab-awareness-title">Find invoices on this site</strong><small>Allow Ratatosk to recognize the supplier in your active tab. Chrome will ask once.</small></span><button type="button" class="supplier-request-link" data-action="enable-tab-awareness" ${state.tabAwarenessRequestPending ? "disabled" : ""}>${state.tabAwarenessRequestPending ? "Preparing…" : "Find Invoices"}</button></aside>`;
@@ -400,7 +412,7 @@ function discoveryCard(): string {
   const detail = !state.config
     ? "Choose a destination first."
     : page ? `Search ${page.hostname} for billing and invoice pages.` : "Open an HTTPS supplier app first.";
-  return `<aside class="supplier-request" aria-labelledby="supplier-request-title"><span class="supplier-request-mark" aria-hidden="true">${branchIcon()}</span><span class="supplier-request-copy"><strong id="supplier-request-title">Supplier not listed?</strong><small>${esc(detail)}</small><button type="button" class="supplier-help-link" data-action="open-add-supplier">Build a reviewed recipe instead ${externalIcon()}</button></span><button type="button" class="supplier-request-link" data-action="try-discovery" ${ready ? "" : "disabled"}>Find Invoices</button></aside>`;
+  return `<aside class="supplier-request" aria-labelledby="supplier-request-title"><span class="supplier-request-mark" aria-hidden="true">${branchIcon()}</span><span class="supplier-request-copy"><strong id="supplier-request-title">Supplier not listed?</strong><small>${esc(detail)}</small></span><button type="button" class="supplier-request-link" data-action="try-discovery" ${ready ? "" : "disabled"}>Find Invoices</button></aside>`;
 }
 
 function renderSettings(): void {
@@ -459,17 +471,20 @@ app.addEventListener("click", (event) => {
     void connectDiscoveryFromUserGesture(vendorId);
     return;
   }
+  if (action === "set-ledger-range") {
+    const filter = element.dataset.range;
+    if (filter === "all" || filter === "30d" || filter === "90d" || filter === "year") {
+      state.ledgerDateFilter = filter;
+      persistPanelUiState();
+      renderHome();
+    }
+    return;
+  }
   void handle(action, vendorId);
 });
 
 app.addEventListener("change", (event) => {
   const element = event.target as HTMLInputElement | HTMLSelectElement;
-  if (element instanceof HTMLSelectElement && element.name === "ledger-range") {
-    state.ledgerDateFilter = element.value as LedgerDateFilter;
-    persistPanelUiState();
-    renderHome();
-    return;
-  }
   if (element.dataset.field) {
     void saveField(element.dataset.field, element.value);
     return;
@@ -632,9 +647,6 @@ async function handle(action: string, vendorId?: string): Promise<void> {
     case "copy-discovery-diagnostic": await copyDiscoveryDiagnostic(); return;
     case "connect-igdrasil": await openIgdrasilConnect(); return;
     case "manage-igdrasil": await chrome.tabs.create({ url: "https://accounting.igdrasil.se/integrations/invoice-collector" }); return;
-    case "open-add-supplier":
-      await chrome.tabs.create({ url: ADD_SUPPLIER_URL });
-      return;
     case "cancel-discovery":
     case "dismiss-discovery":
       await send({ type: action === "cancel-discovery" ? "cancelDiscovery" : "dismissDiscovery" });
@@ -867,8 +879,13 @@ function destinationLabel(): string {
   return "Not Selected";
 }
 
-function ledgerDateOption(label: string, value: LedgerDateFilter): string {
-  return `<option value="${value}" ${state.ledgerDateFilter === value ? "selected" : ""}>${label}</option>`;
+function ledgerDateFilter(): string {
+  const filters: LedgerDateFilter[] = ["all", "30d", "90d", "year"];
+  const options = filters.map((filter) => {
+    const selected = state.ledgerDateFilter === filter;
+    return `<button type="button" class="date-filter-option${selected ? " selected" : ""}" data-action="set-ledger-range" data-range="${filter}" aria-pressed="${selected}"><span aria-hidden="true">${selected ? checkIcon() : ""}</span>${ledgerDateFilterLabel(filter)}</button>`;
+  }).join("");
+  return `<details class="date-filter"><summary aria-label="Filter invoices by date">${filterIcon()}<span>${ledgerDateFilterLabel(state.ledgerDateFilter)}</span>${chevronIcon()}</summary><div class="date-filter-options">${options}</div></details>`;
 }
 
 // ---- inline icons ---------------------------------------------------------
@@ -879,8 +896,8 @@ function xIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" f
 function chevronIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>`; }
 function infoIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>`; }
 function branchIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="7" cy="6" r="2.2"/><circle cx="17" cy="8" r="2.2"/><circle cx="7" cy="18" r="2.2"/><path d="M7 8.2v7.6M9.2 8h3.3A4.5 4.5 0 0 1 17 12.5v2.3"/></svg>`; }
-function externalIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 3.5H3.5v9h9V10M8.5 3.5h4v4M12.2 3.8 7 9"/></svg>`; }
 function filterIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h14M5.5 10h9M8 15h4"/></svg>`; }
+function checkIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 8 3 3 7-7"/></svg>`; }
 
 async function boot(): Promise<void> {
   await restorePanelUiState();

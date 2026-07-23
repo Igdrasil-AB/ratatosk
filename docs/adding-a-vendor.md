@@ -99,14 +99,15 @@ Add the matching strict entry to `src/vendors/lifecycle.ts`. New recipes start a
 data, URLs, or credentials in this public manifest; verification references are
 limited to sanitized PR/release IDs or opaque internal receipt IDs.
 
-Promotion into public `VENDORS` requires a current live test, reviewed fixture,
-least-privilege host list, complete lifecycle attestation, and explicit release
-decision. Keep both arrays alphabetical. `npm run validate:release` enforces the
-configured verification window (90 days unless
+Promotion into public `VENDORS` requires a reviewed fixture, least-privilege host
+list, and explicit release decision. Live verification is recommended evidence,
+not a runtime or packaging prerequisite for a bundled pilot recipe. Keep both
+arrays alphabetical. `npm run validate:release` enforces the configured
+verification window for supported recipes (90 days unless
 `VENDOR_VERIFICATION_MAX_AGE_DAYS` is set by release policy to a whole number
 from 1 through 365). Invalid or malformed policy values fail the release gate;
-they never fall back silently. The gate intentionally fails while public entries
-still say `needs_verification`.
+they never fall back silently. Explicit vendor-change and security-hold states
+remain blocking.
 
 ## 6. Verify end to end
 

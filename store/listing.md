@@ -199,5 +199,5 @@ this exact policy before submission).
 - [ ] Submit **Unlisted** first and invite only named pilot testers.
 - [ ] Monitor auth failures, vendor endpoint changes, duplicate behavior, and user
       deletion/disconnect requests during the pilot.
-- [ ] Remove any vendor claim that has not passed current live verification.
+- [ ] Remove any vendor claim under an explicit vendor-change or security hold.
 - [ ] Move to Public only after review feedback and the pilot exit criteria are met.

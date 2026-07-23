@@ -1,12 +1,21 @@
 import type { DiscoveryAdapterId } from "../../../src/core/discovery";
 import type { RetrievalProof } from "../../../src/core/types";
-import { OPERATIONAL_OUTCOME_CODES, type OperationalOutcomeCode } from "../../../src/core/errors";
-import type { ExplorationPageSource } from "./discovery-explorer";
+import {
+  COLLECTION_FAILURE_CAUSES,
+  COLLECTION_FAILURE_STAGES,
+  COLLECTION_RESPONSE_TYPES,
+  OPERATIONAL_OUTCOME_CODES,
+  type CollectionFailureEvidence,
+  type OperationalOutcomeCode,
+} from "../../../src/core/errors";
+import type { ExplorationFamily, ExplorationMode, ExplorationPageSource } from "./discovery-explorer";
 
-export const DISCOVERY_DIAGNOSTIC_SCHEMA = "ratatosk.discovery-diagnostic.v6" as const;
+export const DISCOVERY_DIAGNOSTIC_SCHEMA = "ratatosk.discovery-diagnostic.v8" as const;
 const LEGACY_DISCOVERY_DIAGNOSTIC_SCHEMAS = new Set([
   "ratatosk.discovery-diagnostic.v4",
   "ratatosk.discovery-diagnostic.v5",
+  "ratatosk.discovery-diagnostic.v6",
+  "ratatosk.discovery-diagnostic.v7",
 ]);
 
 export type DiscoveryAttemptResult =
@@ -28,13 +37,14 @@ export type DiscoveryAttemptResult =
   | "policy_rejected"
   | "limit_reached";
 
-export type DiscoveryTermination = "page_cap" | "time_cap" | "queue_exhausted" | "candidate_set_complete";
+export type DiscoveryTermination = "page_cap" | "time_cap" | "queue_exhausted" | "coverage_incomplete" | "candidate_primary_found" | "candidate_set_complete";
 export type CandidateVerificationResult = OperationalOutcomeCode | "no_documents" | "collected";
 
 export interface CandidateVerificationAttempt {
   candidate: number;
   adapter: DiscoveryAdapterId;
   result: CandidateVerificationResult;
+  failure?: Omit<CollectionFailureEvidence, "retrieval">;
   retrieval?: Omit<RetrievalProof, "completeness">;
 }
 
@@ -84,6 +94,14 @@ export interface DiscoveryDiagnosticV6 {
     crossOriginHosts: string[];
   };
   candidates: { compiled: number; previewed: number; retained: number };
+  /** Structural coverage only: no URL, tenant, query, or response values. */
+  coverage?: {
+    mode: ExplorationMode;
+    attemptedFamilies: ExplorationFamily[];
+    exhaustedFamilies: ExplorationFamily[];
+    unavailableFamilies: ExplorationFamily[];
+    slicesCompleted: number;
+  };
   attempts: Array<{
     page: number;
     source: ExplorationPageSource;
@@ -121,11 +139,11 @@ export function parseDiscoveryDiagnostic(value: unknown): DiscoveryDiagnosticV6 
     !raw.runtime || typeof raw.runtime.collectorVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(raw.runtime.collectorVersion) ||
     !boundedInt(raw.runtime.discoveryEngine, 1, 100)
   ) throw new Error("invalid discovery diagnostic runtime");
-  if (!raw.limits || !boundedInt(raw.limits.pages, 1, 20) || !boundedInt(raw.limits.depth, 0, 5) || !boundedInt(raw.limits.durationMs, 1_000, 60_000)) {
+  if (!raw.limits || !boundedInt(raw.limits.pages, 1, 80) || !boundedInt(raw.limits.depth, 0, 5) || !boundedInt(raw.limits.durationMs, 1_000, 300_000)) {
     throw new Error("invalid discovery diagnostic limits");
   }
-  if (!raw.timing || !boundedInt(raw.timing.elapsedMs, 0, 120_000)) throw new Error("invalid discovery diagnostic timing");
-  if (!raw.pages || !boundedInt(raw.pages.attempted, 0, 20) || !boundedInt(raw.pages.linked, 0, 20) || !boundedInt(raw.pages.commonRoutes, 0, 20)) {
+  if (!raw.timing || !boundedInt(raw.timing.elapsedMs, 0, 300_000)) throw new Error("invalid discovery diagnostic timing");
+  if (!raw.pages || !boundedInt(raw.pages.attempted, 0, 80) || !boundedInt(raw.pages.linked, 0, 80) || !boundedInt(raw.pages.commonRoutes, 0, 80)) {
     throw new Error("invalid discovery diagnostic page counts");
   }
   if (
@@ -157,17 +175,17 @@ export function parseDiscoveryDiagnostic(value: unknown): DiscoveryDiagnosticV6 
     ? raw.result
     : undefined;
   const termination = isTermination(raw.termination) ? raw.termination : undefined;
-  if (!result || !termination || !Array.isArray(raw.attempts) || raw.attempts.length > 40) {
+  if (!result || !termination || !Array.isArray(raw.attempts) || raw.attempts.length > 80) {
     throw new Error("invalid discovery diagnostic attempts");
   }
   if (
-    (result === "candidates_found") !== (termination === "candidate_set_complete") ||
+    (result === "candidates_found") !== (termination === "candidate_set_complete" || termination === "candidate_primary_found") ||
     (result === "candidates_found") !== (raw.candidates.retained > 0) ||
     (result === "not_found") !== (termination === "queue_exhausted")
   ) throw new Error("inconsistent discovery termination");
   const attempts = raw.attempts.map((attempt) => {
     if (
-      !attempt || !boundedInt(attempt.page, 1, 20) || !isPageSource(attempt.source) || !isAttemptResult(attempt.result) ||
+      !attempt || !boundedInt(attempt.page, 1, raw.limits!.pages) || !isPageSource(attempt.source) || !isAttemptResult(attempt.result) ||
       !isSafeRouteTemplate(attempt.route) ||
       (attempt.resolvedRoute !== undefined && !isSafeRouteTemplate(attempt.resolvedRoute)) ||
       !boundedInt(attempt.durationMs, 0, 60_000)
@@ -191,6 +209,7 @@ export function parseDiscoveryDiagnostic(value: unknown): DiscoveryDiagnosticV6 
     throw new Error("discovery diagnostic attempt exceeds attempted pages");
   }
   const verification = parseVerification(raw.verification, raw.candidates.retained, result);
+  const coverage = parseCoverage(raw.coverage);
   return {
     schema: DISCOVERY_DIAGNOSTIC_SCHEMA,
     site: raw.site,
@@ -211,11 +230,43 @@ export function parseDiscoveryDiagnostic(value: unknown): DiscoveryDiagnosticV6 
       previewed: raw.candidates.previewed,
       retained: raw.candidates.retained,
     },
+    ...(coverage ? { coverage } : {}),
     attempts,
     ...(verification ? { verification } : {}),
     termination,
     result,
   };
+}
+
+function parseCoverage(value: DiscoveryDiagnosticV6["coverage"] | undefined): DiscoveryDiagnosticV6["coverage"] | undefined {
+  if (value === undefined) return undefined;
+  if (!value || (value.mode !== "fast" && value.mode !== "deep" && value.mode !== "self_heal") ||
+    !Array.isArray(value.attemptedFamilies) || !Array.isArray(value.exhaustedFamilies) ||
+    (value.unavailableFamilies !== undefined && !Array.isArray(value.unavailableFamilies)) ||
+    !boundedInt(value.slicesCompleted, 0, 5)) {
+    throw new Error("invalid discovery coverage");
+  }
+  const attemptedFamilies = parseFamilies(value.attemptedFamilies);
+  const exhaustedFamilies = parseFamilies(value.exhaustedFamilies);
+  const unavailableFamilies = parseFamilies(value.unavailableFamilies ?? []);
+  if (attemptedFamilies.length !== value.attemptedFamilies.length || exhaustedFamilies.length !== value.exhaustedFamilies.length ||
+    unavailableFamilies.length !== (value.unavailableFamilies?.length ?? 0) ||
+    exhaustedFamilies.some((family) => !attemptedFamilies.includes(family)) ||
+    unavailableFamilies.some((family) => attemptedFamilies.includes(family) || exhaustedFamilies.includes(family))) {
+    throw new Error("invalid discovery coverage families");
+  }
+  return { mode: value.mode, attemptedFamilies, exhaustedFamilies, unavailableFamilies, slicesCompleted: value.slicesCompleted };
+}
+
+function parseFamilies(value: readonly unknown[]): ExplorationFamily[] {
+  const safe: ExplorationFamily[] = [];
+  for (const item of value) {
+    if ((
+      item === "exact_entry" || item === "observed_navigation" || item === "tenant_contextual_route" || item === "common_billing_route" ||
+      item === "observed_network" || item === "embedded_data" || item === "document_provider" || item === "semantic_download"
+    ) && !safe.includes(item)) safe.push(item);
+  }
+  return safe;
 }
 
 export function withCandidateVerification(
@@ -243,15 +294,38 @@ function parseVerification(
       !["network-json", "embedded-json", "dom-links", "dom-actions"].includes(outcome.adapter) ||
       !isVerificationResult(outcome.result)
     ) throw new Error("invalid discovery verification outcome");
+    const failure = outcome.failure === undefined ? undefined : parseVerificationFailure(outcome.failure);
+    if (failure && (outcome.result === "collected" || outcome.result === "no_documents")) {
+      throw new Error("inconsistent discovery verification failure");
+    }
     const retrieval = outcome.retrieval === undefined ? undefined : parseVerificationRetrieval(outcome.retrieval);
     return {
       candidate: outcome.candidate,
       adapter: outcome.adapter,
       result: outcome.result,
+      ...(failure ? { failure } : {}),
       ...(retrieval ? { retrieval } : {}),
     };
   });
   return { attempted: value.attempted, outcomes };
+}
+
+function parseVerificationFailure(
+  value: Omit<CollectionFailureEvidence, "retrieval">,
+): Omit<CollectionFailureEvidence, "retrieval"> {
+  if (
+    !value ||
+    !COLLECTION_FAILURE_STAGES.includes(value.stage) ||
+    !COLLECTION_FAILURE_CAUSES.includes(value.cause) ||
+    (value.httpStatus !== undefined && !boundedInt(value.httpStatus, 0, 599)) ||
+    (value.responseType !== undefined && !COLLECTION_RESPONSE_TYPES.includes(value.responseType))
+  ) throw new Error("invalid discovery verification failure");
+  return {
+    stage: value.stage,
+    cause: value.cause,
+    ...(value.httpStatus !== undefined ? { httpStatus: value.httpStatus } : {}),
+    ...(value.responseType !== undefined ? { responseType: value.responseType } : {}),
+  };
 }
 
 function parseVerificationRetrieval(
@@ -319,11 +393,12 @@ function isSafeHostname(value: string): boolean {
 }
 
 function isPageSource(value: unknown): value is ExplorationPageSource {
-  return value === "entry" || value === "linked" || value === "common_route";
+  return value === "entry" || value === "entry_replay" || value === "linked" || value === "common_route";
 }
 
 function isTermination(value: unknown): value is DiscoveryTermination {
-  return value === "page_cap" || value === "time_cap" || value === "queue_exhausted" || value === "candidate_set_complete";
+  return value === "page_cap" || value === "time_cap" || value === "queue_exhausted" || value === "coverage_incomplete" ||
+    value === "candidate_primary_found" || value === "candidate_set_complete";
 }
 
 function isVerificationResult(value: unknown): value is CandidateVerificationResult {

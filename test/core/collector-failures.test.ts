@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runVendor, type StrategyMap } from "../../src/core/engine";
+import { runVendor, streamVendor, type StrategyMap } from "../../src/core/engine";
 import { UnexpectedResponse } from "../../src/core/errors";
 import { createInvoiceListResult } from "../../src/core/retrieval";
 import type { HttpResponse, RunContext, VendorRecipe } from "../../src/core/types";
@@ -33,6 +33,32 @@ describe("Collector operational outcomes", () => {
 
   it("keeps an all-scope document-fetch failure as an error", async () => {
     await expect(runVendor(recipe, context(["fetch-bad"]), strategies())).rejects.toThrow(/document unavailable/);
+  });
+
+  it("reports the failing boundary without discarding successful list proof", async () => {
+    const failures: unknown[] = [];
+
+    await expect(streamVendor(
+      recipe,
+      context(["fetch-bad"]),
+      strategies(),
+      async () => undefined,
+      { onFailure: (failure) => failures.push(failure) },
+    )).rejects.toThrow(/document unavailable/);
+
+    expect(failures.at(-1)).toEqual({
+      stage: "document_fetch",
+      cause: "unexpected_response",
+      httpStatus: 404,
+      retrieval: {
+        completeness: "complete",
+        termination: "explicit_end",
+        pagesVisited: 1,
+        observedItems: 1,
+        resolvedItems: 1,
+        unresolvedItems: 0,
+      },
+    });
   });
 
   it("reports a genuine partial result when a sibling scope materializes a document", async () => {

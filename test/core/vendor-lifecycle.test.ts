@@ -3,7 +3,6 @@ import pkg from "../../package.json";
 import collectorManifest from "../../collector/manifest.config";
 import { ALL_VENDORS, EXPERIMENTAL_VENDORS, VENDORS, getVendor } from "../../src/vendors";
 import {
-  isExpectedUnverifiedPilotIssue,
   lifecycleCoverageIssues,
   isLifecycleRunnable,
   parseVendorLifecycleManifest,
@@ -72,25 +71,11 @@ describe("vendor lifecycle manifest", () => {
     expect(() => parseVendorLifecycleManifest(future, new Date("2026-07-16T00:00:00.000Z"))).toThrow(/future/i);
   });
 
-  it("keeps ordinary CI honest while the release gate rejects unverified public claims", () => {
+  it("allows bundled pilot recipes to ship without live attestation metadata", () => {
     expect(releaseLifecycleIssues(VENDORS.map((vendor) => vendor.id), {
       now: new Date("2026-07-16T00:00:00.000Z"),
       collectorVersion: pkg.version,
-    })).toEqual(expect.arrayContaining([
-      expect.stringMatching(/anthropic.*needs_verification/),
-      expect.stringMatching(/chatgpt.*evidence/i),
-      expect.stringMatching(/railway.*evidence/i),
-    ]));
-  });
-
-  it("allows CI to carry only the exact empty unverified-pilot baseline", () => {
-    expect(isExpectedUnverifiedPilotIssue("anthropic: health reason needs_verification is not release-ready")).toBe(true);
-    expect(isExpectedUnverifiedPilotIssue("anthropic: complete sanitized live-verification evidence is required")).toBe(true);
-    expect(isExpectedUnverifiedPilotIssue("anthropic: next review date has passed")).toBe(false);
-    expect(isExpectedUnverifiedPilotIssue("github: health reason experimental_unverified is not release-ready")).toBe(false);
-    expect(isExpectedUnverifiedPilotIssue("anthropic: complete sanitized live-verification evidence is required", {
-      anthropic: { ...VENDOR_LIFECYCLE_BY_ID.anthropic, evidenceRef: "receipt:partial" },
-    })).toBe(false);
+    })).toEqual([]);
   });
 
   it("rejects unreviewed registry DOM recipes and declares runtime supplier consent", () => {
@@ -124,8 +109,8 @@ describe("vendor lifecycle manifest", () => {
 
   it("labels pilot, stale, degraded, and retired states conservatively", () => {
     const pilot = VENDOR_LIFECYCLE_BY_ID.anthropic;
-    expect(vendorLifecycleLabel(pilot)).toBe("Pilot · verification needed");
-    expect(vendorLifecycleLabel({ ...pilot, lastLiveVerifiedAt: "2026-01-01T00:00:00.000Z", nextReviewAt: "2026-02-01T00:00:00.000Z" }, new Date("2026-07-16T00:00:00.000Z"))).toBe("Pilot · verification stale");
+    expect(vendorLifecycleLabel(pilot)).toBe("Pilot · bundled recipe");
+    expect(vendorLifecycleLabel({ ...pilot, lastLiveVerifiedAt: "2026-01-01T00:00:00.000Z", nextReviewAt: "2026-02-01T00:00:00.000Z" }, new Date("2026-07-16T00:00:00.000Z"))).toBe("Pilot · bundled recipe");
     expect(vendorLifecycleLabel({ ...pilot, stage: "degraded", healthReason: "vendor_change" })).toBe("Degraded · vendor change");
     expect(vendorLifecycleLabel({ ...pilot, stage: "retired", healthReason: "retired" })).toBe("Retired");
   });
@@ -142,35 +127,41 @@ describe("vendor lifecycle manifest", () => {
       nextReviewAt: "2026-12-01T00:00:00.000Z",
     };
 
-    expect(vendorLifecycleLabel(oldButFutureReview, now)).toBe("Pilot · verification stale");
-    expect(isLifecycleRunnable(oldButFutureReview, now)).toBe(false);
-    expect(releaseLifecycleIssues(["anthropic"], { now, collectorVersion: pkg.version }, { anthropic: oldButFutureReview }))
+    expect(vendorLifecycleLabel(oldButFutureReview, now)).toBe("Pilot · bundled recipe");
+    expect(isLifecycleRunnable(oldButFutureReview, now)).toBe(true);
+    expect(releaseLifecycleIssues(["anthropic"], { now, collectorVersion: pkg.version }, { anthropic: oldButFutureReview })).toEqual([]);
+    const supported = { ...oldButFutureReview, stage: "supported" as const };
+    expect(isLifecycleRunnable(supported, now)).toBe(false);
+    expect(releaseLifecycleIssues(["anthropic"], { now, collectorVersion: pkg.version }, { anthropic: supported }))
       .toContain("anthropic: live verification is older than 90 days");
   });
 
   it("never runs a vendor held for security review regardless of its stage", () => {
     const pilot = VENDOR_LIFECYCLE_BY_ID.anthropic;
-    expect(isLifecycleRunnable({ ...pilot, stage: "pilot", healthReason: "security_hold" })).toBe(false);
+    const heldPilot = { ...pilot, stage: "pilot" as const, healthReason: "security_hold" as const };
+    expect(isLifecycleRunnable(heldPilot)).toBe(false);
     expect(isLifecycleRunnable({ ...pilot, stage: "supported", healthReason: "security_hold" })).toBe(false);
+    expect(releaseLifecycleIssues(["anthropic"], { collectorVersion: pkg.version }, { anthropic: heldPilot }))
+      .toContain("anthropic: health reason security_hold is not release-ready");
   });
 
-  it("keeps unverified pilots out of the runnable public registry until live evidence is current", () => {
+  it("runs bundled pilots without requiring live evidence", () => {
     const pilot = VENDOR_LIFECYCLE_BY_ID.anthropic;
-    expect(getVendor("anthropic")).toBeUndefined();
-    expect(isLifecycleRunnable(pilot)).toBe(false);
+    expect(getVendor("anthropic")).toBe(VENDORS.find((recipe) => recipe.id === "anthropic"));
+    expect(isLifecycleRunnable(pilot)).toBe(true);
 
     const verified = {
       ...pilot,
       healthReason: "healthy" as const,
       lastLiveVerifiedAt: "2026-07-20T00:00:00.000Z",
-      collectorVersion: "0.8.29",
+      collectorVersion: "0.8.30",
       chromeMajor: 140,
       evidenceRef: "receipt:anthropic-pilot",
       nextReviewAt: "2026-08-20T00:00:00.000Z",
     };
     expect(isLifecycleRunnable(verified, new Date("2026-07-21T00:00:00.000Z"))).toBe(true);
     expect(getVendor("anthropic", { anthropic: verified })).toBe(VENDORS.find((recipe) => recipe.id === "anthropic"));
-    expect(isLifecycleRunnable({ ...verified, nextReviewAt: "2026-07-20T00:00:00.000Z" }, new Date("2026-07-21T00:00:00.000Z"))).toBe(false);
+    expect(isLifecycleRunnable({ ...verified, nextReviewAt: "2026-07-20T00:00:00.000Z" }, new Date("2026-07-21T00:00:00.000Z"))).toBe(true);
   });
 
   it("keeps every illustrative recipe out of the executable Collector registry", () => {
