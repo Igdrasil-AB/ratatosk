@@ -86,6 +86,39 @@ describe("DOM document integrity", () => {
     );
   });
 
+  it("carries labelled row metadata alongside a stable DOM document identity", async () => {
+    const url = "https://vendor.example/download?token=opaque";
+    const driver: DomDriver = {
+      run: vi.fn(async () => ({
+        ...domRun([url]),
+        documents: [{
+          url,
+          evidence: [{
+            source: "dom-row" as const,
+            confidence: "high" as const,
+            invoiceNumber: "INV-2026-07",
+            issuedAt: "2026-07-03",
+            total: "129.00",
+            currency: "EUR",
+          }],
+        }],
+      })),
+      download: vi.fn(),
+    };
+
+    const [ref] = (await makeDomStrategy(driver).list(recipe, {}, {} as never)).refs;
+    expect(ref).toMatchObject({
+      documentUrl: url,
+      metadataEvidence: [expect.objectContaining({
+        invoiceNumber: "INV-2026-07",
+        issuedAt: "2026-07-03",
+        total: "129.00",
+        currency: "EUR",
+      })],
+    });
+    expect(ref.vendorInvoiceId).toMatch(/^document-/);
+  });
+
   it("does not collapse distinct opaque token-addressed documents before fetching them", async () => {
     const driver: DomDriver = {
       run: vi.fn(async () => domRun([

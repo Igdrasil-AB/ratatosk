@@ -1,4 +1,5 @@
 import { isExactDocumentProviderOriginPattern } from "./document-provider";
+import { isExactPublicHttpsOriginPattern } from "./origin-policy";
 import type { RetrievalProof } from "./types";
 
 /**
@@ -68,16 +69,23 @@ export class ResponseTooLarge extends CollectorError {
 export class DocumentPermissionRequired extends CollectorError {
   readonly requiredOrigins: readonly string[];
 
-  constructor(readonly provider: "stripe", requiredOrigins: readonly string[], vendorId?: string) {
+  constructor(
+    readonly provider: "stripe" | "semantic_action",
+    requiredOrigins: readonly string[],
+    vendorId?: string,
+  ) {
     super(`${provider} document access requires approval`, vendorId);
     const exact = [...new Set(requiredOrigins)].slice(0, 4);
-    if (!exact.length || exact.some((origin) => !isExactDocumentProviderOriginPattern(origin))) {
+    const valid = provider === "stripe"
+      ? isExactDocumentProviderOriginPattern
+      : isExactPublicHttpsOriginPattern;
+    if (!exact.length || exact.some((origin) => !valid(origin))) {
       throw new Error("invalid document provider permission requirement");
     }
     this.requiredOrigins = exact;
   }
 
-  toJSON(): { name: string; provider: "stripe"; requiredOrigins: readonly string[] } {
+  toJSON(): { name: string; provider: "stripe" | "semantic_action"; requiredOrigins: readonly string[] } {
     return { name: this.name, provider: this.provider, requiredOrigins: this.requiredOrigins };
   }
 }
@@ -97,6 +105,10 @@ export class SchemaError extends CollectorError {}
 
 /** A DOM selector matched nothing — the recipe's DOM steps need updating. */
 export class SelectorMiss extends CollectorError {}
+
+/** A verified semantic invoice control was found, but its browser action could
+ * not complete. This is distinct from a selector drift failure. */
+export class DomActionFailed extends CollectorError {}
 
 /** A path yielded evidence but hit a traversal/action/document cap or left
  * observed items unresolved. Candidate verification should try another path. */
@@ -137,6 +149,7 @@ export const COLLECTION_FAILURE_CAUSES = [
   "transport_failed",
   "rate_limited",
   "selector_miss",
+  "action_failed",
   "unexpected_response",
   "schema_invalid",
   "template_invalid",
@@ -193,6 +206,7 @@ export function collectionFailureEvidence(
     cause = error.kind === "blocked_or_challenged" ? "auth_blocked" : error.kind;
   } else if (error instanceof RateLimited) cause = "rate_limited";
   else if (error instanceof SelectorMiss) cause = "selector_miss";
+  else if (error instanceof DomActionFailed) cause = "action_failed";
   else if (error instanceof UnexpectedResponse) {
     cause = "unexpected_response";
     if (Number.isInteger(error.status) && error.status >= 0 && error.status <= 599) httpStatus = error.status;
@@ -281,7 +295,7 @@ export function operationalOutcomeLabel(code: OperationalOutcomeCode): string {
     case "rate_limited": return "Supplier asked Ratatosk to wait";
     case "recipe_incompatible": return "Supplier integration needs review";
     case "document_invalid": return "Supplier returned an invalid document";
-    case "document_permission_required": return "Stripe document access needs approval";
+    case "document_permission_required": return "Invoice document access needs approval";
     case "retrieval_incomplete": return "Invoice retrieval was incomplete";
     case "destination_unavailable": return "Invoice destination unavailable";
     case "connection_persistence_failed": return "Supplier connection could not be saved";

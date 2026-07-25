@@ -51,13 +51,13 @@ describe("Collector popup layout regressions", () => {
     expect(popupStyles).not.toContain("scrollbar-gutter: stable");
     expect(popupStyles).toContain('.supplier-group summary::marker { content: ""; }');
     expect(popupStyles).toMatch(/\.supplier-updated \{[^}]*text-align:\s*right/s);
-    expect(popupSource).toContain('${esc(amount(entry.total, entry.currency))}');
+    expect(popupSource).toContain("amount(entry.total, entry.currency)");
     expect(popupStyles).toMatch(/\.date-filter-options \{[^}]*right:\s*0/s);
   });
 
   it("keeps vendor utility actions readable in the narrow side panel", () => {
-    expect(popupStyles).toMatch(/\.diagnostic-link \{[^}]*white-space:\s*nowrap/s);
-    expect(popupStyles).toMatch(/\.vendor-links \{[^}]*flex-wrap:\s*wrap/s);
+    expect(popupStyles).toContain(".vendor-menu-items");
+    expect(popupSource).toContain('class="vendor-menu"');
     expect(popupStyles).toMatch(/\.vrow \.vs \{[^}]*white-space:\s*normal/s);
     expect(popupSource).toContain("skipped");
   });
@@ -114,6 +114,8 @@ describe("Collector popup layout regressions", () => {
     expect(popupSource).toContain("Math.min(...completeSyncs)");
     expect(popupSource).toContain("all synced");
     expect(popupSource).toContain("Need Attention");
+    expect(popupSource).toContain('data-action="open-attention"');
+    expect(popupSource).toContain("sourceNeedsAttention");
   });
 
   it("revokes permission origins belonging only to losing discovery candidates", () => {
@@ -142,5 +144,26 @@ describe("Collector popup layout regressions", () => {
     expect(popupStyles).toMatch(/\.discovery-failed \.discovery-actions \{[^}]*grid-column:\s*2/s);
     expect(popupStyles).toMatch(/\.discovery-failed \.discovery-actions \{[^}]*flex-direction:\s*row/s);
     expect(popupStyles).toContain("prefers-reduced-motion: reduce");
+    expect(popupSource).toContain('data-action="retry-discovery"');
+    expect(popupSource).toContain("may not include billing access");
+  });
+
+  it("keeps invoice metadata truthful and collection controls available with history", () => {
+    expect(popupSource).toContain("entry.invoiceNumber");
+    expect(popupSource).toContain("entry.filename");
+    expect(popupSource).toContain('aria-label="Invoice date unavailable"');
+    expect(popupSource).toContain('aria-label="Invoice amount unavailable"');
+    expect(popupSource).toContain('data-action="sync-all">Collect All');
+  });
+
+  it("closes the date menu with Escape or an outside click and clears stale toast text", () => {
+    expect(popupSource).toContain("closeDateFilter(true)");
+    expect(popupSource).toContain('document.addEventListener("pointerdown"');
+    expect(popupSource).toContain('toastEl.textContent = ""');
+  });
+
+  it("shows the next scheduled run and uses the listed supplier's real action", () => {
+    expect(popupSource).toContain("Next check ${relTime(state.schedule.nextRunAt)}");
+    expect(popupSource).toContain('${connected ? "Sync Now" : "Connect"}');
   });
 });

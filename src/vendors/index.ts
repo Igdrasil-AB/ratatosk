@@ -9,8 +9,6 @@
  */
 import type { VendorRecipe } from "../core/types";
 
-import anthropic from "./anthropic";
-import chatgpt from "./chatgpt";
 import github from "./github";
 import railway from "./railway";
 import slack from "./slack";
@@ -24,7 +22,7 @@ import { isLifecycleRunnable, VENDOR_LIFECYCLE_BY_ID } from "./lifecycle";
  * belong here. Illustrative recipes stay available to contributors, but cannot
  * appear as working integrations in the consumer extension.
  */
-export const VENDORS: readonly VendorRecipe[] = Object.freeze([anthropic, chatgpt, railway]);
+export const VENDORS: readonly VendorRecipe[] = Object.freeze([railway]);
 
 /** Recipes retained as authoring examples; never shipped by Collector. */
 export const EXPERIMENTAL_VENDORS: readonly VendorRecipe[] = Object.freeze([github, slack, vercel]);

@@ -1325,9 +1325,7 @@ function canonicalPageUrl(value: string, expectedOrigin: string): string | undef
     if (url.protocol !== "https:" || url.origin !== expectedOrigin || url.username || url.password || url.pathname.length > 320) return undefined;
     const exploration = safeExplorationUrl(url.toString(), expectedOrigin);
     if (exploration) return exploration;
-    url.search = "";
-    url.hash = "";
-    return url.toString();
+    return safeEntryUrl(url.toString());
   } catch {
     return undefined;
   }
@@ -1582,7 +1580,7 @@ function directDomRecipe(origin: string, entryUrl: string, displayName: string, 
       fetchContext: "page",
       notes: "Locally discovered candidate.",
       auth: {
-        check: { request: { url: entryUrl }, expect: { statusIn: [200] } },
+        check: { request: { url: authProbeUrl(entryUrl) }, expect: { statusIn: [200] } },
         loginUrl: origin,
       },
       invoices: {
@@ -1631,19 +1629,19 @@ function semanticDomRecipe(
       fetchContext: "page",
       notes: "Locally discovered semantic download candidate.",
       auth: {
-        check: { request: { url: entryUrl }, expect: { statusIn: [200] } },
+        check: { request: { url: authProbeUrl(entryUrl) }, expect: { statusIn: [200] } },
         loginUrl: origin,
       },
       invoices: {
         strategy: "dom",
         list: {
           open: entryUrl,
-          steps: [{ action: "extractSemanticDownloads", as: "documents", maxActions: 8 }],
+          steps: [{ action: "extractSemanticDownloads", as: "documents", maxActions: 12 }],
           continuation: {
             mode: "auto",
-            maxActions: 8,
+            maxActions: 12,
             maxDocuments: 100,
-            timeoutMs: 30_000,
+            timeoutMs: 60_000,
             allowScroll: true,
           },
           hrefsFrom: "documents",
@@ -1654,6 +1652,12 @@ function semanticDomRecipe(
   } catch {
     return undefined;
   }
+}
+
+function authProbeUrl(entryUrl: string): string {
+  const url = new URL(entryUrl);
+  url.hash = "";
+  return url.toString();
 }
 
 function normalizedDocumentUrl(url: URL): URL {

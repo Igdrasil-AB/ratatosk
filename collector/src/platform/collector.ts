@@ -147,9 +147,14 @@ async function executeRecipeRun(
             key: doc.idempotencyKey,
             vendorId: doc.vendorId,
             vendorName: doc.vendorName,
+            vendorInvoiceId: doc.vendorInvoiceId,
+            invoiceNumber: doc.invoiceNumber,
             issuedAt: doc.issuedAt || undefined,
             total: doc.total,
             currency: doc.currency,
+            filename: doc.filename,
+            metadataEvidence: doc.metadataEvidence,
+            metadataConflicts: doc.metadataConflicts,
             collectedAt,
           },
         ]);
@@ -378,6 +383,11 @@ export async function runAllConnected(): Promise<VendorRunSummary[]> {
   const summaries: VendorRunSummary[] = [];
   for (const id of ids) {
     try {
+      // Connections from retired bundled recipes can remain in older local
+      // storage after an extension update. They are intentionally inert:
+      // scheduled sync must not resurrect or execute a path that is no longer
+      // present in the current source catalog.
+      if (!(await resolveCollectorSource(id))) continue;
       summaries.push(await runVendorById(id));
     } catch (error) {
       const code = operationalCodeForError(error);

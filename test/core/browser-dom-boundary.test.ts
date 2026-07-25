@@ -11,9 +11,11 @@ import {
   runDomStepsInPage,
 } from "../../collector/src/platform/browser-dom-driver";
 import { DISCOVERY_DOM_POLICY } from "../../collector/src/platform/discovery-dom-policy";
+import { DocumentPermissionRequired } from "../../src/core/errors";
 
 const driverSource = readFileSync("collector/src/platform/browser-dom-driver.ts", "utf8");
 const discoverySource = readFileSync("collector/src/platform/discovery.ts", "utf8");
+const observerSource = readFileSync("collector/src/platform/discovery-page-observer.ts", "utf8");
 const policySource = readFileSync("collector/src/platform/discovery-dom-policy.ts", "utf8");
 const pageRetrieval = { observedItems: 1, resolvedItems: 1, unresolvedItems: 0 };
 
@@ -41,6 +43,58 @@ describe("browser DOM boundary", () => {
       collected: { documents: Array.from({ length: 501 }, (_, index) => `https://vendor.example/${index}.pdf`) },
       retrieval: pageRetrieval,
     }, origins)).toThrow(/DOM result/);
+  });
+
+  it("admits bounded metadata only when it belongs to a collected document URL", () => {
+    expect(parseDomRunResult({
+      ok: true,
+      collected: { documents: ["https://documents.example/invoice.pdf"] },
+      documents: [{
+        url: "https://documents.example/invoice.pdf",
+        evidence: [{
+          source: "dom-row",
+          confidence: "high",
+          invoiceNumber: "INV-4",
+          issuedAt: "2026-07-04",
+          total: "49.00",
+          currency: "EUR",
+        }],
+      }, {
+        url: "https://documents.example/not-collected.pdf",
+        evidence: [{ source: "dom-row", confidence: "high", invoiceNumber: "wrong" }],
+      }],
+      retrieval: pageRetrieval,
+    }, origins)).toMatchObject({
+      documents: [{
+        url: "https://documents.example/invoice.pdf",
+        evidence: [expect.objectContaining({ invoiceNumber: "INV-4" })],
+      }],
+    });
+  });
+
+  it("turns action-produced foreign document URLs into exact permission requirements", () => {
+    let error: unknown;
+    try {
+      parseDomRunResult({
+        ok: true,
+        collected: {
+          documents: [
+            "https://assets.withorb.com/invoices/one?signature=secret-one",
+            "https://assets.withorb.com/invoices/two?signature=secret-two",
+          ],
+        },
+        retrieval: { observedItems: 2, resolvedItems: 2, unresolvedItems: 0 },
+      }, origins, true);
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(DocumentPermissionRequired);
+    expect((error as DocumentPermissionRequired).provider).toBe("semantic_action");
+    expect((error as DocumentPermissionRequired).requiredOrigins).toEqual([
+      "https://assets.withorb.com/*",
+    ]);
+    expect(JSON.stringify(error)).not.toContain("signature");
   });
 
   it("accepts a bounded PDF captured from a session-authenticated blob response", () => {
@@ -91,14 +145,85 @@ describe("browser DOM boundary", () => {
     )).toBe(true);
   });
 
+  it("starts the semantic action budget after the temporary supplier tab is ready", async () => {
+    let now = 1_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    let execution = 0;
+    const create = vi.fn(async (properties: chrome.tabs.CreateProperties) => ({
+      id: 42,
+      windowId: 7,
+      url: properties.url,
+      status: "complete" as const,
+    }));
+    const update = vi.fn(async (tabId: number, properties: chrome.tabs.UpdateProperties) => {
+      if (properties.url) {
+        // Loading the foreground SPA consumes nearly the full navigation
+        // budget, but must not consume the later semantic action budget.
+        now += 29_999;
+      }
+      return { id: tabId, windowId: 7, url: properties.url, status: "complete" as const };
+    });
+    const executeScript = vi.fn(async () => {
+      execution += 1;
+      if (execution === 1) {
+        return [{ result: {
+          ok: true,
+          collected: { documents: ["https://documents.example/invoices/one.pdf"] },
+          retrieval: { observedItems: 1, resolvedItems: 1, unresolvedItems: 0 },
+        } }];
+      }
+      return [{ result: { kind: "exhausted" } }];
+    });
+    vi.stubGlobal("chrome", {
+      tabs: {
+        create,
+        get: vi.fn(async () => ({
+          id: 42,
+          windowId: 7,
+          url: "https://vendor.example/billing",
+          status: "complete",
+        })),
+        query: vi.fn(async () => [{ id: 11, windowId: 7, active: true, status: "complete" }]),
+        update,
+        remove: vi.fn(async () => undefined),
+        onUpdated: new TestChromeEvent<Record<string, unknown>>(),
+      },
+      scripting: { executeScript },
+    });
+
+    try {
+      const result = await new BrowserDomDriver(domRecipe()).run(
+        "https://vendor.example/billing",
+        [{ action: "extractSemanticDownloads", as: "documents", maxActions: 8 }],
+        { mode: "auto", maxActions: 8, maxDocuments: 100, timeoutMs: 30_000, allowScroll: true },
+      );
+
+      expect(result.collected.documents).toEqual([
+        "https://documents.example/invoices/one.pdf",
+      ]);
+      expect(create).toHaveBeenCalledWith({ url: "about:blank", active: false });
+      expect(update).toHaveBeenNthCalledWith(1, 42, { active: true });
+      expect(update).toHaveBeenNthCalledWith(2, 42, {
+        url: "https://vendor.example/billing",
+        active: true,
+      });
+      expect(executeScript).toHaveBeenCalled();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it("keeps a semantic verification tab visible and restores the previous tab", async () => {
     let activeTabId = 11;
+    let currentUrl = "about:blank";
     const update = vi.fn(async (tabId: number, properties: chrome.tabs.UpdateProperties) => {
       if (properties.active) activeTabId = tabId;
-      return { id: tabId, windowId: 7, status: "complete" } as chrome.tabs.Tab;
+      if (properties.url) currentUrl = properties.url;
+      return { id: tabId, windowId: 7, url: currentUrl, status: "complete" } as chrome.tabs.Tab;
     });
     const executeScript = vi.fn(async () => {
       expect(activeTabId).toBe(42);
+      expect(currentUrl).toBe("https://vendor.example/billing");
       return [{ result: {
         ok: true,
         collected: { documents: [] },
@@ -107,8 +232,13 @@ describe("browser DOM boundary", () => {
     });
     vi.stubGlobal("chrome", {
       tabs: {
-        create: vi.fn(async () => ({ id: 42, windowId: 7, status: "complete" })),
-        get: vi.fn(async () => ({ id: 42, windowId: 7, status: "complete" })),
+        create: vi.fn(async () => ({ id: 42, windowId: 7, url: "about:blank", status: "complete" })),
+        get: vi.fn(async () => ({
+          id: 42,
+          windowId: 7,
+          url: currentUrl,
+          status: "complete",
+        })),
         query: vi.fn(async () => [{ id: activeTabId, windowId: 7, status: "complete" }]),
         update,
         remove: vi.fn(async () => undefined),
@@ -123,8 +253,130 @@ describe("browser DOM boundary", () => {
     ]);
 
     expect(update).toHaveBeenNthCalledWith(1, 42, { active: true });
-    expect(update).toHaveBeenNthCalledWith(2, 11, { active: true });
+    expect(update).toHaveBeenNthCalledWith(2, 42, {
+      url: "https://vendor.example/billing",
+      active: true,
+    });
+    expect(update).toHaveBeenNthCalledWith(3, 11, { active: true });
     expect(activeTabId).toBe(11);
+  });
+
+  it("waits for the supplier URL to commit instead of trusting the about:blank status", async () => {
+    const onUpdated = new TestChromeEvent<unknown>();
+    let committed = false;
+    const executeScript = vi.fn(async () => {
+      expect(committed).toBe(true);
+      return [{ result: {
+        ok: true,
+        collected: { documents: [] },
+        retrieval: { observedItems: 0, resolvedItems: 0, unresolvedItems: 0 },
+      } }];
+    });
+    vi.stubGlobal("chrome", {
+      tabs: {
+        create: vi.fn(async () => ({
+          id: 42,
+          windowId: 7,
+          url: "about:blank",
+          status: "complete",
+        })),
+        get: vi.fn(async () => ({
+          id: 42,
+          windowId: 7,
+          url: committed ? "https://vendor.example/billing" : "about:blank",
+          status: "complete",
+        })),
+        query: vi.fn(async () => [{ id: 11, windowId: 7, active: true, status: "complete" }]),
+        update: vi.fn(async (tabId: number, properties: chrome.tabs.UpdateProperties) => {
+          if (properties.url) {
+            setTimeout(() => {
+              committed = true;
+              onUpdated.emit(tabId, {
+                status: "complete",
+                url: "https://vendor.example/billing",
+              });
+            }, 0);
+            // Chrome may briefly report the pre-navigation document here.
+            return { id: tabId, windowId: 7, url: "about:blank", status: "complete" };
+          }
+          return { id: tabId, windowId: 7, url: "about:blank", status: "complete" };
+        }),
+        remove: vi.fn(async () => undefined),
+        onUpdated,
+      },
+      scripting: { executeScript },
+    });
+
+    await new BrowserDomDriver(domRecipe()).run(
+      "https://vendor.example/billing",
+      [{ action: "extractSemanticDownloads", as: "documents", maxActions: 8 }],
+    );
+
+    expect(executeScript).toHaveBeenCalledOnce();
+  });
+
+  it("recovers a browser-observed document when navigation destroys the injected action context", async () => {
+    const beforeRequest = new TestChromeEvent<Record<string, unknown>>();
+    const headersReceived = new TestChromeEvent<Record<string, unknown>>();
+    const beforeRedirect = new TestChromeEvent<Record<string, unknown>>();
+    const downloadCreated = new TestChromeEvent<Record<string, unknown>>();
+    let execution = 0;
+    vi.stubGlobal("chrome", {
+      tabs: {
+        create: vi.fn(async () => ({ id: 42, windowId: 7, status: "complete" })),
+        get: vi.fn(async () => ({
+          id: 42,
+          windowId: 7,
+          url: "https://vendor.example/billing",
+          status: "complete",
+        })),
+        query: vi.fn(async () => [{ id: 11, windowId: 7, active: true, status: "complete" }]),
+        update: vi.fn(async (tabId: number) => ({ id: tabId, windowId: 7, status: "complete" })),
+        remove: vi.fn(async () => undefined),
+        onUpdated: new TestChromeEvent<Record<string, unknown>>(),
+      },
+      scripting: {
+        registerContentScripts: vi.fn(async () => undefined),
+        unregisterContentScripts: vi.fn(async () => undefined),
+        executeScript: vi.fn(async () => {
+          execution += 1;
+          if (execution === 1) {
+            beforeRequest.emit({
+              tabId: 42,
+              url: "https://documents.example/invoices/123.pdf",
+              method: "GET",
+            });
+            headersReceived.emit({
+              tabId: 42,
+              url: "https://documents.example/invoices/123.pdf",
+              method: "GET",
+              responseHeaders: [{ name: "Content-Type", value: "application/pdf" }],
+            });
+            throw new Error("execution context was destroyed");
+          }
+          return [];
+        }),
+      },
+      webRequest: {
+        onBeforeRequest: beforeRequest,
+        onHeadersReceived: headersReceived,
+        onBeforeRedirect: beforeRedirect,
+      },
+      downloads: { onCreated: downloadCreated },
+    });
+
+    const driver = new BrowserDomDriver(domRecipe());
+    const result = await driver.run("https://vendor.example/billing", [
+      { action: "extractSemanticDownloads", as: "documents", maxActions: 8 },
+    ]);
+
+    expect(result.collected.documents).toEqual(["https://documents.example/invoices/123.pdf"]);
+    expect(result.retrieval).toMatchObject({
+      completeness: "complete",
+      resolvedItems: 1,
+      unresolvedItems: 0,
+    });
+    expect(beforeRequest.listenerCount).toBe(0);
   });
 
   it("enforces one retained inline-PDF budget across page passes", async () => {
@@ -235,6 +487,32 @@ describe("browser DOM boundary", () => {
     vi.useRealTimers();
   });
 
+  it("does not treat a dormant hidden captcha iframe as a supplier challenge", async () => {
+    const hiddenCaptcha = {
+      hidden: false,
+      getAttribute: (name: string) => name === "aria-hidden" ? "true" : null,
+      getBoundingClientRect: () => ({ width: 0, height: 0 }),
+    };
+    vi.stubGlobal("document", {
+      querySelector: vi.fn((selector: string) =>
+        selector.includes("challenge") || selector.includes("captcha") ? hiddenCaptcha : null),
+      querySelectorAll: vi.fn(() => [hiddenCaptcha]),
+    });
+    vi.stubGlobal("getComputedStyle", vi.fn(() => ({
+      display: "none",
+      visibility: "visible",
+      opacity: "1",
+    })));
+    vi.stubGlobal("location", { pathname: "/dashboard/org/example/billing" });
+
+    await expect(runDomStepsInPage([
+      { action: "waitFor", selector: "#invoice-list", timeoutMs: 0 },
+    ], ["https://vendor.example"], DISCOVERY_DOM_POLICY, null)).resolves.toMatchObject({
+      ok: false,
+      code: "selector_miss",
+    });
+  });
+
   it("bounds a stalled page injection by the continuation deadline", async () => {
     vi.useFakeTimers();
     const remove = vi.fn(async () => undefined);
@@ -285,10 +563,19 @@ describe("browser DOM boundary", () => {
     expect(driverSource).toMatch(/if \(form\) \{[\s\S]{0,400}?continue;\n\s+\}/);
   });
 
-  it("keeps mutation guards installed until the disposable action tab closes", () => {
-    expect(driverSource).toContain("Guards intentionally stay installed until the disposable tab closes");
-    expect(driverSource).not.toContain("window.fetch = originalFetch");
-    expect(driverSource).not.toContain("navigator.sendBeacon = originalSendBeacon");
+  it("uses one run-scoped passive observer instead of per-control browser monkeypatches", () => {
+    expect(driverSource).toContain("snapshotDocuments");
+    expect(driverSource).not.toContain("navigator.sendBeacon =");
+    expect(driverSource).not.toContain("HTMLFormElement.prototype.submit =");
+    expect(driverSource).not.toContain("HTMLAnchorElement.prototype.click =");
+    expect(driverSource).not.toContain("new Response(null, { status: 204 })");
+    expect(observerSource).toContain("snapshotDocuments");
+    expect(observerSource).toContain("snapshotActionDocuments");
+    expect(observerSource).toContain("beginDocumentAction");
+    expect(observerSource).toContain("originalWindowOpen");
+    expect(driverSource).toContain("observer?.beginDocumentAction");
+    expect(driverSource).toContain("observer?.endDocumentAction");
+    expect(observerSource).toContain("originalCreateObjectURL");
   });
 
   it("requires generic download controls to sit in invoice-shaped context", () => {
@@ -326,7 +613,7 @@ describe("browser DOM boundary", () => {
 
   it("waits for real download controls instead of treating an invoice section as ready", () => {
     expect(driverSource).toContain("waitForDownloadControls");
-    expect(driverSource).toMatch(/await waitForDownloadControls\(\)[\s\S]{0,160}?availableControls/);
+    expect(driverSource).toMatch(/await waitForDownloadControls\(\)[\s\S]{0,3500}?availableControls/);
     expect(driverSource).toContain("stableControlCountSince");
     expect(discoverySource).toContain("explicitDownloadAction");
     expect(discoverySource).toContain("semanticQuietTimer");
@@ -346,25 +633,31 @@ describe("browser DOM boundary", () => {
 
   it("waits for asynchronous invoice generation instead of using a fixed click delay", () => {
     expect(driverSource).not.toContain("setTimeout(resolve, 600)");
-    expect(driverSource).toContain("values.size > capturedBefore");
+    expect(driverSource).toContain("actionProducedDocument");
+    expect(driverSource).toContain("await snapshotActionDocuments(metadata)");
     expect(driverSource).toContain("semanticCaptureDeadline");
+    expect(observerSource).toMatch(
+      /beginDocumentAction\(\): void \{[\s\S]{0,180}?actionDocuments\.length = 0;[\s\S]{0,120}?actionDocumentKeys\.clear\(\)/,
+    );
   });
 
   it("applies the action cap after excluding view-only invoice controls", () => {
     expect(driverSource).toMatch(/const downloadControls =[\s\S]{0,1600}?return explicit \|\| contextualIcon/);
-    expect(driverSource).toContain("const controls = availableControls.slice");
+    expect(driverSource).toContain("controlFingerprint");
+    expect(driverSource).toMatch(/for \(let actionIndex[\s\S]{0,500}?downloadControls\(\)/);
   });
 
   it("captures invoice-shaped blob XHRs even without a PDF content type", () => {
-    expect(driverSource).toContain('this.responseType === "blob"');
-    expect(driverSource).toContain("invoice|receipt|statement");
-    expect(driverSource).toContain("readAsDataURL");
-    expect(driverSource).toContain("MAX_INLINE_PDF_BYTES");
+    expect(observerSource).toContain("this.response instanceof Blob");
+    expect(observerSource).toContain("DOCUMENT_HINT");
+    expect(observerSource).toContain("captureDocumentBlob");
+    expect(observerSource).toContain("MAX_INLINE_PDF_BYTES");
   });
 
   it("captures click-generated PDF blob anchors instead of discarding their URLs", () => {
     expect(driverSource).toContain('target.protocol === "blob:"');
-    expect(driverSource).toMatch(/originalFetch\(target\.toString\(\)\)[\s\S]{0,180}?capturePdfBlob/);
+    expect(driverSource).toMatch(/window\.fetch\(target\.toString\(\)\)[\s\S]{0,180}?capturePdfBlob/);
+    expect(observerSource).toContain("wrappedCreateObjectURL");
   });
 
   it("materializes a direct blob-backed anchor before treating it as a URL", () => {
@@ -379,16 +672,11 @@ describe("browser DOM boundary", () => {
     );
   });
 
-  it("suppresses mutation-shaped side requests without aborting the download handler", () => {
-    expect(driverSource).not.toContain(
-      'if (method !== "GET") throw new DOMException("Mutation blocked during invoice download discovery", "NotAllowedError")',
-    );
-    expect(driverSource).not.toMatch(
-      /if \(!request \|\| request\.method !== "GET"\) \{\s*throw new DOMException\("Mutation blocked during invoice download discovery"/,
-    );
-    expect(driverSource).toContain('if (method !== "GET") return new Response(null, { status: 204 })');
-    expect(driverSource).toContain('this.dispatchEvent(new ProgressEvent("load"))');
-    expect(driverSource).toContain('this.dispatchEvent(new ProgressEvent("loadend"))');
+  it("allows a verified download handler to mint its document without faking request outcomes", () => {
+    expect(driverSource).not.toContain('if (method !== "GET") return new Response(null, { status: 204 })');
+    expect(driverSource).not.toContain('this.dispatchEvent(new ProgressEvent("load"))');
+    expect(driverSource).not.toContain('this.dispatchEvent(new ProgressEvent("loadend"))');
+    expect(driverSource).toContain("control.click()");
   });
 });
 
@@ -398,7 +686,7 @@ function domRecipe() {
     name: "DOM Test",
     homepage: "https://vendor.example",
     category: "test",
-    hosts: ["https://vendor.example/*"],
+    hosts: ["https://vendor.example/*", "https://documents.example/*"],
     auth: { check: { request: { url: "https://vendor.example/me" }, expect: { statusIn: [200] } }, loginUrl: "https://vendor.example/login" },
     invoices: {
       strategy: "dom" as const,
@@ -421,4 +709,24 @@ function stubDomRun(inlinePdf: string): void {
       } }]),
     },
   });
+}
+
+class TestChromeEvent<T> {
+  private readonly listeners = new Set<(...args: T[]) => void>();
+
+  get listenerCount(): number {
+    return this.listeners.size;
+  }
+
+  addListener(listener: (...args: T[]) => void): void {
+    this.listeners.add(listener);
+  }
+
+  removeListener(listener: (...args: T[]) => void): void {
+    this.listeners.delete(listener);
+  }
+
+  emit(...args: T[]): void {
+    for (const listener of this.listeners) listener(...args);
+  }
 }

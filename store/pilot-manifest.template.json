@@ -4,7 +4,7 @@
   "collectorVersion": "0.7.0",
   "collectorSha256": "0000000000000000000000000000000000000000000000000000000000000000",
   "commitSha": "0000000000000000000000000000000000000000",
-  "supplierIds": ["anthropic", "chatgpt", "railway"],
+  "supplierIds": ["railway"],
   "regions": ["SE"],
   "cohortSizeTarget": { "min": 5, "max": 10 },
   "supportOwner": "integrations",

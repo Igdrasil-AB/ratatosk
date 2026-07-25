@@ -13,6 +13,9 @@ import { VENDORS } from "../../src/vendors";
 import { recipeAllowsUrl } from "../../collector/src/platform/runtime";
 
 const pageFetcherSource = readFileSync("collector/src/platform/page-fetch.ts", "utf8");
+const publicRecipe = VENDORS[0];
+const publicPrimaryOrigin = new URL(publicRecipe.homepage).origin;
+const publicPrimaryRequest = `${publicPrimaryOrigin}/api/organizations`;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -58,7 +61,7 @@ describe("page-fetch origin routing", () => {
   });
 
   it("rejects dynamic document URLs outside the recipe permission set", async () => {
-    const fetcher = new PageFetcher(VENDORS[0]);
+    const fetcher = new PageFetcher(publicRecipe);
     await expect(fetcher.fetch({ url: "https://attacker.example/invoice.pdf" }, {})).rejects.toThrow(
       /outside the supplier permission set/,
     );
@@ -80,14 +83,14 @@ describe("page-fetch origin routing", () => {
           ok: true,
           status: 200,
           contentType: "application/json",
-          finalUrl: "https://claude.ai/api/organizations",
+          finalUrl: publicPrimaryRequest,
           redirected: false,
           base64: "e30=",
         } }]),
       },
     });
-    const fetcher = new PageFetcher(VENDORS[0]);
-    const request = { url: "https://claude.ai/api/organizations" };
+    const fetcher = new PageFetcher(publicRecipe);
+    const request = { url: publicPrimaryRequest };
 
     await Promise.all([fetcher.fetch(request, {}), fetcher.fetch(request, {})]);
     expect(create).toHaveBeenCalledTimes(1);
@@ -110,8 +113,8 @@ describe("page-fetch origin routing", () => {
       },
       scripting: { executeScript: vi.fn() },
     });
-    const fetcher = new PageFetcher(VENDORS[0]);
-    const request = fetcher.fetch({ url: "https://claude.ai/api/organizations" }, {});
+    const fetcher = new PageFetcher(publicRecipe);
+    const request = fetcher.fetch({ url: publicPrimaryRequest }, {});
     const rejection = expect(request).rejects.toThrow(/page fetch failed during tab/);
 
     await vi.runAllTimersAsync();
@@ -124,8 +127,8 @@ describe("page-fetch origin routing", () => {
   });
 
   it("applies the same exact-origin boundary to worker recipes", () => {
-    expect(recipeAllowsUrl(VENDORS[0], "https://claude.ai/api/invoices")).toBe(true);
-    expect(recipeAllowsUrl(VENDORS[0], "https://attacker.example/invoice.pdf")).toBe(false);
+    expect(recipeAllowsUrl(publicRecipe, `${publicPrimaryOrigin}/api/invoices`)).toBe(true);
+    expect(recipeAllowsUrl(publicRecipe, "https://attacker.example/invoice.pdf")).toBe(false);
   });
 
   it("prefers the exact supplier page over another same-origin tab", () => {

@@ -1,7 +1,24 @@
-import type { DomContinuationSpec, DomStep, VendorRecipe } from "../../../src/core/types";
-import type { DomDriver, DomDriverRunResult } from "../../../src/core/strategies/dom";
-import { AuthExpired, AuthFailure, SelectorMiss, UnexpectedResponse } from "../../../src/core/errors";
+import type {
+  DomContinuationSpec,
+  DomStep,
+  InvoiceMetadataEvidence,
+  VendorRecipe,
+} from "../../../src/core/types";
+import type {
+  DomDocumentObservation,
+  DomDriver,
+  DomDriverRunResult,
+} from "../../../src/core/strategies/dom";
+import {
+  AuthExpired,
+  AuthFailure,
+  DocumentPermissionRequired,
+  DomActionFailed,
+  SelectorMiss,
+  UnexpectedResponse,
+} from "../../../src/core/errors";
 import { readDocumentBytes } from "../../../src/core/document-size";
+import { exactPublicHttpsOriginPattern } from "../../../src/core/origin-policy";
 import { PageFetcher } from "./page-fetch";
 import { createRetrievalProof } from "../../../src/core/retrieval";
 import {
@@ -14,11 +31,19 @@ import {
   isSafeSemanticInvoiceSection,
 } from "./discovery-dom-policy";
 import { acquireForegroundTabVisibility, type ReleaseForegroundTab } from "./tab-visibility";
+import discoveryPageObserverScript from "./discovery-page-observer?script&iife";
+import { SemanticActionObserver } from "./semantic-action-observer";
 
-type DomRunErrorCode = "auth_expired" | "blocked_or_challenged" | "selector_miss";
+type DomRunErrorCode = "auth_expired" | "blocked_or_challenged" | "selector_miss" | "action_failed";
 type DomPageRetrievalEvidence = { observedItems: number; resolvedItems: number; unresolvedItems: number };
 type PageDomRunResult =
-  | { ok: true; collected: Record<string, string[]>; retrieval: DomPageRetrievalEvidence; timedOut?: boolean }
+  | {
+      ok: true;
+      collected: Record<string, string[]>;
+      documents?: DomDocumentObservation[];
+      retrieval: DomPageRetrievalEvidence;
+      timedOut?: boolean;
+    }
   | { ok: false; code: DomRunErrorCode; error: string };
 type DomAdvanceResult =
   | { kind: "navigate"; url: string }
@@ -59,16 +84,67 @@ export class BrowserDomDriver implements DomDriver {
     const page = new URL(url);
     const usesSemanticActions = steps.some((step) => step.action === "extractSemanticDownloads");
     const policy = continuation ? normalizeDomContinuation(continuation) : undefined;
-    const startedAt = Date.now();
-    const runDeadline = policy ? startedAt + policy.timeoutMs : null;
-    const { tabId, created } = await ensureExactTab(
-      page,
-      requiresDisposableDomTab(steps, continuation),
-      runDeadline,
-    );
+    const pageObserver = usesSemanticActions ? new SemanticPageObserverRegistration(page.origin) : undefined;
+    await pageObserver?.start();
+    let exactTab: { tabId: number; created: boolean } | undefined;
+    let releaseForegroundTab: ReleaseForegroundTab = async () => undefined;
+    try {
+      if (usesSemanticActions) {
+        // Some browser applications defer or omit their billing UI when the
+        // initial navigation happens in a background tab. Create a harmless
+        // shell first, foreground it, and only then navigate to the supplier.
+        // The document-start observer is already registered for that later
+        // navigation.
+        const shellDeadline = Date.now() + 20_000;
+        const shell = await withinRunDeadline(
+          chrome.tabs.create({ url: "about:blank", active: false }),
+          shellDeadline,
+        );
+        if (shell.id == null) throw new Error("could not open the supplier billing page");
+        exactTab = { tabId: shell.id, created: true };
+        releaseForegroundTab = await acquireForegroundTabVisibility(shell.id);
+
+        // Navigation and action execution are independently bounded. Slow SPA
+        // startup must not consume the semantic-control budget.
+        const navigationDeadline = Date.now() + Math.max(20_000, policy?.timeoutMs ?? 0);
+        await withinRunDeadline(
+          chrome.tabs.update(shell.id, { url: page.toString(), active: true }),
+          navigationDeadline,
+        );
+        // tabs.update can briefly return the completed about:blank document
+        // even though the requested navigation has only just started. Require
+        // the exact supplier URL to commit before injecting any action code.
+        await waitForExactTabComplete(
+          shell.id,
+          page.toString(),
+          remainingRunMs(navigationDeadline),
+        );
+      } else {
+        const navigationDeadline = Date.now() + Math.max(20_000, policy?.timeoutMs ?? 0);
+        exactTab = await ensureExactTab(
+          page,
+          requiresDisposableDomTab(steps, continuation),
+          navigationDeadline,
+        );
+      }
+    } catch (error) {
+      await releaseForegroundTab();
+      await pageObserver?.dispose(exactTab?.tabId);
+      if (exactTab?.created) await chrome.tabs.remove(exactTab.tabId).catch(() => undefined);
+      throw error;
+    }
+    if (!exactTab) throw new Error("could not open the supplier billing page");
+    const { tabId, created } = exactTab;
+    const actionObserver = usesSemanticActions ? new SemanticActionObserver(this.allowedOrigins) : undefined;
+    actionObserver?.start(tabId);
     const aggregate: Record<string, Set<string>> = {};
+    const documentEvidence = new Map<string, InvoiceMetadataEvidence[]>();
     const documentStep = steps.find((step) =>
       (step.action === "extractAll" && step.attr === "href") || step.action === "extractSemanticDownloads");
+    const documentKey = documentStep?.action === "extractAll" || documentStep?.action === "extractSemanticDownloads"
+      ? documentStep.as
+      : undefined;
+    if (documentKey) aggregate[documentKey] = new Set<string>();
     const documentSelector = documentStep?.action === "extractAll"
       ? documentStep.selector
       : 'a[href],a:not([href]),button,[role="button"],[role="menuitem"],input[type="button"],input[type="submit"],[data-href],[data-url]';
@@ -78,15 +154,11 @@ export class BrowserDomDriver implements DomDriver {
     let resolvedItems = 0;
     let unresolvedItems = 0;
     let termination: "explicit_end" | "continuation_failed" | "repeated_state" | "action_cap" | "document_cap" | "time_cap" = "explicit_end";
-    let releaseForegroundTab: ReleaseForegroundTab = async () => undefined;
+    let startedAt = Date.now();
+    let runDeadline: number | null = null;
     try {
-      if (usesSemanticActions) {
-        try {
-          releaseForegroundTab = await acquireForegroundTabVisibility(tabId);
-        } catch {
-          console.warn("[collector] semantic action visibility unavailable; continuing in the disposable tab");
-        }
-      }
+      startedAt = Date.now();
+      runDeadline = policy ? startedAt + policy.timeoutMs : null;
       for (let action = 0; ; action += 1) {
         if (runDeadline !== null && Date.now() >= runDeadline) {
           termination = "time_cap";
@@ -94,19 +166,41 @@ export class BrowserDomDriver implements DomDriver {
         }
         pagesVisited += 1;
         let injection: chrome.scripting.InjectionResult<PageDomRunResult> | undefined;
+        let result: PageDomRunResult;
         try {
+          // Let the injected page return its completed structural proof before
+          // the service-worker watchdog rejects the executeScript promise.
+          const pageRunDeadline = runDeadline === null ? null : Math.max(Date.now(), runDeadline - 750);
           [injection] = await withinRunDeadline(chrome.scripting.executeScript({
             target: { tabId },
             world: usesSemanticActions ? "MAIN" : "ISOLATED",
             func: runDomStepsInPage,
-            args: [steps, [...this.allowedOrigins], DISCOVERY_DOM_POLICY, runDeadline],
+            args: [steps, [...this.allowedOrigins], DISCOVERY_DOM_POLICY, pageRunDeadline],
           }), runDeadline);
+          result = parseDomRunResult(injection?.result, this.allowedOrigins, usesSemanticActions);
         } catch (error) {
-          if (!(error instanceof DomRunDeadlineExceeded)) throw error;
-          termination = "time_cap";
-          break;
+          if (error instanceof DomRunDeadlineExceeded) {
+            termination = "time_cap";
+            break;
+          }
+          if (error instanceof DocumentPermissionRequired) throw error;
+          const observed = actionObserver?.snapshotDocuments() ?? [];
+          if (!documentKey || observed.length === 0) throw error;
+          // A real browser download or top-level navigation can destroy the
+          // injected execution context after the click. Browser-owned evidence
+          // is sufficient to recover the bounded result without misclassifying
+          // the control as a selector failure.
+          result = {
+            ok: true,
+            collected: { [documentKey]: observed },
+            documents: actionObserver?.snapshotDocumentObservations(),
+            retrieval: {
+              observedItems: observed.length,
+              resolvedItems: observed.length,
+              unresolvedItems: 0,
+            },
+          };
         }
-        const result = parseDomRunResult(injection?.result, this.allowedOrigins);
         if (!result.ok) throwDomRunError(result.code, this.recipe.id);
         observedItems += result.retrieval.observedItems;
         resolvedItems += result.retrieval.resolvedItems;
@@ -116,6 +210,17 @@ export class BrowserDomDriver implements DomDriver {
         resolvedItems = Math.max(0, resolvedItems - materialized.rejected);
         unresolvedItems += materialized.rejected;
         mergeCollected(aggregate, materialized.collected, maximumDocuments);
+        mergeDocumentObservations(documentEvidence, result.documents ?? [], maximumDocuments);
+        if (documentKey && actionObserver) {
+          const key = documentKey;
+          const before = aggregate[key]?.size ?? 0;
+          mergeCollected(aggregate, { [key]: actionObserver.snapshotDocuments() }, maximumDocuments);
+          mergeDocumentObservations(documentEvidence, actionObserver.snapshotDocumentObservations(), maximumDocuments);
+          const gained = Math.max(0, (aggregate[key]?.size ?? 0) - before);
+          const resolvedFromObserver = Math.min(gained, unresolvedItems);
+          resolvedItems += resolvedFromObserver;
+          unresolvedItems -= resolvedFromObserver;
+        }
         if (result.timedOut) {
           termination = "time_cap";
           break;
@@ -166,7 +271,7 @@ export class BrowserDomDriver implements DomDriver {
           }
           visited.add(next);
           try {
-            const updated = await withinRunDeadline(chrome.tabs.update(tabId, { url: next, active: false }), runDeadline);
+            const updated = await withinRunDeadline(chrome.tabs.update(tabId, { url: next, active: true }), runDeadline);
             if (updated.status !== "complete") {
               await waitForTabComplete(tabId, Math.min(8_000, remainingRunMs(runDeadline)));
             }
@@ -179,6 +284,7 @@ export class BrowserDomDriver implements DomDriver {
       }
       return {
         collected: Object.fromEntries(Object.entries(aggregate).map(([key, values]) => [key, [...values]])),
+        documents: [...documentEvidence].map(([url, evidence]) => ({ url, evidence })),
         retrieval: createRetrievalProof({
           termination,
           pagesVisited,
@@ -188,7 +294,9 @@ export class BrowserDomDriver implements DomDriver {
         }),
       };
     } finally {
+      actionObserver?.stop();
       await releaseForegroundTab();
+      await pageObserver?.dispose(tabId);
       if (created) await chrome.tabs.remove(tabId).catch(() => undefined);
     }
   }
@@ -198,7 +306,7 @@ export class BrowserDomDriver implements DomDriver {
     const inline = owner?.take(url);
     if (inline) this.inlineDocumentOwners.delete(url);
     if (inline) return { bytes: inline.slice(0), contentType: "application/pdf" };
-    const fetcher = new PageFetcher(this.recipe);
+    const fetcher = new PageFetcher(this.recipe, { semanticActionDocuments: true });
     try {
       const response = await fetcher.fetch({ url }, {});
       if (!response.ok) {
@@ -298,12 +406,16 @@ export class InlineDocumentStore {
   }
 }
 
-export function parseDomRunResult(value: unknown, allowedOrigins: ReadonlySet<string>): PageDomRunResult {
+export function parseDomRunResult(
+  value: unknown,
+  allowedOrigins: ReadonlySet<string>,
+  allowActionDocumentOrigins = false,
+): PageDomRunResult {
   const invalid = (): never => { throw new Error("supplier DOM result is invalid"); };
   if (!value || typeof value !== "object" || Array.isArray(value)) return invalid();
   const raw = value as Record<string, unknown>;
   if (raw.ok === false) {
-    if (!["auth_expired", "blocked_or_challenged", "selector_miss"].includes(String(raw.code))) return invalid();
+    if (!["auth_expired", "blocked_or_challenged", "selector_miss", "action_failed"].includes(String(raw.code))) return invalid();
     return { ok: false, code: raw.code as DomRunErrorCode, error: "supplier page inspection failed" };
   }
   if (
@@ -318,6 +430,7 @@ export function parseDomRunResult(value: unknown, allowedOrigins: ReadonlySet<st
   const entries = Object.entries(raw.collected as Record<string, unknown>);
   if (entries.length > 8) return invalid();
   const collected: Record<string, string[]> = {};
+  const requiredOrigins = new Set<string>();
   let total = 0;
   let inlineBytes = 0;
   for (const [key, item] of entries) {
@@ -337,16 +450,29 @@ export function parseDomRunResult(value: unknown, allowedOrigins: ReadonlySet<st
       if (candidate.length > 2_048) return invalid();
       let url: URL;
       try { url = new URL(candidate); } catch { return invalid(); }
-      if (url.protocol !== "https:" || url.username || url.password || !allowedOrigins.has(url.origin)) return invalid();
+      if (url.protocol !== "https:" || url.username || url.password) return invalid();
+      if (!allowedOrigins.has(url.origin)) {
+        if (!allowActionDocumentOrigins) return invalid();
+        let origin: string;
+        try { origin = exactPublicHttpsOriginPattern(url.origin); } catch { return invalid(); }
+        requiredOrigins.add(origin);
+        if (requiredOrigins.size > 4) return invalid();
+        continue;
+      }
       values.push(url.toString());
       total++;
       if (total > 500) return invalid();
     }
     collected[key] = [...new Set(values)];
   }
+  const documents = parseDocumentObservations(raw.documents, collected, allowedOrigins);
+  if (requiredOrigins.size) {
+    throw new DocumentPermissionRequired("semantic_action", [...requiredOrigins]);
+  }
   return {
     ok: true,
     collected,
+    ...(documents.length ? { documents } : {}),
     ...(raw.timedOut === true ? { timedOut: true } : {}),
     retrieval: {
       observedItems: Number(rawRetrieval.observedItems),
@@ -354,6 +480,54 @@ export function parseDomRunResult(value: unknown, allowedOrigins: ReadonlySet<st
       unresolvedItems: Number(rawRetrieval.unresolvedItems),
     },
   };
+}
+
+function parseDocumentObservations(
+  raw: unknown,
+  collected: Record<string, string[]>,
+  allowedOrigins: ReadonlySet<string>,
+): DomDocumentObservation[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw) || raw.length > 500) throw new Error("supplier DOM result is invalid");
+  const collectedUrls = new Set(Object.values(collected).flat());
+  const result: DomDocumentObservation[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("supplier DOM result is invalid");
+    const observation = item as Record<string, unknown>;
+    if (typeof observation.url !== "string" || !collectedUrls.has(observation.url)) continue;
+    const inline = decodeInlinePdfDataUrl(observation.url);
+    if (!inline) {
+      let url: URL;
+      try { url = new URL(observation.url); } catch { throw new Error("supplier DOM result is invalid"); }
+      if (url.protocol !== "https:" || !allowedOrigins.has(url.origin)) continue;
+    }
+    if (!Array.isArray(observation.evidence) || observation.evidence.length > 8) {
+      throw new Error("supplier DOM result is invalid");
+    }
+    const evidence = observation.evidence.map(parseMetadataEvidence);
+    if (evidence.length) result.push({ url: observation.url, evidence });
+  }
+  return result;
+}
+
+function parseMetadataEvidence(raw: unknown): InvoiceMetadataEvidence {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("supplier DOM result is invalid");
+  const value = raw as Record<string, unknown>;
+  if (
+    !["network", "embedded", "dom-row", "download-filename", "content-disposition", "document-url"].includes(String(value.source)) ||
+    !["high", "medium", "low"].includes(String(value.confidence))
+  ) throw new Error("supplier DOM result is invalid");
+  const result: InvoiceMetadataEvidence = {
+    source: value.source as InvoiceMetadataEvidence["source"],
+    confidence: value.confidence as InvoiceMetadataEvidence["confidence"],
+  };
+  for (const field of ["invoiceNumber", "issuedAt", "total", "currency", "filename"] as const) {
+    const candidate = value[field];
+    if (candidate === undefined) continue;
+    if (typeof candidate !== "string" || candidate.length > 240) throw new Error("supplier DOM result is invalid");
+    result[field] = candidate;
+  }
+  return result;
 }
 
 function boundedDomCount(value: unknown): boolean {
@@ -408,12 +582,14 @@ export async function runDomStepsInPage(
   runDeadline: number | null,
 ): Promise<PageDomRunResult> {
   const collected: Record<string, string[]> = {};
+  const documents: DomDocumentObservation[] = [];
   let observedItems = 0;
   let resolvedItems = 0;
   let unresolvedItems = 0;
   const result = (timedOut = false): PageDomRunResult => ({
     ok: true,
     collected,
+    ...(documents.length ? { documents } : {}),
     retrieval: { observedItems, resolvedItems, unresolvedItems },
     ...(timedOut ? { timedOut: true } : {}),
   });
@@ -455,7 +631,12 @@ export async function runDomStepsInPage(
             if (absolute.hostname === "invoice.stripe.com" && hostedInvoice) {
               absolute = new URL(`https://pay.stripe.com/invoice/${hostedInvoice[1]}/${hostedInvoice[2]}/pdf${absolute.search}`);
             }
-            if (absolute.protocol === "https:") values.add(absolute.toString());
+            if (absolute.protocol === "https:") {
+              const documentUrl = absolute.toString();
+              values.add(documentUrl);
+              const evidence = metadataForElement(element);
+              if (evidence.length) documents.push({ url: documentUrl, evidence });
+            }
           } catch {
             // A malformed page value is simply not a document candidate.
           }
@@ -472,11 +653,14 @@ export async function runDomStepsInPage(
         resolvedItems += semantic.resolvedItems;
         unresolvedItems += semantic.unresolvedItems;
         collected[step.as] = [...new Set([...(collected[step.as] ?? []), ...semantic.values])];
+        documents.push(...semantic.documents);
       }
     }
     return result(runDeadline !== null && Date.now() >= runDeadline);
   } catch {
-    return { ok: false, code: "selector_miss", error: "supplier page could not be inspected safely" };
+    if (looksLoggedOut()) return { ok: false, code: "auth_expired", error: "supplier session is logged out" };
+    if (looksChallenged()) return { ok: false, code: "blocked_or_challenged", error: "supplier challenge blocked invoice downloads" };
+    return { ok: false, code: "action_failed", error: "supplier invoice action failed" };
   }
 
   function looksLoggedOut(): boolean {
@@ -488,11 +672,150 @@ export async function runDomStepsInPage(
   }
 
   function looksChallenged(): boolean {
-    return Boolean(document.querySelector('[id*="challenge" i],[class*="challenge" i],iframe[src*="challenge" i],iframe[src*="captcha" i]'));
+    const candidates = Array.from(document.querySelectorAll(
+      '[id*="challenge" i],[class*="challenge" i],iframe[src*="challenge" i],iframe[src*="captcha" i]',
+    )).slice(0, 20);
+    return candidates.some((candidate) => {
+      const element = candidate as HTMLElement;
+      const style = getComputedStyle(element);
+      const bounds = element.getBoundingClientRect();
+      return !element.hidden &&
+        element.getAttribute("aria-hidden") !== "true" &&
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        style.visibility !== "collapse" &&
+        Number(style.opacity) !== 0 &&
+        bounds.width >= 2 &&
+        bounds.height >= 2;
+    });
+  }
+
+  function metadataForElement(element: Element): InvoiceMetadataEvidence[] {
+    const row = element.closest('tr,[role="row"],li,[role="listitem"],article');
+    if (!row) return [];
+    const table = row.closest('table,[role="table"],[role="grid"]');
+    const cells = Array.from(row.querySelectorAll(
+      ':scope > td,:scope > th,:scope > [role="cell"],:scope > [role="gridcell"],:scope > [role="columnheader"]',
+    ));
+    if (!cells.length) return [];
+    const headers: string[] = [];
+    if (table) {
+      for (const headerRow of Array.from(table.querySelectorAll('thead tr,[role="row"]')).slice(0, 5)) {
+        const found = Array.from(headerRow.querySelectorAll(
+          ':scope > th,:scope > [role="columnheader"]',
+        ));
+        if (found.length >= cells.length) {
+          for (let index = 0; index < cells.length; index += 1) {
+            headers[index] = (found[index]?.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
+          }
+          break;
+        }
+      }
+    }
+    for (let index = 0; index < cells.length; index += 1) {
+      headers[index] ||= (
+        cells[index].getAttribute("aria-label") ||
+        cells[index].getAttribute("data-label") ||
+        cells[index].getAttribute("data-title") ||
+        ""
+      ).replace(/\s+/g, " ").trim().slice(0, 120);
+    }
+    const claim: InvoiceMetadataEvidence = { source: "dom-row", confidence: "high" };
+    for (let index = 0; index < cells.length; index += 1) {
+      const header = headers[index]?.toLowerCase() ?? "";
+      if (!header) continue;
+      const cell = cells[index];
+      const text = (cell.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 240);
+      if (!text) continue;
+      if (
+        !claim.invoiceNumber &&
+        /(?:invoice|receipt|reference|document).*(?:number|no\.?|#|id)|^(?:number|no\.?|invoice|receipt)$/i.test(header)
+      ) {
+        claim.invoiceNumber = text;
+      } else if (
+        !claim.issuedAt &&
+        !/(?:due|paid|period|service|subscription|renew)/i.test(header) &&
+        /(?:invoice|receipt|issue|issued|created)?\s*date/i.test(header)
+      ) {
+        claim.issuedAt = structuredDate(cell, text);
+      } else if (!claim.total && /^(?:total|amount|gross|invoice amount|amount paid|paid)$/i.test(header)) {
+        const parsed = displayedAmount(text);
+        if (parsed) {
+          claim.total = parsed.total;
+          if (parsed.currency) claim.currency = parsed.currency;
+        }
+      } else if (!claim.currency && /^(?:currency|ccy)$/i.test(header)) {
+        const code = text.match(/\b[A-Za-z]{3}\b/)?.[0];
+        if (code) claim.currency = code.toUpperCase();
+      }
+    }
+    return Object.keys(claim).length > 2 ? [claim] : [];
+  }
+
+  function structuredDate(cell: Element, text: string): string | undefined {
+    const raw = cell.querySelector("time[datetime]")?.getAttribute("datetime") || text;
+    const iso = raw.match(/\b(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\b/);
+    if (iso) return validCalendarDate(Number(iso[1]), Number(iso[2]), Number(iso[3]));
+    const dayFirst = raw.match(/\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})\b/);
+    if (dayFirst) {
+      const first = Number(dayFirst[1]);
+      const second = Number(dayFirst[2]);
+      if (first > 12) return validCalendarDate(Number(dayFirst[3]), second, first);
+      if (second > 12) return validCalendarDate(Number(dayFirst[3]), first, second);
+      return undefined;
+    }
+    if (!/[A-Za-z]{3,}/.test(raw)) return undefined;
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) return undefined;
+    return validCalendarDate(parsed.getFullYear(), parsed.getMonth() + 1, parsed.getDate());
+  }
+
+  function validCalendarDate(year: number, month: number, day: number): string | undefined {
+    const date = new Date(Date.UTC(year, month - 1, day));
+    if (
+      year < 2000 || year > 2100 ||
+      date.getUTCFullYear() !== year ||
+      date.getUTCMonth() !== month - 1 ||
+      date.getUTCDate() !== day
+    ) return undefined;
+    return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  }
+
+  function displayedAmount(text: string): { total: string; currency?: string } | undefined {
+    const explicitCode = text.match(/\b[A-Za-z]{3}\b/)?.[0]?.toUpperCase();
+    const symbolCurrency = text.includes("€") ? "EUR" : text.includes("£") ? "GBP" : undefined;
+    const currency = explicitCode && /^[A-Z]{3}$/.test(explicitCode) ? explicitCode : symbolCurrency;
+    let numeric = text
+      .replace(/\b[A-Za-z]{3}\b/g, "")
+      .replace(/[€£$¥]/g, "")
+      .replace(/[\s\u00a0']/g, "")
+      .trim();
+    if (!/^-?[\d.,]+$/.test(numeric)) return undefined;
+    const comma = numeric.lastIndexOf(",");
+    const dot = numeric.lastIndexOf(".");
+    if (comma >= 0 && dot >= 0) {
+      const decimal = comma > dot ? "," : ".";
+      const thousands = decimal === "," ? /\./g : /,/g;
+      numeric = numeric.replace(thousands, "").replace(decimal, ".");
+    } else if (comma >= 0 || dot >= 0) {
+      const separator = comma >= 0 ? "," : ".";
+      const pieces = numeric.split(separator);
+      if (pieces.length > 2) {
+        if (!pieces.slice(1).every((piece) => piece.length === 3)) return undefined;
+        numeric = pieces.join("");
+      } else {
+        const decimals = pieces[1]?.length ?? 0;
+        if (decimals === 1 || decimals === 2) numeric = `${pieces[0]}.${pieces[1]}`;
+        else if (decimals === 3) return undefined;
+      }
+    }
+    if (!/^-?\d{1,18}(?:\.\d{1,6})?$/.test(numeric)) return undefined;
+    return { total: numeric, ...(currency ? { currency } : {}) };
   }
 
   async function extractSemanticDownloads(maxActions: number): Promise<{
     values: string[];
+    documents: DomDocumentObservation[];
     observedItems: number;
     resolvedItems: number;
     unresolvedItems: number;
@@ -509,13 +832,29 @@ export async function runDomStepsInPage(
     const invoiceSectionLabel = new RegExp(semanticPolicy.invoiceSectionPattern, "i");
     const allowed = new Set(allowedOrigins.slice(0, 9));
     const values = new Set<string>();
+    const semanticDocuments: DomDocumentObservation[] = [];
     const semanticCaptureDeadline = Math.min(Date.now() + 30_000, runDeadline ?? Number.POSITIVE_INFINITY);
-    const add = (raw: string | URL | null | undefined): boolean => {
+    const add = (
+      raw: string | URL | null | undefined,
+      allowActionOrigin = false,
+      evidence: InvoiceMetadataEvidence[] = [],
+    ): boolean => {
       if (!raw) return false;
+      if (typeof raw === "string" && raw.startsWith("data:application/pdf;base64,")) {
+        if (values.has(raw)) return false;
+        values.add(raw);
+        return true;
+      }
       try {
         const url = new URL(String(raw), location.href);
-        if (url.protocol === "https:" && allowed.has(url.origin) && !url.username && !url.password) {
-          values.add(url.toString());
+        if (
+          url.protocol === "https:" && !url.username && !url.password &&
+          (allowed.has(url.origin) || allowActionOrigin)
+        ) {
+          const value = url.toString();
+          if (values.has(value)) return false;
+          values.add(value);
+          if (evidence.length) semanticDocuments.push({ url: value, evidence });
           return true;
         }
       } catch {
@@ -541,10 +880,47 @@ export async function runDomStepsInPage(
       };
       reader.readAsDataURL(blob.type === "application/pdf" ? blob : new Blob([blob], { type: "application/pdf" }));
     });
+    const actionPageObserver = (): {
+      snapshotActionDocuments?: () => Promise<string[]>;
+      beginDocumentAction?: () => void;
+      endDocumentAction?: () => void;
+    } | undefined => (window as Window & {
+      __ratatoskDiscoveryObserverV1?: {
+        snapshotActionDocuments?: () => Promise<string[]>;
+        beginDocumentAction?: () => void;
+        endDocumentAction?: () => void;
+      };
+    }).__ratatoskDiscoveryObserverV1;
+    const snapshotActionDocuments = async (evidence: InvoiceMetadataEvidence[] = []): Promise<number> => {
+      try {
+        const observer = actionPageObserver();
+        if (typeof observer?.snapshotActionDocuments !== "function") return 0;
+        const observed = await Promise.race([
+          Promise.resolve(observer.snapshotActionDocuments()),
+          new Promise<string[]>((resolve) => setTimeout(() => resolve([]), 800)),
+        ]);
+        if (!Array.isArray(observed)) return 0;
+        let accepted = 0;
+        for (const candidate of observed.slice(0, 100)) {
+          if (typeof candidate === "string" && add(candidate, true, evidence)) accepted += 1;
+        }
+        return accepted;
+      } catch {
+        // The browser-owned observer remains a fallback for allowed origins.
+        return 0;
+      }
+    };
     const labelOf = (element: Element): string => {
       const icon = element.querySelector("svg,[icon],[name],[data-lucide]");
+      const labelledBy = (element.getAttribute("aria-labelledby") || "")
+        .split(/\s+/)
+        .slice(0, 4)
+        .map((id) => document.getElementById(id)?.textContent)
+        .filter(Boolean)
+        .join(" ");
       return [
         element.getAttribute("aria-label"),
+        labelledBy,
         element.getAttribute("title"),
         element.getAttribute("value"),
         element.getAttribute("data-test"),
@@ -598,6 +974,32 @@ export async function runDomStepsInPage(
         .map((element) => element.textContent)
         .join(" ")
     }`.replace(/\s+/g, " ").trim().slice(0, 240);
+    const roleOf = (element: Element): string => {
+      const explicit = element.getAttribute("role");
+      if (explicit) return explicit.toLowerCase().slice(0, 40);
+      if (element instanceof HTMLButtonElement) return "button";
+      if (element instanceof HTMLAnchorElement) return "link";
+      if (element instanceof HTMLInputElement && /^(?:button|submit|image)$/i.test(element.type)) return "button";
+      return element.tagName.toLowerCase().slice(0, 40);
+    };
+    const controlFingerprint = (element: Element): string => [
+      roleOf(element),
+      labelOf(element),
+      element.getAttribute("href") || element.getAttribute("data-href") || element.getAttribute("data-url") || "",
+      rowContextOf(element),
+      columnContextOf(element),
+    ].map((value) => value.replace(/\s+/g, " ").trim().slice(0, 500)).join("\u0001");
+    const controlGroupFingerprint = (element: Element): string => {
+      const root = element.closest(semanticPolicy.contextSelector);
+      if (!root) return controlFingerprint(element);
+      const parent = root.parentElement;
+      const siblingIndex = parent ? Array.from(parent.children).indexOf(root) : -1;
+      return [
+        root.tagName.toLowerCase(),
+        siblingIndex.toString(),
+        (root.textContent || "").replace(/\s+/g, " ").trim().slice(0, 500),
+      ].join("\u0001");
+    };
     const downloadControls = (): HTMLElement[] => Array.from(document.querySelectorAll<HTMLElement>(
       semanticPolicy.controlSelector,
     )).filter((element) => {
@@ -673,13 +1075,74 @@ export async function runDomStepsInPage(
     };
 
     const { availableControls, sectionObserved } = await waitForDownloadControls();
-    const controls = availableControls.slice(0, Math.max(1, Math.min(12, maxActions)));
-    let resolvedControls = 0;
+    const rawSemanticControls = Array.from(document.querySelectorAll<HTMLElement>(
+      semanticPolicy.controlSelector,
+    )).slice(0, 1_000);
+    const semanticRejections = {
+      unlabelled: 0,
+      unsafeOrFormBacked: 0,
+      hiddenOrDisabled: 0,
+      iconMismatch: 0,
+      actionColumnMismatch: 0,
+      invoiceShapeMismatch: 0,
+      pageContextMismatch: 0,
+    };
+    for (const element of rawSemanticControls) {
+      const label = labelOf(element);
+      if (!label) {
+        semanticRejections.unlabelled += 1;
+        continue;
+      }
+      if (unsafe.test(label) || element.closest("form")) {
+        semanticRejections.unsafeOrFormBacked += 1;
+        continue;
+      }
+      if (!visible(element)) {
+        semanticRejections.hiddenOrDisabled += 1;
+        continue;
+      }
+      if (!documentIcon.test(label)) {
+        semanticRejections.iconMismatch += 1;
+        continue;
+      }
+      if (!actionColumn.test(columnContextOf(element))) {
+        semanticRejections.actionColumnMismatch += 1;
+        continue;
+      }
+      if (!(invoiceRow.test(rowContextOf(element)) || invoiceContext.test(tableContextOf(element)))) {
+        semanticRejections.invoiceShapeMismatch += 1;
+        continue;
+      }
+      if (!invoiceContext.test(pageContext())) semanticRejections.pageContextMismatch += 1;
+    }
+    console.info(`[ratatosk] semantic control evaluation ${JSON.stringify({
+      readyState: document.readyState,
+      visibilityState: document.visibilityState,
+      rawControls: rawSemanticControls.length,
+      eligibleControls: Math.min(500, availableControls.length),
+      sectionObserved,
+      rejections: semanticRejections,
+    })}`);
+    const actionLimit = Math.max(1, Math.min(12, maxActions, availableControls.length || 1));
+    const attemptedControls = new Set<string>();
+    const resolvedControlGroups = new Set<string>();
+    const observedControlGroups = new Set(availableControls.map(controlGroupFingerprint));
 
-    for (const control of controls) {
+    for (let actionIndex = 0; actionIndex < actionLimit; actionIndex += 1) {
+      // Resolve from the current DOM before every action. React/Vue tables
+      // commonly replace every row after one invoice is requested.
+      const control = downloadControls().find((candidate) => {
+        const fingerprint = controlFingerprint(candidate);
+        return !attemptedControls.has(fingerprint) &&
+          !resolvedControlGroups.has(controlGroupFingerprint(candidate));
+      });
+      if (!control) break;
+      attemptedControls.add(controlFingerprint(control));
+      const controlGroup = controlGroupFingerprint(control);
+      const metadata = metadataForElement(control);
       const direct = control.getAttribute("data-href") || control.getAttribute("data-url");
       if (direct) {
-        if (add(direct)) resolvedControls += 1;
+        if (add(direct, false, metadata)) resolvedControlGroups.add(controlGroup);
         continue;
       }
       if (control instanceof HTMLAnchorElement && control.href) {
@@ -689,143 +1152,47 @@ export async function runDomStepsInPage(
             .then((response) => response.blob())
             .then((blob) => capturePdfBlob(blob))
             .catch(() => false);
-          if (captured) resolvedControls += 1;
-        } else if (add(target)) {
-          resolvedControls += 1;
+          if (captured) resolvedControlGroups.add(controlGroup);
+        } else if (add(target, false, metadata)) {
+          resolvedControlGroups.add(controlGroup);
         }
         continue;
       }
       const form = control.closest("form");
       if (form) {
         if ((form.getAttribute("method") || "GET").toUpperCase() === "GET") {
-          if (add(form.getAttribute("action") || location.href)) resolvedControls += 1;
+          if (add(form.getAttribute("action") || location.href, false, metadata)) resolvedControlGroups.add(controlGroup);
         }
         continue;
       }
-      const originalFetch = window.fetch;
-      const originalXhrOpen = XMLHttpRequest.prototype.open;
-      const originalXhrSend = XMLHttpRequest.prototype.send;
-      const originalAnchorClick = HTMLAnchorElement.prototype.click;
-      const xhrRequests = new WeakMap<XMLHttpRequest, { method: string; url: string }>();
-      const navigation = (window as Window & { navigation?: EventTarget }).navigation;
-      const blockNavigation = (event: Event): void => {
-        const candidate = event as Event & { destination?: { url?: string } };
-        add(candidate.destination?.url);
-        if (event.cancelable) event.preventDefault();
-      };
-      navigation?.addEventListener("navigate", blockNavigation);
-      window.open = ((url?: string | URL) => {
-        add(url);
-        return null;
-      }) as typeof window.open;
-      HTMLAnchorElement.prototype.click = function guardAnchorClick(): void {
-        const href = this.getAttribute("href");
-        if (href) {
-          const target = new URL(this.href, location.href);
-          if (target.protocol === "blob:" && target.origin === location.origin) {
-            void originalFetch(target.toString())
-              .then((response) => response.blob())
-              .then((blob) => capturePdfBlob(blob))
-              .catch(() => false);
-          } else {
-            add(target);
-          }
-          return;
+      const observer = actionPageObserver();
+      observer?.beginDocumentAction?.();
+      let actionProducedDocument = false;
+      try {
+        control.click();
+        const actionDeadline = Math.min(semanticCaptureDeadline, Date.now() + 2_500);
+        while (!actionProducedDocument && Date.now() < actionDeadline) {
+          actionProducedDocument = (await snapshotActionDocuments(metadata)) > 0;
+          if (actionProducedDocument) break;
+          await new Promise((resolve) => setTimeout(resolve, 100));
         }
-        // Framework controls frequently use an anchor purely as an event
-        // surface. Preserve that event while still intercepting any real link
-        // the handler creates afterward.
-        Reflect.apply(originalAnchorClick, this, []);
-      };
-      window.fetch = (async (...args: Parameters<typeof fetch>): Promise<Response> => {
-        const input = args[0];
-        const init = args[1];
-        const method = (init?.method || (input instanceof Request ? input.method : "GET")).toUpperCase();
-        // Analytics is commonly emitted before the safe invoice GET. Suppress
-        // side-effecting requests without throwing into the supplier's click
-        // handler, otherwise the handler never reaches its document request.
-        if (method !== "GET") return new Response(null, { status: 204 });
-        const response = await originalFetch(...args);
-        const contentType = (response.headers.get("content-type") || "").toLowerCase();
-        const requestUrl = input instanceof Request ? input.url : String(input);
-        const documentResponse = contentType.includes("application/pdf") ||
-          (/invoice|receipt|statement|\.pdf(?:\?|$)|\/download(?:\/|\?|$)/i.test(`${requestUrl} ${response.url}`) &&
-            !/json|html|javascript|text\//i.test(contentType));
-        if (documentResponse) {
-          const captured = await capturePdfBlob(await response.clone().blob()).catch(() => false);
-          if (!captured) {
-            add(requestUrl);
-            add(response.url);
-          }
-        }
-        return response;
-      }) as typeof window.fetch;
-      XMLHttpRequest.prototype.open = function captureXhrOpen(this: XMLHttpRequest, method: string, url: string | URL, ...args: unknown[]): void {
-        xhrRequests.set(this, { method: method.toUpperCase(), url: new URL(String(url), location.href).toString() });
-        Reflect.apply(originalXhrOpen, this, [method, String(url), ...args]);
-      } as typeof XMLHttpRequest.prototype.open;
-      XMLHttpRequest.prototype.send = function captureXhrSend(this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null): void {
-        const request = xhrRequests.get(this);
-        if (!request || request.method !== "GET") {
-          // Mirror a completed, empty side request asynchronously. The request
-          // is never sent, while fire-and-forget telemetry cannot synchronously
-          // abort the subsequent invoice download logic.
-          queueMicrotask(() => {
-            this.dispatchEvent(new ProgressEvent("load"));
-            this.dispatchEvent(new ProgressEvent("loadend"));
-          });
-          return;
-        }
-        this.addEventListener("loadend", () => {
-          const contentType = (this.getResponseHeader("content-type") || "").toLowerCase();
-          const invoiceBlob = this.responseType === "blob" && /invoice|receipt|statement/i.test(request.url);
-          if (
-            contentType.includes("application/pdf") || invoiceBlob ||
-            /\.pdf(?:\?|$)|\/download(?:\/|\?|$)/i.test(this.responseURL || request.url)
-          ) {
-            if (this.responseType === "blob" && this.response instanceof Blob) {
-              void capturePdfBlob(this.response).then((captured) => {
-                if (!captured) {
-                  add(request.url);
-                  add(this.responseURL);
-                }
-              });
-            } else {
-              add(request.url);
-              add(this.responseURL);
-            }
-          }
-        }, { once: true });
-        Reflect.apply(originalXhrSend, this, [body]);
-      } as typeof XMLHttpRequest.prototype.send;
-      HTMLFormElement.prototype.submit = function blockFormSubmit(): void {
-        throw new DOMException("Form submission blocked during invoice download discovery", "NotAllowedError");
-      };
-      HTMLFormElement.prototype.requestSubmit = function blockFormRequestSubmit(): void {
-        throw new DOMException("Form submission blocked during invoice download discovery", "NotAllowedError");
-      };
-      navigator.sendBeacon = (() => false) as typeof navigator.sendBeacon;
-      const capturedBefore = values.size;
-      control.click();
-      await new Promise<void>((resolve) => {
-        const actionDeadline = Math.min(semanticCaptureDeadline, Date.now() + 8_000);
-        const poll = () => {
-          if (values.size > capturedBefore || Date.now() >= actionDeadline) {
-            resolve();
-            return;
-          }
-          setTimeout(poll, 100);
-        };
-        poll();
-      });
-      if (values.size > capturedBefore) resolvedControls += 1;
-      // Guards intentionally stay installed until the disposable tab closes so
-      // delayed handlers cannot perform a mutation after the capture wait ends.
+        actionProducedDocument = (await snapshotActionDocuments(metadata)) > 0 || actionProducedDocument;
+      } finally {
+        observer?.endDocumentAction?.();
+      }
+      console.info(`[ratatosk] semantic action evaluation ${JSON.stringify({
+        action: actionIndex + 1,
+        observerAvailable: typeof observer?.snapshotActionDocuments === "function",
+        captured: actionProducedDocument,
+      })}`);
+      if (actionProducedDocument) resolvedControlGroups.add(controlGroup);
       if (Date.now() >= semanticCaptureDeadline) break;
     }
-    const observedControls = availableControls.length || (sectionObserved ? 1 : 0);
+    const observedControls = observedControlGroups.size || (sectionObserved ? 1 : 0);
+    const resolvedControls = Math.min(observedControls, resolvedControlGroups.size);
     return {
       values: [...values].slice(0, 100),
+      documents: semanticDocuments.slice(0, 100),
       observedItems: observedControls,
       resolvedItems: resolvedControls,
       unresolvedItems: Math.max(0, observedControls - resolvedControls),
@@ -941,6 +1308,51 @@ async function advanceDomPageInPage(
   }
 }
 
+class SemanticPageObserverRegistration {
+  private readonly id = `ratatosk_semantic_${crypto.randomUUID().replaceAll("-", "")}`;
+  private registered = false;
+
+  constructor(private readonly origin: string) {}
+
+  async start(): Promise<boolean> {
+    try {
+      await chrome.scripting.registerContentScripts([{
+        id: this.id,
+        matches: [`${this.origin}/*`],
+        js: [discoveryPageObserverScript],
+        runAt: "document_start",
+        world: "MAIN",
+        allFrames: false,
+        persistAcrossSessions: false,
+      }]);
+      this.registered = true;
+      return true;
+    } catch {
+      // A direct anchor or browser-level observation can still verify the
+      // supplier when early MAIN-world observation is unavailable.
+      return false;
+    }
+  }
+
+  async dispose(tabId?: number): Promise<void> {
+    if (!this.registered) return;
+    this.registered = false;
+    if (tabId !== undefined) {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "MAIN",
+        func: () => {
+          const observer = (window as Window & {
+            __ratatoskDiscoveryObserverV1?: { stop?: () => void };
+          }).__ratatoskDiscoveryObserverV1;
+          if (typeof observer?.stop === "function") observer.stop();
+        },
+      }).catch(() => undefined);
+    }
+    await chrome.scripting.unregisterContentScripts({ ids: [this.id] }).catch(() => undefined);
+  }
+}
+
 function mergeCollected(target: Record<string, Set<string>>, source: Record<string, string[]>, maximum: number): void {
   for (const [key, values] of Object.entries(source)) {
     const bucket = (target[key] ??= new Set<string>());
@@ -951,6 +1363,20 @@ function mergeCollected(target: Record<string, Set<string>>, source: Record<stri
   }
 }
 
+function mergeDocumentObservations(
+  target: Map<string, InvoiceMetadataEvidence[]>,
+  source: readonly DomDocumentObservation[],
+  maximum: number,
+): void {
+  for (const observation of source) {
+    if (!target.has(observation.url) && target.size >= maximum) break;
+    const combined = [...(target.get(observation.url) ?? []), ...observation.evidence];
+    target.set(observation.url, combined.filter((item, index, all) =>
+      index === all.findIndex((candidate) => JSON.stringify(candidate) === JSON.stringify(item))
+    ).slice(0, 32));
+  }
+}
+
 function collectedSize(collected: Record<string, Set<string>>): number {
   return Math.max(0, ...Object.values(collected).map((values) => values.size));
 }
@@ -958,6 +1384,7 @@ function collectedSize(collected: Record<string, Set<string>>): number {
 function throwDomRunError(code: DomRunErrorCode, vendorId: string): never {
   if (code === "auth_expired") throw new AuthExpired(vendorId);
   if (code === "blocked_or_challenged") throw new AuthFailure("blocked_or_challenged", vendorId);
+  if (code === "action_failed") throw new DomActionFailed("invoice action did not produce a document", vendorId);
   throw new SelectorMiss("invoice elements did not appear", vendorId);
 }
 
@@ -1029,5 +1456,56 @@ function waitForTabComplete(tabId: number, timeoutMs = 20_000): Promise<void> {
     void chrome.tabs.get(tabId).then((tab) => {
       if (tab.status === "complete") done();
     }).catch(() => undefined);
+  });
+}
+
+function waitForExactTabComplete(
+  tabId: number,
+  expectedUrl: string,
+  timeoutMs = 20_000,
+): Promise<void> {
+  const expected = new URL(expectedUrl);
+  const matches = (tab: chrome.tabs.Tab): boolean => {
+    if (tab.status !== "complete" || !tab.url) return false;
+    try {
+      const current = new URL(tab.url);
+      return current.origin === expected.origin &&
+        current.pathname === expected.pathname &&
+        current.search === expected.search;
+    } catch {
+      return false;
+    }
+  };
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let checking = false;
+    const done = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      error ? reject(error) : resolve();
+    };
+    const check = async () => {
+      if (settled || checking) return;
+      checking = true;
+      try {
+        if (matches(await chrome.tabs.get(tabId))) done();
+      } catch {
+        // A later update may still commit the requested supplier document.
+      } finally {
+        checking = false;
+      }
+    };
+    const timer = setTimeout(
+      () => done(new DomRunDeadlineExceeded("supplier page navigation timed out")),
+      Math.max(0, timeoutMs),
+    );
+    const onUpdated = (updatedId: number) => {
+      if (updatedId === tabId) void check();
+    };
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    void check();
   });
 }

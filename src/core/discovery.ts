@@ -3,7 +3,12 @@ import type { Extractor, RequestSpec, VendorRecipe } from "./types";
 import { VendorRecipeSchema, validateRecipe } from "./schema";
 import { deriveVendorId } from "./recorder/infer";
 import { isSafeStaticDiscoveryQueryValue } from "./discovery-query";
-import { documentProviderForUrl, isExactDocumentProviderOriginPattern } from "./document-provider";
+import { documentProviderForUrl } from "./document-provider";
+import {
+  exactPublicHttpsOriginPattern,
+  isExactPublicHttpsOriginPattern,
+  isPublicHostname,
+} from "./origin-policy";
 
 export const DISCOVERED_SUPPLIER_SCHEMA = "ratatosk.discovered-supplier.v1" as const;
 export const DISCOVERED_CANDIDATE_SET_SCHEMA = "ratatosk.discovery-candidates.v1" as const;
@@ -18,6 +23,9 @@ const SECRET_QUERY_KEY = /(?:^|_)(?:access_?token|api_?key|auth|authorization|co
 const SECRET_SCOPE_NAME = /(?:^|_)(?:token|secret|password|passwd|passcode|credential|private_?key|auth(?:orization)?|session|cookie|csrf|xsrf)(?:_|$)/i;
 const DISCOVERED_SCOPE_ID = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const BILLING_ROUTE_SEGMENT = /^(?:billing|billings|invoice|invoices|receipt|receipts|payment|payments|subscription|subscriptions|statement|statements|transaction|transactions)$/i;
+const BILLING_SPA_FRAGMENT = /(?:^|\/)(?:billing|billings|invoice|invoices|receipt|receipts|payment|payments|subscription|subscriptions|statement|statements|transaction|transactions)(?:\/|$)/i;
+const UNSAFE_SPA_FRAGMENT = /(?:^|\/)(?:logout|log-out|signout|sign-out|delete|remove|cancel|checkout|purchase|upgrade|downgrade|authorize|oauth|callback|invite|payment[-_]?method)(?:\/|$)/i;
+const SAFE_SPA_FRAGMENT_SEGMENT = /^[A-Za-z0-9._~-]{1,64}$/;
 const TENANT_PATH_CONTAINER = /^(?:account|accounts|organization|organizations|org|orgs|workspace|workspaces|team|teams|project|projects|tenant|tenants|customer|customers)$/i;
 const TEMPLATE = /\{[A-Za-z_][A-Za-z0-9_]*\}/g;
 const EXACT_HTTPS_HOST = /^https:\/\/[A-Za-z0-9.-]+(?::\d+)?\/\*$/;
@@ -142,22 +150,20 @@ export function requiredCandidateOrigins(set: DiscoveredSupplierCandidateSetV1):
   return [...new Set(parseDiscoveredSupplierCandidateSet(set).candidates.flatMap((candidate) => candidate.recipe.hosts))];
 }
 
-/** Add a provider redirect origin to only the candidates that already prove use
- * of that provider. This keeps permission drift supplier-local and prevents an
- * observed Stripe redirect from broadening unrelated fallback candidates. */
+/** Add a document origin only to candidates that prove the matching provider
+ * or use the bounded semantic-action transport that produced the origin. */
 export function extendCandidateDocumentOrigins(
   set: DiscoveredSupplierCandidateSetV1,
   origins: readonly string[],
 ): DiscoveredSupplierCandidateSetV1 {
   const validated = parseDiscoveredSupplierCandidateSet(set);
   const additions = [...new Set(origins)];
-  if (!additions.length || additions.some((origin) => !isExactDocumentProviderOriginPattern(origin))) {
+  if (!additions.length || additions.some((origin) => !isExactPublicHttpsOriginPattern(origin))) {
     throw new Error("candidate document origins are invalid");
   }
   const additionsByProvider = additions.map((origin) => {
     const provider = documentProviderForUrl(origin.slice(0, -2));
-    if (!provider) throw new Error("candidate document origins are invalid");
-    return { origin, providerId: provider.id };
+    return { origin, providerId: provider?.id };
   });
   const matchedAdditions = new Set<string>();
   const candidates = validated.candidates.map((candidate) => {
@@ -165,14 +171,18 @@ export function extendCandidateDocumentOrigins(
       const provider = documentProviderForUrl(host.slice(0, -2));
       return provider ? [provider.id] : [];
     }));
-    const matchingAdditions = additionsByProvider.filter(({ providerId }) => providerIds.has(providerId));
+    const semanticActionCandidate = candidate.adapter.id === "dom-actions" &&
+      candidate.recipe.invoices.strategy === "dom" &&
+      candidate.recipe.invoices.list.steps.some((step) => step.action === "extractSemanticDownloads");
+    const matchingAdditions = additionsByProvider.filter(({ providerId }) =>
+      (providerId !== undefined && providerIds.has(providerId)) || semanticActionCandidate);
     if (!matchingAdditions.length) return candidate;
     const copy = structuredClone(candidate);
     copy.recipe.hosts = [...new Set([...copy.recipe.hosts, ...matchingAdditions.map(({ origin }) => origin)])];
     for (const { origin } of matchingAdditions) matchedAdditions.add(origin);
     return parseDiscoveredSupplierProfile(copy);
   });
-  if (matchedAdditions.size !== additions.length) throw new Error("candidate does not use this document provider");
+  if (matchedAdditions.size !== additions.length) throw new Error("candidate document origins are invalid");
   return parseDiscoveredSupplierCandidateSet({ ...validated, candidates });
 }
 
@@ -234,10 +244,34 @@ export function deriveSupplierDisplayName(input: {
 export function safeEntryUrl(value: string): string {
   const url = new URL(value);
   if (url.protocol !== "https:" || url.username || url.password) throw new Error("discovery requires a normal HTTPS supplier page");
+  const fragment = url.search ? "" : safeBillingSpaFragment(url.hash);
   url.search = "";
-  url.hash = "";
+  url.hash = fragment;
   if (hasUnsafeCredentialPath(url.pathname, 96)) url.pathname = "/";
   return url.toString();
+}
+
+/**
+ * Preserve only a route-shaped billing fragment. Some SPAs expose billing as
+ * `#settings/Billing`; dropping that route makes a verified generic recipe
+ * reopen the home page on every later sync. Query-like, encoded, mutating, and
+ * credential-shaped fragments remain excluded from persisted discovery state.
+ */
+function safeBillingSpaFragment(value: string): string {
+  if (!value) return "";
+  const raw = value.slice(1);
+  if (
+    raw.length === 0 || raw.length > 240 ||
+    /[?=&%\\]/.test(raw) ||
+    !BILLING_SPA_FRAGMENT.test(raw) ||
+    UNSAFE_SPA_FRAGMENT.test(raw)
+  ) return "";
+  const route = raw.startsWith("/") ? raw.slice(1) : raw;
+  const segments = route.split("/").filter(Boolean);
+  if (!segments.length || segments.some((segment) =>
+    !SAFE_SPA_FRAGMENT_SEGMENT.test(segment) || looksCredentialLike(segment)
+  )) return "";
+  return `#${raw}`;
 }
 
 /** Preserve an already-persisted source namespace while refreshing mutable
@@ -255,11 +289,11 @@ export function reuseDiscoveredSupplierIdentity(
 }
 
 export function exactOriginPattern(origin: string): string {
-  const url = new URL(origin);
-  if (url.protocol !== "https:" || url.origin !== origin || url.username || url.password || !isPublicHostname(url.hostname)) {
+  try {
+    return exactPublicHttpsOriginPattern(origin);
+  } catch {
     throw new Error("supplier origin must be exact HTTPS");
   }
-  return `${url.origin}/*`;
 }
 
 export function assertDiscoveredRecipePolicy(recipe: VendorRecipe, primaryOrigin: string, entryUrl: string): void {
@@ -584,26 +618,6 @@ function isBoundedBillingTenantIdentifier(segments: string[], credentialIndexes:
 
 export function isBoundedTenantIdentifierSegment(value: string): boolean {
   return /^(?:[0-9a-f]{24}|[0-9a-f]{32}|[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}|\d{7,20})$/i.test(value);
-}
-
-function isPublicHostname(hostname: string): boolean {
-  const host = hostname.toLowerCase();
-  if (!host.includes(".") || host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return false;
-  const octets = host.split(".").map(Number);
-  if (octets.length !== 4 || octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) return true;
-  const [a, b, c] = octets;
-  return !(
-    a === 0 || a === 10 || a === 127 || a >= 224 ||
-    (a === 100 && b >= 64 && b <= 127) ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 0 && (c === 0 || c === 2)) ||
-    (a === 192 && b === 88 && c === 99) ||
-    (a === 192 && b === 168) ||
-    (a === 198 && (b === 18 || b === 19)) ||
-    (a === 198 && b === 51 && c === 100) ||
-    (a === 203 && b === 0 && c === 113)
-  );
 }
 
 export { discoveredSupplierProfileSchema };

@@ -47,9 +47,9 @@ You stay in control:
   Igdrasil.
 - There is no analytics, advertising, browsing-history tracking, or sale of data.
 
-The initial pilot includes Anthropic, ChatGPT, and Railway. Vendor sites can
-change, so support is provided on a pilot basis while each integration is live
-verified.
+Railway is currently available as a bundled pilot. Other suppliers are verified
+from their current billing pages through Ratatosk's user-initiated generic
+discovery flow, avoiding stale private API paths.
 
 Ratatosk is open source: https://github.com/Igdrasil-AB/ratatosk
 

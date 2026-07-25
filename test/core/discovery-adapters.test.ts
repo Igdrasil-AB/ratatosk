@@ -174,6 +174,23 @@ describe("packaged supplier discovery adapters", () => {
     }
   });
 
+  it("persists a safe billing SPA route for later generic DOM syncs", () => {
+    const entryUrl = "https://vendor.example/#settings/Billing";
+    const candidates = compileCandidates({
+      ...base,
+      url: entryUrl,
+      html: '<html><body><a href="https://invoice.stripe.com/i/acct_example/live_example">View invoice</a></body></html>',
+      resources: [],
+    }, entryUrl, "Example Vendor");
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].recipe.invoices.strategy).toBe("dom");
+    if (candidates[0].recipe.invoices.strategy === "dom") {
+      expect(candidates[0].recipe.invoices.list.open).toBe(entryUrl);
+      expect(candidates[0].recipe.auth.check.request.url).toBe("https://vendor.example/");
+    }
+  });
+
   it("does not treat an unrelated download on a non-billing page as an invoice source", () => {
     const page = "https://vendor.example/tasks/123";
     const candidates = compileCandidates({
@@ -200,7 +217,7 @@ describe("packaged supplier discovery adapters", () => {
     expect(candidates[0].adapterId).toBe("dom-actions");
     if (candidates[0].recipe.invoices.strategy === "dom") {
       expect(candidates[0].recipe.invoices.list.steps).toEqual([
-        { action: "extractSemanticDownloads", as: "documents", maxActions: 8 },
+        { action: "extractSemanticDownloads", as: "documents", maxActions: 12 },
       ]);
     }
   });

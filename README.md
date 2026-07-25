@@ -202,10 +202,10 @@ the tag workflow runs only after a matching `v<package-version>` tag is pushed.
 
 ## Vendor status
 
-Collector currently exposes Anthropic, ChatGPT, and Railway as pilot recipes.
-Their parsing behavior is fixture-tested, and users may connect them directly;
-optional live-verification metadata does not gate pilot execution. GitHub, Slack, and
-Vercel remain contributor examples and are not shipped by Collector.
+Collector currently exposes Railway as a bundled pilot recipe. Other suppliers,
+including Anthropic and ChatGPT, use the user-initiated generic discovery engine
+so stale private API paths cannot override current browser evidence. GitHub,
+Slack, and Vercel remain contributor examples and are not shipped by Collector.
 
 See [testing a vendor](docs/testing.md), [adding a vendor](docs/adding-a-vendor.md),
 [the architecture](docs/architecture.md), and the
