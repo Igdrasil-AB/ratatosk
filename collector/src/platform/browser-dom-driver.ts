@@ -830,6 +830,7 @@ export async function runDomStepsInPage(
     const unsafe = new RegExp(semanticPolicy.unsafeLabelPattern, "i");
     const unsafePath = new RegExp(semanticPolicy.unsafePathPattern, "i");
     const invoiceSectionLabel = new RegExp(semanticPolicy.invoiceSectionPattern, "i");
+    const semanticNavigation = new RegExp(semanticPolicy.semanticNavigationPattern, "i");
     const allowed = new Set(allowedOrigins.slice(0, 9));
     const values = new Set<string>();
     const semanticDocuments: DomDocumentObservation[] = [];
@@ -968,7 +969,9 @@ export async function runDomStepsInPage(
         .map((header) => header.textContent)
         .join(" ")
     ).replace(/\s+/g, " ").trim().slice(0, 500);
-    const pageContext = (): string => `${location.pathname} ${document.title} ${
+    // A guessed route cannot turn a site-wide "Download" action into invoice
+    // evidence. Only independently rendered title/heading state participates.
+    const pageContext = (): string => `${document.title} ${
       Array.from(document.querySelectorAll("h1,h2,h3,caption"))
         .slice(0, 12)
         .map((element) => element.textContent)
@@ -1009,13 +1012,60 @@ export async function runDomStepsInPage(
       const table = tableContextOf(element);
       const page = pageContext();
       const explicit = explicitAction.test(label) &&
-        (strongDocumentLabel.test(label) || invoiceContext.test(`${row} ${page}`));
+        (strongDocumentLabel.test(label) || invoiceContext.test(`${row} ${table} ${page}`));
       const contextualIcon = documentIcon.test(label) &&
         actionColumn.test(columnContextOf(element)) &&
         (invoiceRow.test(row) || invoiceContext.test(table)) &&
-        invoiceContext.test(page);
+        invoiceContext.test(`${table} ${page}`);
       return explicit || contextualIcon;
     });
+    const navigationLabelOf = (element: Element): string => [
+      element.getAttribute("aria-label"),
+      element.getAttribute("title"),
+      element.textContent,
+    ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim().slice(0, 120);
+    const waitForNavigationMutation = (): Promise<void> => new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        observer.disconnect();
+        resolve();
+      };
+      const observer = new MutationObserver(finish);
+      observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+      const timer = setTimeout(finish, Math.min(1_000, Math.max(150, semanticCaptureDeadline - Date.now())));
+    });
+    const revealBillingSurface = async (): Promise<number> => {
+      if (downloadControls().length > 0) return 0;
+      let steps = 0;
+      const tiers = [
+        /(?:open\s+)?profile\s+menu$|account\s+menu$/i,
+        /^(?:settings|preferences)$/i,
+        /^(?:account|billing|subscriptions?|invoice\s+history|receipt\s+history|billing\s+history|past\s+invoices?)$/i,
+      ];
+      for (const tier of tiers) {
+        if (Date.now() >= semanticCaptureDeadline || steps >= 3) break;
+        const control = Array.from(document.querySelectorAll<HTMLElement>(
+          'button,[role="button"],[role="menuitem"],[role="tab"],a:not([href])',
+        )).find((element) => {
+          const label = navigationLabelOf(element);
+          return Boolean(
+            label && semanticNavigation.test(label) && tier.test(label) &&
+            !unsafe.test(label) && !element.closest("form") && visible(element) &&
+            !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true"
+          );
+        });
+        if (!control) continue;
+        const changed = waitForNavigationMutation();
+        control.click();
+        steps += 1;
+        await changed;
+        if (downloadControls().length > 0) break;
+      }
+      return steps;
+    };
     const sectionLabelOf = (element: Element): string => [
       element.getAttribute("aria-label"),
       element.getAttribute("title"),
@@ -1050,7 +1100,9 @@ export async function runDomStepsInPage(
     const waitForDownloadControls = async (): Promise<{
       availableControls: HTMLElement[];
       sectionObserved: boolean;
+      navigationSteps: number;
     }> => {
+      const navigationSteps = await revealBillingSurface();
       let sectionObserved = await revealInvoiceSection();
       let availableControls = downloadControls();
       const deadline = Math.min(semanticCaptureDeadline, Date.now() + 8_000);
@@ -1071,13 +1123,14 @@ export async function runDomStepsInPage(
         if (!sectionObserved) sectionObserved = await revealInvoiceSection();
         availableControls = downloadControls();
       }
-      return { availableControls, sectionObserved };
+      return { availableControls, sectionObserved, navigationSteps };
     };
 
-    const { availableControls, sectionObserved } = await waitForDownloadControls();
+    const { availableControls, sectionObserved, navigationSteps } = await waitForDownloadControls();
     const rawSemanticControls = Array.from(document.querySelectorAll<HTMLElement>(
       semanticPolicy.controlSelector,
     )).slice(0, 1_000);
+    const eligibleSemanticControls = new Set(availableControls);
     const semanticRejections = {
       unlabelled: 0,
       unsafeOrFormBacked: 0,
@@ -1088,6 +1141,7 @@ export async function runDomStepsInPage(
       pageContextMismatch: 0,
     };
     for (const element of rawSemanticControls) {
+      if (eligibleSemanticControls.has(element)) continue;
       const label = labelOf(element);
       if (!label) {
         semanticRejections.unlabelled += 1;
@@ -1121,6 +1175,7 @@ export async function runDomStepsInPage(
       rawControls: rawSemanticControls.length,
       eligibleControls: Math.min(500, availableControls.length),
       sectionObserved,
+      navigationSteps,
       rejections: semanticRejections,
     })}`);
     const actionLimit = Math.max(1, Math.min(12, maxActions, availableControls.length || 1));

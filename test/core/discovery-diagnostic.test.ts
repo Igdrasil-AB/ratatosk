@@ -38,7 +38,16 @@ describe("redacted supplier-discovery diagnostics", () => {
           route: "/:id/settings/billing",
           result: "no_candidate",
           durationMs: 300,
-          evidence: { jsonResources: 0, observedRequests: 0, replayedRequests: 0, documentLinks: 1, structuredData: 0, semanticControls: 0 },
+          evidence: {
+            jsonResources: 0,
+            observedRequests: 0,
+            replayedRequests: 0,
+            documentLinks: 1,
+            structuredData: 0,
+            semanticControls: 0,
+            semanticControlsRejected: 17,
+            semanticNavigationSteps: 2,
+          },
         },
         {
           page: 2,
@@ -49,6 +58,7 @@ describe("redacted supplier-discovery diagnostics", () => {
           result: "list_failed",
           durationMs: 900,
           evidence: { jsonResources: 1, observedRequests: 1, replayedRequests: 0, documentLinks: 0, structuredData: 0, semanticControls: 0 },
+          admission: ["structured_network"],
         },
       ],
       termination: "queue_exhausted",
@@ -58,6 +68,11 @@ describe("redacted supplier-discovery diagnostics", () => {
     expect(diagnostic.evidence.crossOriginHosts).toEqual(["api.cloudflare.com"]);
     expect(diagnostic.evidence).toMatchObject({ observedRequests: 1, replayedRequests: 1 });
     expect(diagnostic.attempts[1].evidence).toMatchObject({ observedRequests: 1, replayedRequests: 0 });
+    expect(diagnostic.attempts[0].evidence).toMatchObject({
+      semanticControlsRejected: 17,
+      semanticNavigationSteps: 2,
+    });
+    expect(diagnostic.attempts[1].admission).toEqual(["structured_network"]);
     const serialized = JSON.stringify(diagnostic);
     expect(diagnostic.attempts[0]).toMatchObject({ route: "/:id/settings/billing" });
     expect(serialized).not.toMatch(/https?:|[?&](?:token|code|session)=|authorization|responseBody|a473171df3249291b4be6fca57bb8444/i);
@@ -243,16 +258,18 @@ describe("redacted supplier-discovery diagnostics", () => {
         result: "candidate_compiled",
         durationMs: 20,
         evidence: { jsonResources: 0, documentLinks: 0, structuredData: 0, semanticControls: 2 },
+        admission: ["semantic_document_control"],
       }],
       termination: "candidate_set_complete",
       result: "candidates_found",
     });
     const diagnostic = withCandidateVerification(scan, [
-      { candidate: 1, adapter: "dom-links", result: "document_invalid" },
+      { candidate: 1, adapter: "dom-links", result: "document_invalid", verifiedDocuments: 0 },
       {
         candidate: 2,
         adapter: "dom-actions",
         result: "recipe_incompatible",
+        verifiedDocuments: 0,
         failure: {
           stage: "document_fetch",
           cause: "unexpected_response",
@@ -272,11 +289,12 @@ describe("redacted supplier-discovery diagnostics", () => {
     expect(diagnostic.verification).toEqual({
       attempted: 2,
       outcomes: [
-        { candidate: 1, adapter: "dom-links", result: "document_invalid" },
+        { candidate: 1, adapter: "dom-links", result: "document_invalid", verifiedDocuments: 0 },
         {
           candidate: 2,
           adapter: "dom-actions",
           result: "recipe_incompatible",
+          verifiedDocuments: 0,
           failure: {
             stage: "document_fetch",
             cause: "unexpected_response",
@@ -315,10 +333,63 @@ describe("redacted supplier-discovery diagnostics", () => {
       candidate: 1,
       adapter: "dom-actions",
       result: "recipe_incompatible",
+      verifiedDocuments: 0,
       failure: {
         stage: "GET https://vendor.example/billing?token=secret",
         cause: "response body contained an account identifier",
       },
     } as never])).toThrow(/verification failure/);
+  });
+
+  it("requires current diagnostics to prove candidate admission and verified collection", () => {
+    const current = {
+      schema: DISCOVERY_DIAGNOSTIC_SCHEMA,
+      site: "vendor.example",
+      runtime: { collectorVersion: "0.8.45", discoveryEngine: 34 },
+      limits: { pages: 10, depth: 3, durationMs: 15_000 },
+      timing: { elapsedMs: 700 },
+      pages: { attempted: 1, linked: 0, commonRoutes: 0 },
+      evidence: {
+        jsonResources: 0,
+        observedRequests: 0,
+        replayedRequests: 0,
+        documentLinks: 0,
+        structuredDataPages: 0,
+        crossOriginHosts: [],
+      },
+      candidates: { compiled: 1, previewed: 1, retained: 1 },
+      attempts: [{
+        page: 1,
+        source: "entry",
+        route: "/billing",
+        adapter: "dom-actions",
+        result: "candidate_compiled",
+        durationMs: 20,
+        evidence: {
+          jsonResources: 0,
+          observedRequests: 0,
+          replayedRequests: 0,
+          documentLinks: 0,
+          structuredData: 0,
+          semanticControls: 1,
+        },
+      }],
+      termination: "candidate_set_complete",
+      result: "candidates_found",
+    };
+
+    expect(() => parseDiscoveryDiagnostic(current)).toThrow(/candidate admission/);
+
+    current.attempts[0] = {
+      ...current.attempts[0],
+      admission: ["semantic_document_control"],
+    } as typeof current.attempts[number];
+    const scan = parseDiscoveryDiagnostic(current);
+    expect(() => withCandidateVerification(scan, [{
+      candidate: 1,
+      adapter: "dom-actions",
+      result: "collected",
+      verifiedDocuments: 0,
+    }])).toThrow(/verified document count/);
   });
 });

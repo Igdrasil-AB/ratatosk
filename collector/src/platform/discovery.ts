@@ -32,6 +32,7 @@ import {
   type DiscoveryAttemptEvidence,
   type DiscoveryAttemptResult,
   type DiscoveryDiagnosticV1,
+  type CandidateAdmissionSignal,
 } from "./discovery-diagnostic";
 import {
   EXPLORATION_ROUTE_POLICY,
@@ -99,10 +100,17 @@ export interface PageEvidence {
     structuredData: number;
     semanticControls: number;
     semanticSections?: number;
+    semanticControlsRejected?: number;
+    semanticNavigationSteps?: number;
   };
 }
 
-type Candidate = { adapterId: DiscoveryAdapterId; recipe: VendorRecipe; previewCount?: number };
+type Candidate = {
+  adapterId: DiscoveryAdapterId;
+  recipe: VendorRecipe;
+  previewCount?: number;
+  admission: CandidateAdmissionSignal[];
+};
 
 export interface SupplierDiscoveryResult {
   candidates: DiscoveredSupplierCandidateSetV1;
@@ -332,6 +340,7 @@ export async function discoverSupplierInTab(
               route: target.url,
               resolvedRoute: evidence.url,
               evidence: routeEvidence,
+              admission: candidate.admission,
             });
             continue;
           }
@@ -357,12 +366,14 @@ export async function discoverSupplierInTab(
               route: target.url,
               resolvedRoute: evidence.url,
               evidence: routeEvidence,
+              admission: candidate.admission,
             });
           } catch {
             recordAttempt(diagnostic, page, target.source, candidate.adapterId, "policy_rejected", Date.now() - pageStartedAt, {
               route: target.url,
               resolvedRoute: evidence.url,
               evidence: routeEvidence,
+              admission: candidate.admission,
             });
           }
         }
@@ -537,7 +548,11 @@ export function compileCandidates(evidence: PageEvidence, entryUrl: string, disp
     const matchingResource = evidence.resources.find((resource) => resource.url === list?.request?.url);
     if (matchingResource?.hasLinkNext && list && !list.paginate) list.paginate = { kind: "link-header" };
     const candidate = recipeFromDraft(networkDraft, evidence.origin, entryUrl, displayName);
-    if (candidate) candidates.push({ adapterId: "network-json", recipe: candidate });
+    if (candidate) candidates.push({
+      adapterId: "network-json",
+      recipe: candidate,
+      admission: ["structured_network"],
+    });
   }
 
   const domEntry: CapturedEntry = {
@@ -555,24 +570,37 @@ export function compileCandidates(evidence: PageEvidence, entryUrl: string, disp
     const invoices = embeddedDraft.recipe.invoices as { list?: { embeddedJson?: boolean } };
     if (invoices.list?.embeddedJson) {
       const candidate = recipeFromDraft(embeddedDraft, evidence.origin, entryUrl, displayName);
-      if (candidate) candidates.push({ adapterId: "embedded-json", recipe: candidate });
+      if (candidate) candidates.push({
+        adapterId: "embedded-json",
+        recipe: candidate,
+        admission: ["embedded_invoice_data"],
+      });
     }
   }
 
   const links = findLikelyDocumentLinks(evidence.html, entryUrl, evidence.title);
   const domCandidate = links.length ? directDomRecipe(evidence.origin, entryUrl, displayName, links) : undefined;
-  if (domCandidate) candidates.push({ adapterId: "dom-links", recipe: domCandidate, previewCount: Math.min(500, links.length) });
+  if (domCandidate) candidates.push({
+    adapterId: "dom-links",
+    recipe: domCandidate,
+    previewCount: Math.min(500, links.length),
+    admission: ["direct_document_link"],
+  });
   const semanticEvidenceCount = evidence.stats.semanticControls + (evidence.stats.semanticSections ?? 0);
   const semanticCandidate = semanticEvidenceCount > 0
     ? semanticDomRecipe(evidence.origin, entryUrl, displayName, evidence.crossOriginHosts)
     : undefined;
   if (semanticCandidate) {
+    const admission: CandidateAdmissionSignal[] = [];
+    if ((evidence.stats.semanticSections ?? 0) > 0) admission.push("independent_invoice_context");
+    if (evidence.stats.semanticControls > 0) admission.push("semantic_document_control");
     candidates.push({
       adapterId: "dom-actions",
       recipe: semanticCandidate,
-      // Search remains read-only. The action is verified only after the user
-      // explicitly chooses Connect & Collect.
+      // Discovery may reveal inert account/settings UI, but it never invokes a
+      // download action. Documents are captured only during explicit collection.
       previewCount: Math.min(500, semanticEvidenceCount),
+      admission,
     });
   }
   return candidates;
@@ -695,7 +723,8 @@ export function parsePageEvidence(value: unknown, expectedOrigin: string, option
   const boundedOptionalCount = (item: unknown) => item === undefined || boundedCount(item);
   if (
     !boundedCount(stats.documentLinks) || !boundedCount(stats.structuredData) ||
-    !boundedCount(stats.semanticControls) || !boundedOptionalCount(stats.semanticSections)
+    !boundedCount(stats.semanticControls) || !boundedOptionalCount(stats.semanticSections) ||
+    !boundedOptionalCount(stats.semanticControlsRejected) || !boundedOptionalCount(stats.semanticNavigationSteps)
   ) return invalid();
   return {
     url: page.toString(),
@@ -712,6 +741,8 @@ export function parsePageEvidence(value: unknown, expectedOrigin: string, option
       structuredData: Number(stats.structuredData),
       semanticControls: Number(stats.semanticControls),
       semanticSections: Number(stats.semanticSections ?? 0),
+      semanticControlsRejected: Number(stats.semanticControlsRejected ?? 0),
+      semanticNavigationSteps: Number(stats.semanticNavigationSteps ?? 0),
     },
   };
 }
@@ -725,7 +756,11 @@ function isSafeObservedRequestHeaders(value: unknown): value is Record<string, s
   ));
 }
 
-/** Self-contained, bounded and read-only. No result from this function is persisted. */
+/**
+ * Self-contained and bounded. It may reveal inert account/settings UI, but it
+ * never invokes document, form, payment, or other mutating actions. No result
+ * from this function is persisted.
+ */
 async function collectPageEvidenceInPage(
   options: ProbeOptions,
   routePolicy: typeof EXPLORATION_ROUTE_POLICY & { documentSelector: string },
@@ -750,6 +785,7 @@ async function collectPageEvidenceInPage(
   const invoiceRow = new RegExp(semanticPolicy.invoiceRowPattern, "i");
   const actionColumn = new RegExp(semanticPolicy.actionColumnPattern, "i");
   const unsafeLabel = new RegExp(semanticPolicy.unsafeLabelPattern, "i");
+  const semanticNavigation = new RegExp(semanticPolicy.semanticNavigationPattern, "i");
   const invoiceSection = new RegExp(semanticPolicy.invoiceSectionPattern, "i");
   const visible = (element: Element): element is HTMLElement => {
     if (!(element instanceof HTMLElement)) return false;
@@ -804,7 +840,9 @@ async function collectPageEvidenceInPage(
       .map((header) => header.textContent)
       .join(" ")
   ).replace(/\s+/g, " ").trim().slice(0, 500);
-  const pageContext = (): string => `${location.pathname} ${document.title} ${
+  // The route is a search hypothesis and must never supply invoice evidence.
+  // Use only independently rendered page state here.
+  const pageContext = (): string => `${document.title} ${
     Array.from(document.querySelectorAll("h1,h2,h3,caption"))
       .slice(0, 12)
       .map((element) => element.textContent)
@@ -823,11 +861,11 @@ async function collectPageEvidenceInPage(
     const table = tableContextOf(element);
     const page = pageContext();
     const explicit = explicitDownloadAction.test(label) &&
-      (strongDocumentLabel.test(label) || invoiceContext.test(`${row} ${page}`));
+      (strongDocumentLabel.test(label) || invoiceContext.test(`${row} ${table} ${page}`));
     const contextualIcon = documentIcon.test(label) &&
       actionColumn.test(columnContextOf(element)) &&
       (invoiceRow.test(row) || invoiceContext.test(table)) &&
-      invoiceContext.test(page);
+      invoiceContext.test(`${table} ${page}`);
     return explicit || contextualIcon;
   });
   const semanticSections = (): Element[] => Array.from(document.querySelectorAll(
@@ -841,6 +879,60 @@ async function collectPageEvidenceInPage(
     ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim().slice(0, 120);
     return Boolean(label && invoiceSection.test(label) && !unsafeLabel.test(label));
   });
+  let semanticNavigationSteps = 0;
+  const semanticNavigationLabelOf = (element: Element): string => [
+    element.getAttribute("aria-label"),
+    element.getAttribute("title"),
+    element.textContent,
+  ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim().slice(0, 120);
+  const waitForSemanticNavigationMutation = (): Promise<void> => new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      observer.disconnect();
+      resolve();
+    };
+    const observer = new MutationObserver(finish);
+    observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+    const timer = setTimeout(finish, Math.min(1_000, Math.max(150, deadline - Date.now())));
+  });
+  const revealSemanticNavigation = async (): Promise<void> => {
+    if (
+      document.querySelector(routePolicy.documentSelector) ||
+      semanticControls().length ||
+      semanticSections().length
+    ) return;
+    const tiers = [
+      /(?:open\s+)?profile\s+menu$|account\s+menu$/i,
+      /^(?:settings|preferences)$/i,
+      /^(?:account|billing|subscriptions?|invoice\s+history|receipt\s+history|billing\s+history|past\s+invoices?)$/i,
+    ];
+    for (const tier of tiers) {
+      if (Date.now() >= deadline || semanticNavigationSteps >= 3) break;
+      const control = Array.from(document.querySelectorAll<HTMLElement>(
+        'button,[role="button"],[role="menuitem"],[role="tab"],a:not([href])',
+      )).find((element) => {
+        const label = semanticNavigationLabelOf(element);
+        return Boolean(
+          label && semanticNavigation.test(label) && tier.test(label) &&
+          !unsafeLabel.test(label) && !element.closest("form") && visible(element) &&
+          !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true"
+        );
+      });
+      if (!control) continue;
+      const changed = waitForSemanticNavigationMutation();
+      control.click();
+      semanticNavigationSteps += 1;
+      await changed;
+      if (
+        document.querySelector(routePolicy.documentSelector) ||
+        semanticControls().length ||
+        semanticSections().length
+      ) break;
+    }
+  };
 
   let observedSnapshot: CapturedEntry[] = [];
   let observedHighSignal = false;
@@ -890,6 +982,7 @@ async function collectPageEvidenceInPage(
       }
     }
   };
+  await revealSemanticNavigation();
   await waitForObservedEvidenceQuiescence();
 
   const usefulEvidencePresent = () => Boolean(
@@ -955,6 +1048,10 @@ async function collectPageEvidenceInPage(
   const structuredData = document.querySelectorAll('script[type="application/json"],script[type="application/ld+json"]').length;
   const documentLinks = document.querySelectorAll(routePolicy.documentSelector).length;
   const semanticControlCount = semanticControls().length;
+  const semanticControlsRejected = Math.max(
+    0,
+    Math.min(1_000, document.querySelectorAll(semanticPolicy.controlSelector).length) - semanticControlCount,
+  );
   const semanticSectionCount = semanticSections().length;
   const urls = new Set<string>();
   const crossOriginHosts = new Set<string>();
@@ -1137,6 +1234,8 @@ async function collectPageEvidenceInPage(
       structuredData: Math.min(1_000, structuredData),
       semanticControls: Math.min(1_000, semanticControlCount),
       semanticSections: Math.min(1_000, semanticSectionCount),
+      semanticControlsRejected,
+      semanticNavigationSteps: Math.min(3, semanticNavigationSteps),
     },
   };
 
@@ -1360,7 +1459,12 @@ function recordAttempt(
   adapter: DiscoveryAdapterId | undefined,
   result: DiscoveryAttemptResult,
   durationMs: number,
-  details: { route: string; resolvedRoute?: string; evidence?: DiscoveryAttemptEvidence },
+  details: {
+    route: string;
+    resolvedRoute?: string;
+    evidence?: DiscoveryAttemptEvidence;
+    admission?: CandidateAdmissionSignal[];
+  },
 ): void {
   if (diagnostic.attempts.length < 80) {
     const route = toDiagnosticRoute(details.route);
@@ -1374,6 +1478,7 @@ function recordAttempt(
       result,
       durationMs: Math.min(60_000, Math.max(0, Math.trunc(durationMs))),
       ...(details.evidence ? { evidence: details.evidence } : {}),
+      ...(details.admission?.length ? { admission: details.admission } : {}),
     });
   }
   console.info(`[collector] discovery page ${page}/${diagnostic.limits.pages} (${source} ${toDiagnosticRoute(details.route)})${adapter ? ` ${adapter}` : ""} -> ${result} (${Math.trunc(durationMs)}ms)`);
@@ -1387,6 +1492,8 @@ function diagnosticEvidence(evidence: PageEvidence): DiscoveryAttemptEvidence {
     documentLinks: evidence.stats.documentLinks,
     structuredData: evidence.stats.structuredData,
     semanticControls: evidence.stats.semanticControls,
+    semanticControlsRejected: evidence.stats.semanticControlsRejected ?? 0,
+    semanticNavigationSteps: evidence.stats.semanticNavigationSteps ?? 0,
   };
 }
 

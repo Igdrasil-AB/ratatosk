@@ -10,13 +10,23 @@ import {
 } from "../../../src/core/errors";
 import type { ExplorationFamily, ExplorationMode, ExplorationPageSource } from "./discovery-explorer";
 
-export const DISCOVERY_DIAGNOSTIC_SCHEMA = "ratatosk.discovery-diagnostic.v8" as const;
+export const DISCOVERY_DIAGNOSTIC_SCHEMA = "ratatosk.discovery-diagnostic.v9" as const;
 const LEGACY_DISCOVERY_DIAGNOSTIC_SCHEMAS = new Set([
   "ratatosk.discovery-diagnostic.v4",
   "ratatosk.discovery-diagnostic.v5",
   "ratatosk.discovery-diagnostic.v6",
   "ratatosk.discovery-diagnostic.v7",
+  "ratatosk.discovery-diagnostic.v8",
 ]);
+
+export const CANDIDATE_ADMISSION_SIGNALS = [
+  "structured_network",
+  "embedded_invoice_data",
+  "direct_document_link",
+  "independent_invoice_context",
+  "semantic_document_control",
+] as const;
+export type CandidateAdmissionSignal = typeof CANDIDATE_ADMISSION_SIGNALS[number];
 
 export type DiscoveryAttemptResult =
   | "candidate_compiled"
@@ -46,6 +56,7 @@ export interface CandidateVerificationAttempt {
   result: CandidateVerificationResult;
   failure?: Omit<CollectionFailureEvidence, "retrieval">;
   retrieval?: Omit<RetrievalProof, "completeness">;
+  verifiedDocuments?: number;
 }
 
 const DIAGNOSTIC_ROUTE_WORD = /^(?:app|v|t|home|dashboard|manage|admin|account|accounts|organization|organizations|org|workspace|workspaces|team|teams|settings|preferences|billing|billings|invoice|invoices|receipt|receipts|payment|payments|subscription|subscriptions|statement|statements|transaction|transactions|history|plans|login)$/i;
@@ -76,6 +87,8 @@ export interface DiscoveryAttemptEvidence {
   documentLinks: number;
   structuredData: number;
   semanticControls: number;
+  semanticControlsRejected?: number;
+  semanticNavigationSteps?: number;
 }
 
 export interface DiscoveryDiagnosticV6 {
@@ -111,6 +124,7 @@ export interface DiscoveryDiagnosticV6 {
     result: DiscoveryAttemptResult;
     durationMs: number;
     evidence?: DiscoveryAttemptEvidence;
+    admission?: CandidateAdmissionSignal[];
   }>;
   verification?: {
     attempted: number;
@@ -180,6 +194,7 @@ export function parseDiscoveryDiagnostic(value: unknown): DiscoveryDiagnosticV6 
     (result === "candidates_found") !== (raw.candidates.retained > 0) ||
     (result === "not_found") !== (termination === "queue_exhausted")
   ) throw new Error("inconsistent discovery termination");
+  const currentSchema = raw.schema === DISCOVERY_DIAGNOSTIC_SCHEMA;
   const attempts = raw.attempts.map((attempt) => {
     if (
       !attempt || !boundedInt(attempt.page, 1, raw.limits!.pages) || !isPageSource(attempt.source) || !isAttemptResult(attempt.result) ||
@@ -191,6 +206,10 @@ export function parseDiscoveryDiagnostic(value: unknown): DiscoveryDiagnosticV6 
       throw new Error("invalid discovery diagnostic adapter");
     }
     const evidence = attempt.evidence === undefined ? undefined : parseAttemptEvidence(attempt.evidence);
+    const admission = attempt.admission === undefined ? undefined : parseAdmissionSignals(attempt.admission);
+    if (currentSchema && attempt.result === "candidate_compiled" && !admission?.length) {
+      throw new Error("missing candidate admission evidence");
+    }
     return {
       page: attempt.page,
       source: attempt.source,
@@ -200,12 +219,13 @@ export function parseDiscoveryDiagnostic(value: unknown): DiscoveryDiagnosticV6 
       result: attempt.result,
       durationMs: attempt.durationMs,
       ...(evidence ? { evidence } : {}),
+      ...(admission?.length ? { admission } : {}),
     };
   });
   if (attempts.some((attempt) => attempt.page > raw.pages!.attempted)) {
     throw new Error("discovery diagnostic attempt exceeds attempted pages");
   }
-  const verification = parseVerification(raw.verification, raw.candidates.retained, result);
+  const verification = parseVerification(raw.verification, raw.candidates.retained, result, currentSchema);
   const coverage = parseCoverage(raw.coverage);
   return {
     schema: DISCOVERY_DIAGNOSTIC_SCHEMA,
@@ -280,6 +300,7 @@ function parseVerification(
   value: DiscoveryDiagnosticV6["verification"] | undefined,
   retained: number,
   result: DiscoveryDiagnosticV6["result"],
+  requireVerifiedDocumentCount: boolean,
 ): DiscoveryDiagnosticV6["verification"] | undefined {
   if (value === undefined) return undefined;
   if (result !== "candidates_found" || !boundedInt(value.attempted, 1, retained) || !Array.isArray(value.outcomes) || value.outcomes.length !== value.attempted) {
@@ -296,12 +317,20 @@ function parseVerification(
       throw new Error("inconsistent discovery verification failure");
     }
     const retrieval = outcome.retrieval === undefined ? undefined : parseVerificationRetrieval(outcome.retrieval);
+    if (
+      (requireVerifiedDocumentCount && outcome.verifiedDocuments === undefined) ||
+      (outcome.verifiedDocuments !== undefined && !boundedInt(outcome.verifiedDocuments, 0, 10_000)) ||
+      (outcome.result === "collected" && (outcome.verifiedDocuments ?? 0) < 1)
+    ) {
+      throw new Error("invalid verified document count");
+    }
     return {
       candidate: outcome.candidate,
       adapter: outcome.adapter,
       result: outcome.result,
       ...(failure ? { failure } : {}),
       ...(retrieval ? { retrieval } : {}),
+      ...(outcome.verifiedDocuments !== undefined ? { verifiedDocuments: outcome.verifiedDocuments } : {}),
     };
   });
   return { attempted: value.attempted, outcomes };
@@ -357,7 +386,9 @@ function parseAttemptEvidence(value: DiscoveryAttemptEvidence): DiscoveryAttempt
   if (
     !value || !boundedInt(value.jsonResources, 0, 1_000) || !boundedInt(value.documentLinks, 0, 1_000) ||
     !boundedOptionalInt(value.observedRequests, 0, 1_000) || !boundedOptionalInt(value.replayedRequests, 0, 1_000) ||
-    !boundedInt(value.structuredData, 0, 1_000) || !boundedInt(value.semanticControls, 0, 1_000)
+    !boundedInt(value.structuredData, 0, 1_000) || !boundedInt(value.semanticControls, 0, 1_000) ||
+    !boundedOptionalInt(value.semanticControlsRejected, 0, 1_000) ||
+    !boundedOptionalInt(value.semanticNavigationSteps, 0, 3)
   ) throw new Error("invalid discovery diagnostic attempt evidence");
   return {
     jsonResources: value.jsonResources,
@@ -366,7 +397,19 @@ function parseAttemptEvidence(value: DiscoveryAttemptEvidence): DiscoveryAttempt
     documentLinks: value.documentLinks,
     structuredData: value.structuredData,
     semanticControls: value.semanticControls,
+    semanticControlsRejected: value.semanticControlsRejected ?? 0,
+    semanticNavigationSteps: value.semanticNavigationSteps ?? 0,
   };
+}
+
+function parseAdmissionSignals(value: readonly unknown[]): CandidateAdmissionSignal[] {
+  if (!Array.isArray(value) || value.length > CANDIDATE_ADMISSION_SIGNALS.length) {
+    throw new Error("invalid candidate admission evidence");
+  }
+  const safe = [...new Set(value.filter((item): item is CandidateAdmissionSignal =>
+    CANDIDATE_ADMISSION_SIGNALS.includes(item as CandidateAdmissionSignal)))];
+  if (safe.length !== value.length) throw new Error("invalid candidate admission evidence");
+  return safe;
 }
 
 function isSafeRouteTemplate(value: unknown): value is string {

@@ -15,8 +15,8 @@ describe("discovered candidate fallback", () => {
     expect(result.kind).toBe("success");
     if (result.kind === "success") expect(result.profile).toBe(candidates.candidates[1]);
     expect(result.outcomes).toEqual([
-      { candidate: 1, adapter: "dom-links", result: "document_invalid" },
-      { candidate: 2, adapter: "dom-links", result: "collected" },
+      { candidate: 1, adapter: "dom-links", result: "document_invalid", verifiedDocuments: 0 },
+      { candidate: 2, adapter: "dom-links", result: "collected", verifiedDocuments: 2 },
     ]);
     expect(run).toHaveBeenCalledTimes(2);
   });
@@ -32,8 +32,8 @@ describe("discovered candidate fallback", () => {
     expect(result.kind).toBe("success");
     if (result.kind === "success") expect(result.profile).toBe(candidates.candidates[1]);
     expect(result.outcomes).toEqual([
-      { candidate: 1, adapter: "dom-links", result: "unknown" },
-      { candidate: 2, adapter: "dom-links", result: "collected" },
+      { candidate: 1, adapter: "dom-links", result: "unknown", verifiedDocuments: 0 },
+      { candidate: 2, adapter: "dom-links", result: "collected", verifiedDocuments: 1 },
     ]);
     expect(run).toHaveBeenCalledTimes(2);
   });
@@ -48,8 +48,8 @@ describe("discovered candidate fallback", () => {
 
     expect(result).toMatchObject({ kind: "success", attempted: 2 });
     expect(result.outcomes).toEqual([
-      { candidate: 1, adapter: "dom-links", result: "unknown" },
-      { candidate: 2, adapter: "dom-links", result: "collected" },
+      { candidate: 1, adapter: "dom-links", result: "unknown", verifiedDocuments: 0 },
+      { candidate: 2, adapter: "dom-links", result: "collected", verifiedDocuments: 1 },
     ]);
   });
 
@@ -68,8 +68,8 @@ describe("discovered candidate fallback", () => {
 
     expect(result.kind).toBe("exhausted");
     expect(result.outcomes).toEqual([
-      { candidate: 1, adapter: "dom-links", result: "no_documents" },
-      { candidate: 2, adapter: "dom-links", result: "no_documents" },
+      { candidate: 1, adapter: "dom-links", result: "no_documents", verifiedDocuments: 0 },
+      { candidate: 2, adapter: "dom-links", result: "no_documents", verifiedDocuments: 0 },
     ]);
     expect(run).toHaveBeenCalledTimes(2);
   });
@@ -100,6 +100,7 @@ describe("discovered candidate fallback", () => {
       candidate: 1,
       adapter: "dom-links",
       result: "no_documents",
+      verifiedDocuments: 0,
       retrieval: {
         termination: "explicit_end",
         pagesVisited: 1,
@@ -130,6 +131,7 @@ describe("discovered candidate fallback", () => {
       candidate: 1,
       adapter: "dom-links",
       result: "recipe_incompatible",
+      verifiedDocuments: 0,
       failure: {
         stage: "document_fetch",
         cause: "unexpected_response",
@@ -178,8 +180,8 @@ describe("discovered candidate fallback", () => {
 
     expect(result).toMatchObject({ kind: "success", attempted: 2 });
     expect(result.outcomes).toEqual([
-      { candidate: 1, adapter: "dom-links", result: "retrieval_incomplete" },
-      { candidate: 2, adapter: "dom-links", result: "collected" },
+      { candidate: 1, adapter: "dom-links", result: "retrieval_incomplete", verifiedDocuments: 0 },
+      { candidate: 2, adapter: "dom-links", result: "collected", verifiedDocuments: 1 },
     ]);
   });
 
@@ -235,7 +237,7 @@ describe("discovered candidate fallback", () => {
 
       expect(result).toMatchObject({ kind: "fatal", attempted: 1 });
       expect(result.outcomes).toEqual([
-        { candidate: 1, adapter: "dom-links", result: code },
+        { candidate: 1, adapter: "dom-links", result: code, verifiedDocuments: 0 },
       ]);
       expect(run).toHaveBeenCalledTimes(1);
     });

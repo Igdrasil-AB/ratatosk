@@ -43,6 +43,7 @@ export async function collectFirstWorkingCandidate(
           unresolvedItems: summary.retrievalProof.unresolvedItems,
         },
       } : {}),
+      verifiedDocuments: verifiedDocuments(summary),
     });
     if (isProvenDelivery(summary)) {
       return { kind: "success", profile, summary, attempted: index + 1, outcomes };
