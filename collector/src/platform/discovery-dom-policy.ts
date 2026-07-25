@@ -36,6 +36,7 @@ export const DISCOVERY_DOM_POLICY = {
   unsafeLabelPattern: "(?:\\b(?:delete|remove|cancel|pay|purchase|checkout|upgrade|downgrade|authorize|logout)\\b|sign\\s*out|log\\s*out)",
   unsafePathPattern: "(?:^|/)(?:logout|signout|delete|cancel|checkout|purchase|upgrade|downgrade|authorize|oauth)(?:/|$)",
   invoiceSectionPattern: "^(?:invoices?|invoice history|receipts?|receipt history|billing history|past invoices?)$",
+  semanticNavigationPattern: "^(?:(?:[^,]{1,80},\\s*)?(?:open\\s+)?(?:profile|account)(?:\\s+menu)?|settings|preferences|billing|subscriptions?|invoice\\s+history|receipt\\s+history|billing\\s+history|past\\s+invoices?)$",
   stableMs: 350,
 } as const;
 
@@ -50,31 +51,53 @@ export interface SemanticControlEvidence {
   formBacked: boolean;
 }
 
-/** Browser-independent contract used by synthetic shape tests. */
-export function isSemanticControlEvidenceEligible(
+export type SemanticControlEvidenceBasis =
+  | "explicit_document_label"
+  | "invoice_context_action"
+  | "invoice_table_action";
+
+/**
+ * Return the closed structural reason that admits an invoice action.
+ *
+ * `pageContext` must contain only independently rendered page evidence such as
+ * the title and headings. A speculative pathname is a search hypothesis, not
+ * proof that a global "Download" button belongs to an invoice.
+ */
+export function semanticControlEvidenceBasis(
   evidence: SemanticControlEvidence,
   policy: typeof DISCOVERY_DOM_POLICY = DISCOVERY_DOM_POLICY,
-): boolean {
-  if (!evidence.visible || !evidence.enabled || evidence.formBacked) return false;
+): SemanticControlEvidenceBasis | undefined {
+  if (!evidence.visible || !evidence.enabled || evidence.formBacked) return undefined;
   const material = bounded(evidence.material, 320);
   const row = bounded(evidence.rowContext, 500);
   const column = bounded(evidence.columnContext, 120);
   const table = bounded(evidence.tableContext, 500);
   const page = bounded(evidence.pageContext, 240);
-  if (!material || new RegExp(policy.unsafeLabelPattern, "i").test(material)) return false;
+  if (!material || new RegExp(policy.unsafeLabelPattern, "i").test(material)) return undefined;
 
   const explicit = new RegExp(policy.explicitActionPattern, "i").test(material);
   const strongDocument = new RegExp(policy.strongDocumentPattern, "i").test(material);
-  const invoiceContext = new RegExp(policy.invoiceContextPattern, "i").test(`${row} ${page}`);
-  if (explicit && (strongDocument || invoiceContext)) return true;
+  if (explicit && strongDocument) return "explicit_document_label";
+  if (explicit && new RegExp(policy.invoiceContextPattern, "i").test(`${row} ${table} ${page}`)) {
+    return "invoice_context_action";
+  }
 
-  return new RegExp(policy.documentIconPattern, "i").test(material) &&
+  const contextualIcon = new RegExp(policy.documentIconPattern, "i").test(material) &&
     new RegExp(policy.actionColumnPattern, "i").test(column) &&
     (
       new RegExp(policy.invoiceRowPattern, "i").test(row) ||
       new RegExp(policy.invoiceContextPattern, "i").test(table)
     ) &&
-    new RegExp(policy.invoiceContextPattern, "i").test(page);
+    new RegExp(policy.invoiceContextPattern, "i").test(`${table} ${page}`);
+  return contextualIcon ? "invoice_table_action" : undefined;
+}
+
+/** Browser-independent contract used by synthetic shape tests. */
+export function isSemanticControlEvidenceEligible(
+  evidence: SemanticControlEvidence,
+  policy: typeof DISCOVERY_DOM_POLICY = DISCOVERY_DOM_POLICY,
+): boolean {
+  return semanticControlEvidenceBasis(evidence, policy) !== undefined;
 }
 
 export function isSafeSemanticInvoiceSection(
@@ -82,6 +105,18 @@ export function isSafeSemanticInvoiceSection(
   policy: typeof DISCOVERY_DOM_POLICY = DISCOVERY_DOM_POLICY,
 ): boolean {
   return new RegExp(policy.invoiceSectionPattern, "i").test(bounded(value, 120));
+}
+
+export function isSafeSemanticNavigationLabel(
+  value: string,
+  policy: typeof DISCOVERY_DOM_POLICY = DISCOVERY_DOM_POLICY,
+): boolean {
+  const label = bounded(value, 120);
+  return Boolean(
+    label &&
+    !new RegExp(policy.unsafeLabelPattern, "i").test(label) &&
+    new RegExp(policy.semanticNavigationPattern, "i").test(label),
+  );
 }
 
 function bounded(value: string, maximum: number): string {

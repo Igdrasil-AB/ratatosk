@@ -8,6 +8,7 @@ describe("supplier discovery shape corpus", () => {
     name: string;
     evidence: Partial<PageEvidence>;
     expected: string[];
+    admission?: string[][];
   }> = [
     {
       name: "JSON API list",
@@ -23,6 +24,7 @@ describe("supplier discovery shape corpus", () => {
         }],
       },
       expected: ["network-json"],
+      admission: [["structured_network"]],
     },
     {
       name: "embedded application JSON",
@@ -33,11 +35,13 @@ describe("supplier discovery shape corpus", () => {
         ] })}</script>`,
       },
       expected: ["embedded-json"],
+      admission: [["embedded_invoice_data"]],
     },
     {
       name: "direct receipt links",
       evidence: { html: '<a href="/account/receipt/rcpt_1">Receipt</a><a href="/documents/inv_2.pdf">PDF</a>' },
       expected: ["dom-links"],
+      admission: [["direct_document_link"]],
     },
     {
       name: "download buttons without hrefs",
@@ -46,6 +50,7 @@ describe("supplier discovery shape corpus", () => {
         stats: { documentLinks: 0, structuredData: 0, semanticControls: 1 },
       },
       expected: ["dom-actions"],
+      admission: [["semantic_document_control"]],
     },
     {
       name: "navigation links only",
@@ -59,6 +64,7 @@ describe("supplier discovery shape corpus", () => {
         stats: { documentLinks: 1, structuredData: 0, semanticControls: 1 },
       },
       expected: ["dom-links", "dom-actions"],
+      admission: [["direct_document_link"], ["semantic_document_control"]],
     },
   ];
 
@@ -66,6 +72,7 @@ describe("supplier discovery shape corpus", () => {
     it(shape.name, () => {
       const candidates = compileCandidates(evidence(shape.evidence), page, "Example Vendor");
       expect(candidates.map((candidate) => candidate.adapterId)).toEqual(shape.expected);
+      if (shape.admission) expect(candidates.map((candidate) => candidate.admission)).toEqual(shape.admission);
     });
   }
 });

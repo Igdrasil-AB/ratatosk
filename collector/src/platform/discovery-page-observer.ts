@@ -12,6 +12,7 @@ const MAX_DOCUMENTS = 100;
 const MAX_INLINE_PDF_BYTES = 8 * 1024 * 1024;
 const MAX_INLINE_PDF_TOTAL_BYTES = 24 * 1024 * 1024;
 const DOCUMENT_HINT = /(?:invoice|receipt|statement|document|download|pdf)/i;
+const DOCUMENT_JSON_FIELD = /(?:^|[._-])(?:(?:invoice|receipt|statement|document)[_-]?(?:pdf|url)|pdf[_-]?url|download[_-]?url)$/i;
 
 interface DiscoveryPageObserver {
   snapshot(): Promise<CapturedEntry[]>;
@@ -51,6 +52,7 @@ function installObserver(): void {
     url: string;
     requestHeaders: Record<string, string>;
     requestBody?: string;
+    actionScopedAtRequestStart?: boolean;
   }>();
   let totalBodyChars = 0;
   let totalInlinePdfBytes = 0;
@@ -104,14 +106,14 @@ function installObserver(): void {
     totalBodyChars += entry.responseBody.length;
   };
 
-  const keepDocumentUrl = (raw: string): void => {
+  const keepDocumentUrl = (raw: string, actionScopedAtRequestStart = false): void => {
     if (stopped || documents.length >= MAX_DOCUMENTS || raw.length > 2_048) return;
     let url: URL;
     try { url = new URL(raw, location.href); } catch { return; }
     if (url.protocol !== "https:" || url.username || url.password) return;
     url.hash = "";
     const value = url.toString();
-    if (documentActionActive) keepActionDocumentUrl(value);
+    if (actionScopedAtRequestStart) keepActionDocumentUrl(value);
     if (documentKeys.has(value)) return;
     documentKeys.add(value);
     documents.push(value);
@@ -129,7 +131,7 @@ function installObserver(): void {
     actionDocuments.push(value);
   };
 
-  const keepPdfBytes = (bytes: Uint8Array): boolean => {
+  const keepPdfBytes = (bytes: Uint8Array, actionScopedAtRequestStart = false): boolean => {
     if (
       stopped || documents.length >= MAX_DOCUMENTS || bytes.byteLength === 0 ||
       bytes.byteLength > MAX_INLINE_PDF_BYTES ||
@@ -141,7 +143,7 @@ function installObserver(): void {
       binary += String.fromCharCode(...bytes.subarray(offset, Math.min(bytes.length, offset + 32_768)));
     }
     const value = `data:application/pdf;base64,${btoa(binary)}`;
-    if (documentActionActive && !actionDocumentKeys.has(value) && actionDocuments.length < MAX_DOCUMENTS) {
+    if (actionScopedAtRequestStart && !actionDocumentKeys.has(value) && actionDocuments.length < MAX_DOCUMENTS) {
       actionDocumentKeys.add(value);
       actionDocuments.push(value);
     }
@@ -152,20 +154,24 @@ function installObserver(): void {
     return true;
   };
 
-  const captureDocumentBlob = async (blob: Blob, fallbackUrl?: string): Promise<void> => {
+  const captureDocumentBlob = async (
+    blob: Blob,
+    fallbackUrl?: string,
+    actionScopedAtRequestStart = false,
+  ): Promise<void> => {
     if (blob.size === 0 || blob.size > MAX_INLINE_PDF_BYTES) {
-      if (fallbackUrl) keepDocumentUrl(fallbackUrl);
+      if (fallbackUrl) keepDocumentUrl(fallbackUrl, actionScopedAtRequestStart);
       return;
     }
     try {
-      const captured = keepPdfBytes(new Uint8Array(await blob.arrayBuffer()));
-      if (!captured && fallbackUrl) keepDocumentUrl(fallbackUrl);
+      const captured = keepPdfBytes(new Uint8Array(await blob.arrayBuffer()), actionScopedAtRequestStart);
+      if (!captured && fallbackUrl) keepDocumentUrl(fallbackUrl, actionScopedAtRequestStart);
     } catch {
-      if (fallbackUrl) keepDocumentUrl(fallbackUrl);
+      if (fallbackUrl) keepDocumentUrl(fallbackUrl, actionScopedAtRequestStart);
     }
   };
 
-  const captureJsonDocumentUrls = (body: string): void => {
+  const captureJsonDocumentUrls = (body: string, actionScopedAtRequestStart = false): void => {
     let root: unknown;
     try { root = JSON.parse(body); } catch { return; }
     const pendingNodes: Array<{ value: unknown; path: string; depth: number }> = [{ value: root, path: "", depth: 0 }];
@@ -175,8 +181,8 @@ function installObserver(): void {
       visited += 1;
       if (node.depth > 8) continue;
       if (typeof node.value === "string") {
-        if (node.value.length <= 2_048 && DOCUMENT_HINT.test(`${node.path} ${node.value}`)) {
-          keepDocumentUrl(node.value);
+        if (node.value.length <= 2_048 && DOCUMENT_JSON_FIELD.test(node.path)) {
+          keepDocumentUrl(node.value, actionScopedAtRequestStart);
         }
         continue;
       }
@@ -199,6 +205,7 @@ function installObserver(): void {
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
     const headers = requestHeaders(input, init);
     const requestBody = requestBodyText(input, init, headers["content-type"]);
+    const actionScopedAtRequestStart = documentActionActive;
     const responsePromise = Reflect.apply(originalFetch, this, [input, init]) as Promise<Response>;
     queue(async () => {
       const response = await responsePromise;
@@ -207,7 +214,7 @@ function installObserver(): void {
       if (isJsonContentType(contentType)) {
         const body = await readBoundedResponse(response.clone());
         if (body === undefined) return;
-        captureJsonDocumentUrls(body);
+        captureJsonDocumentUrls(body, actionScopedAtRequestStart);
         keep({
           url: responseUrl,
           method,
@@ -221,7 +228,7 @@ function installObserver(): void {
         contentType === "application/pdf" ||
         (DOCUMENT_HINT.test(responseUrl) && !/(?:json|html|javascript|text\/|image\/)/i.test(contentType))
       ) {
-        await captureDocumentBlob(await response.clone().blob(), responseUrl);
+        await captureDocumentBlob(await response.clone().blob(), responseUrl, actionScopedAtRequestStart);
       }
     });
     return responsePromise;
@@ -254,7 +261,10 @@ function installObserver(): void {
     body?: Document | XMLHttpRequestBodyInit | null,
   ): void {
     const state = xhrState.get(this);
-    if (state && typeof body === "string" && body.length <= MAX_REQUEST_BODY_CHARS) state.requestBody = body;
+    if (state) {
+      state.actionScopedAtRequestStart = documentActionActive;
+      if (typeof body === "string" && body.length <= MAX_REQUEST_BODY_CHARS) state.requestBody = body;
+    }
     this.addEventListener("loadend", () => {
       queue(async () => {
         const current = xhrState.get(this);
@@ -266,7 +276,7 @@ function installObserver(): void {
           if (this.responseType === "json") responseBody = JSON.stringify(this.response);
           else if (this.responseType === "" || this.responseType === "text") responseBody = this.responseText;
           if (!responseBody || responseBody.length > MAX_BODY_CHARS) return;
-          captureJsonDocumentUrls(responseBody);
+          captureJsonDocumentUrls(responseBody, current.actionScopedAtRequestStart);
           keep({
             url: responseUrl,
             method: current.method,
@@ -280,11 +290,15 @@ function installObserver(): void {
           contentType === "application/pdf" ||
           (DOCUMENT_HINT.test(responseUrl) && !/(?:json|html|javascript|text\/|image\/)/i.test(contentType))
         ) {
-          if (this.response instanceof Blob) await captureDocumentBlob(this.response, responseUrl);
+          if (this.response instanceof Blob) {
+            await captureDocumentBlob(this.response, responseUrl, current.actionScopedAtRequestStart);
+          }
           else if (this.response instanceof ArrayBuffer) {
-            if (!keepPdfBytes(new Uint8Array(this.response))) keepDocumentUrl(responseUrl);
+            if (!keepPdfBytes(new Uint8Array(this.response), current.actionScopedAtRequestStart)) {
+              keepDocumentUrl(responseUrl, current.actionScopedAtRequestStart);
+            }
           } else {
-            keepDocumentUrl(responseUrl);
+            keepDocumentUrl(responseUrl, current.actionScopedAtRequestStart);
           }
         }
       });
@@ -294,10 +308,11 @@ function installObserver(): void {
 
   const wrappedCreateObjectURL: typeof URL.createObjectURL = function(object: Blob | MediaSource): string {
     const value = Reflect.apply(originalCreateObjectURL, URL, [object]) as string;
+    const actionScopedAtRequestStart = documentActionActive;
     if (object instanceof Blob && (
       object.type.toLowerCase() === "application/pdf" || DOCUMENT_HINT.test(object.type)
     )) {
-      queue(() => captureDocumentBlob(object));
+      queue(() => captureDocumentBlob(object, undefined, actionScopedAtRequestStart));
     }
     return value;
   };

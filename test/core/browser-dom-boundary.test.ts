@@ -578,6 +578,14 @@ describe("browser DOM boundary", () => {
     expect(observerSource).toContain("originalCreateObjectURL");
   });
 
+  it("correlates action documents at request initiation instead of response completion", () => {
+    expect(observerSource).toContain("actionScopedAtRequestStart");
+    expect(observerSource).toMatch(
+      /const actionScopedAtRequestStart = documentActionActive[\s\S]{0,1000}?captureJsonDocumentUrls\(body, actionScopedAtRequestStart\)/,
+    );
+    expect(observerSource).not.toContain("if (documentActionActive) keepActionDocumentUrl(value)");
+  });
+
   it("requires generic download controls to sit in invoice-shaped context", () => {
     expect(driverSource).toContain("invoiceContext");
     expect(driverSource).toContain("strongDocumentLabel");
