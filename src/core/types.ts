@@ -37,9 +37,46 @@ export interface InvoiceRef {
   documentRef?: string;
   /** Anything else worth carrying through (line items, description, ...). */
   meta?: Record<string, unknown>;
+  /** Bounded, provenance-carrying facts observed outside the PDF body. These
+   * never participate in document identity or deduplication. */
+  metadataEvidence?: InvoiceMetadataEvidence[];
   /** Previous safe identities accepted only for dedup migration. Strategies
    * bound this list; recipe data cannot supply it directly. */
   identityAliases?: string[];
+}
+
+export type InvoiceMetadataSource =
+  | "network"
+  | "embedded"
+  | "dom-row"
+  | "download-filename"
+  | "content-disposition"
+  | "document-url";
+
+export type InvoiceMetadataConfidence = "high" | "medium" | "low";
+
+/**
+ * One independently observed metadata claim. Values come from structured API
+ * fields, labelled DOM cells, or browser-owned download metadata—not PDF text.
+ */
+export interface InvoiceMetadataEvidence {
+  source: InvoiceMetadataSource;
+  confidence: InvoiceMetadataConfidence;
+  invoiceNumber?: string;
+  issuedAt?: string;
+  total?: string;
+  currency?: string;
+  filename?: string;
+}
+
+export interface ResolvedInvoiceMetadata {
+  invoiceNumber?: string;
+  issuedAt?: string;
+  total?: string;
+  currency?: string;
+  filename?: string;
+  /** Fields withheld because equally strong evidence disagreed. */
+  conflicts?: Array<"invoiceNumber" | "issuedAt" | "total" | "currency" | "filename">;
 }
 
 export type RetrievalCompleteness = "complete" | "partial";
@@ -80,10 +117,15 @@ export interface FetchedDocument {
   /** Display name of the supplier, e.g. `"Anthropic (Claude)"` — used for folder names. */
   vendorName: string;
   vendorInvoiceId: string;
+  /** Supplier-facing label when independently observed. It is deliberately
+   * separate from the stable vendorInvoiceId used for deduplication. */
+  invoiceNumber?: string;
   /** Known list date, or absent when document/accounting extraction owns it. */
   issuedAt?: string;
   total?: string;
   currency?: string;
+  metadataEvidence?: InvoiceMetadataEvidence[];
+  metadataConflicts?: ResolvedInvoiceMetadata["conflicts"];
   filename: string;
   contentType: string;
   bytes: ArrayBuffer;

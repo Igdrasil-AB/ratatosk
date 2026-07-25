@@ -2,6 +2,7 @@ import type { OperationalOutcomeCode } from "../../../src/core/errors";
 import type { SeenStore } from "../../../src/core/types";
 import { isExactDocumentProviderOriginPattern } from "../../../src/core/document-provider";
 import { normalizeIgdrasilApiBase } from "../../../src/ingest/igdrasil-sink";
+import type { InvoiceMetadataEvidence, ResolvedInvoiceMetadata } from "../../../src/core/types";
 
 /**
  * Typed wrapper over `chrome.storage.local`.
@@ -248,9 +249,14 @@ export interface LedgerEntry {
   key: string; // idempotency key — dedups the ledger too
   vendorId: string;
   vendorName: string;
+  vendorInvoiceId?: string;
+  invoiceNumber?: string;
   issuedAt?: string;
   total?: string;
   currency?: string;
+  filename?: string;
+  metadataEvidence?: InvoiceMetadataEvidence[];
+  metadataConflicts?: ResolvedInvoiceMetadata["conflicts"];
   collectedAt: number;
 }
 
@@ -264,9 +270,34 @@ export async function recordCollected(entries: LedgerEntry[]): Promise<void> {
   if (!entries.length) return;
   await mutate<LedgerEntry[]>(KEY.ledger, [], (existing) => {
     const byKey = new Map(existing.map((entry) => [entry.key, entry]));
-    for (const entry of entries) byKey.set(entry.key, entry);
+    for (const entry of entries) {
+      const previous = byKey.get(entry.key);
+      byKey.set(entry.key, previous ? mergeLedgerEntry(previous, entry) : entry);
+    }
     return [...byKey.values()].sort((a, b) => b.collectedAt - a.collectedAt).slice(0, LEDGER_CAP);
   });
+}
+
+/** Enrich an already delivered invoice without making the retry look new. */
+export function mergeLedgerEntry(previous: LedgerEntry, incoming: LedgerEntry): LedgerEntry {
+  const metadataEvidence = [
+    ...(previous.metadataEvidence ?? []),
+    ...(incoming.metadataEvidence ?? []),
+  ].filter((item, index, all) =>
+    index === all.findIndex((candidate) => JSON.stringify(candidate) === JSON.stringify(item))
+  ).slice(0, 32);
+  return {
+    ...previous,
+    ...definedValues(incoming),
+    collectedAt: Math.min(previous.collectedAt, incoming.collectedAt),
+    ...(metadataEvidence.length ? { metadataEvidence } : {}),
+  };
+}
+
+function definedValues<T extends object>(value: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, item]) => item !== undefined),
+  ) as Partial<T>;
 }
 
 /** Remove a vendor's user-facing history only after an explicit reset. */

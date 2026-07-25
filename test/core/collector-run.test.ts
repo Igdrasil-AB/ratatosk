@@ -35,7 +35,7 @@ vi.mock("../../collector/src/platform/storage", () => ({
 }));
 vi.mock("../../collector/src/platform/notifications", () => ({ notifyReconnect: mocks.notifyReconnect }));
 
-import { runDiscoveredCandidate, runVendorById } from "../../collector/src/platform/collector";
+import { runAllConnected, runDiscoveredCandidate, runVendorById } from "../../collector/src/platform/collector";
 
 describe("Collector per-vendor run coordinator", () => {
   const seenAdd = vi.fn(async () => undefined);
@@ -80,6 +80,27 @@ describe("Collector per-vendor run coordinator", () => {
     expect(sinkSend.mock.invocationCallOrder[0]).toBeLessThan(seenAdd.mock.invocationCallOrder[0]);
   });
 
+  it("does not schedule orphaned retired recipe connections", async () => {
+    mocks.getConnections.mockResolvedValue({
+      chatgpt: { vendorId: "chatgpt", connectedAt: 1 },
+      railway: { vendorId: "railway", connectedAt: 2 },
+    });
+    mocks.resolveCollectorSource.mockImplementation(async (id: string) => id === "railway"
+      ? { kind: "official", recipe: { id, name: id }, primaryOrigin: "https://railway.com" }
+      : undefined);
+    mocks.streamVendor.mockResolvedValue({
+      vendorId: "railway",
+      documentCount: 0,
+      scopes: scopes(),
+    });
+
+    await expect(runAllConnected()).resolves.toEqual([
+      expect.objectContaining({ vendorId: "railway", status: "ok" }),
+    ]);
+    expect(mocks.resolveCollectorSource).toHaveBeenCalledWith("chatgpt");
+    expect(mocks.streamVendor).toHaveBeenCalledOnce();
+  });
+
   it("uses the same destination snapshot for the run context and sink", async () => {
     const config = { kind: "filesystem" as const, rootFolder: "Invoices", dateMode: "invoice" as const };
     mocks.getSinkConfig.mockResolvedValue(config);
@@ -118,7 +139,12 @@ describe("Collector per-vendor run coordinator", () => {
     });
     expect(seenAdd).toHaveBeenCalledTimes(2);
     expect(mocks.recordCollected).toHaveBeenCalledWith([
-      expect.objectContaining({ key: "key-vendor-deduped" }),
+      expect.objectContaining({
+        key: "key-vendor-deduped",
+        vendorInvoiceId: "invoice-1",
+        invoiceNumber: "INV-1",
+        filename: "invoice.pdf",
+      }),
     ]);
   });
 
@@ -372,6 +398,7 @@ function document(vendorId: string) {
     vendorId,
     vendorName: vendorId,
     vendorInvoiceId: "invoice-1",
+    invoiceNumber: "INV-1",
     issuedAt: "2026-07-16",
     filename: "invoice.pdf",
     contentType: "application/pdf",

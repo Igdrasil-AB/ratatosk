@@ -3,6 +3,7 @@ import { UnexpectedResponse } from "../../../src/core/errors";
 import { createHttpFetch } from "../../../src/core/http";
 import { render, renderHeaders } from "../../../src/core/template";
 import { createDocumentProviderFetch } from "./document-provider-fetch";
+import { createSemanticDocumentFetch } from "./semantic-document-fetch";
 
 /**
  * First-party fetch transport.
@@ -204,11 +205,11 @@ export class PageFetcher {
   private readonly preferredPageUrl: string;
   private readonly allowedOrigins: ReadonlySet<string>;
   private readonly vendorId: string;
-  private readonly workerFetch = createDocumentProviderFetch(createHttpFetch());
+  private readonly workerFetch;
   private readonly tabs = new Map<string, { tabId: number; created: boolean }>();
   private readonly tabAcquisitions = new Map<string, Promise<number>>();
 
-  constructor(recipe: VendorRecipe) {
+  constructor(recipe: VendorRecipe, options: { semanticActionDocuments?: boolean } = {}) {
     this.vendorId = recipe.id;
     this.primaryOrigin = originOf(recipe.homepage) ?? originOf(recipe.hosts[0]) ?? "";
     const recipePage = recipe.invoices.strategy === "dom"
@@ -219,6 +220,10 @@ export class PageFetcher {
       const origin = originOf(host.endsWith("/*") ? host.slice(0, -2) : host);
       return origin ? [origin] : [];
     }));
+    const providerFetch = createDocumentProviderFetch(createHttpFetch());
+    this.workerFetch = options.semanticActionDocuments
+      ? createSemanticDocumentFetch(providerFetch, this.allowedOrigins, this.vendorId)
+      : providerFetch;
   }
 
   /** Matches the `RunContext.fetch` signature the engine expects. */

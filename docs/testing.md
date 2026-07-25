@@ -4,6 +4,30 @@ Fixture tests prove mapping and engine behavior. They cannot prove that a curren
 vendor endpoint, browser auth flow, or bot-protection rule still works. Complete
 this test before naming a vendor as supported in a release.
 
+## Iteration discipline for a live failure
+
+Do not advance the package version, publish a ZIP, or describe a supplier as
+fixed until the exact built extension has passed the live acceptance loop below.
+One iteration must change only the narrowest failed boundary:
+
+1. Reproduce with the current unpacked build and copy the privacy-safe
+   diagnostic.
+2. Name the first failed boundary: route discovery, control enumeration,
+   traversal proof, document resolution, redirect permission, PDF validation,
+   destination delivery, or duplicate commit.
+3. Add a regression test for that boundary before changing implementation.
+4. Build Collector, reload that exact `dist/collector` in Chrome, and rerun the
+   same supplier account. Do not substitute fixture success for this step.
+5. Accept the iteration only when the observed failure moves to a later typed
+   boundary or the complete live acceptance passes. Revert speculative changes
+   that do neither.
+
+The release acceptance is two consecutive runs against the same known invoice
+set: the first delivers every expected unique document, and the second delivers
+zero new documents. Record the expected, delivered, and second-run counts. Only
+after this passes may the version/discovery-engine identity be bumped, the final
+build reloaded once more, and the distributable ZIP created.
+
 Use a dedicated vendor test account with synthetic, non-sensitive invoices. Do
 not use a personal account, customer account, production token, or real financial
 document in screenshots, logs, fixtures, or issue reports.

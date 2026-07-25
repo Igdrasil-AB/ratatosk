@@ -268,6 +268,7 @@
       .invoice-history { min-height: 0; padding: 0 14px; display: flex; flex: 1; flex-direction: column; }
       .feed-toolbar { min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 3px 0 7px; }
       .feed-toolbar > span { min-width: 0; display: flex; align-items: baseline; gap: 7px; }
+      .feed-toolbar-actions { justify-content: flex-end; align-items: center !important; }
       .feed-toolbar strong { font-size: 12.5px; font-weight: 680; }
       .feed-toolbar small { color: var(--muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
       .date-filter {
@@ -333,6 +334,7 @@
       .invoice-row-copy small { display: block; overflow: hidden; margin-top: 1px; color: var(--muted); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
       .invoice-date { color: var(--muted); font-size: 10.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
       .invoice-amount { min-width: 72px; text-align: right; font-size: 11.5px; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .invoice-date.unavailable, .invoice-amount.unavailable { color: var(--muted); font-weight: 500; }
       .feed-empty { min-height: 156px; display: grid; place-content: center; gap: 3px; padding: 20px; text-align: center; }
       .feed-empty strong { font-size: 12.5px; }
       .feed-empty span { color: var(--muted); font-size: 10.5px; text-wrap: pretty; }
@@ -344,6 +346,7 @@
       .sheet-actions:empty { visibility: hidden; }
       .sheet-actions .icon-btn { margin: 0; }
       .vendor-list { padding: 4px 0; list-style: none; }
+      .attention-filter { min-height: 44px; margin: 2px 12px 4px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-radius: 10px; background: var(--primary-soft); color: var(--primary); font-size: 10.5px; font-weight: 600; }
       .vrow { min-height: 58px; display: flex; align-items: center; gap: 11px; padding: 8px 12px; }
       .vrow .mid { flex: 1; min-width: 0; }
       .vrow .vn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 620; }
@@ -358,6 +361,15 @@
       .vrow .actions .btn { width: 86px; padding-inline: 8px; }
       .vrow .actions .icon-btn { margin: 0; }
       .action-spacer { width: 32px; height: 32px; }
+      .vendor-menu { position: relative; width: 32px; height: 32px; }
+      .vendor-menu summary { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; color: var(--muted); cursor: pointer; list-style: none; }
+      .vendor-menu summary::-webkit-details-marker { display: none; }
+      .vendor-menu summary:hover { background: var(--surface); color: var(--fg); }
+      .vendor-menu summary svg { width: 17px; height: 17px; }
+      .vendor-menu-items { position: absolute; z-index: 30; top: calc(100% + 4px); right: 0; width: 142px; padding: 4px; border-radius: 10px; background: var(--surface-raised); box-shadow: 0 12px 28px rgb(44 34 24 / 0.16), var(--shadow-border); }
+      .vendor-menu-items button { width: 100%; min-height: 36px; padding: 0 9px; border: 0; border-radius: 7px; background: transparent; color: var(--fg); cursor: pointer; font: 560 11.5px/1.2 var(--ui); text-align: left; }
+      .vendor-menu-items button:hover { background: var(--surface); }
+      .vendor-menu-items button.danger { color: var(--danger); }
       .inline-error { margin-top: 5px; color: var(--danger); font-size: 11px; line-height: 1.35; text-wrap: pretty; }
 
       .guidance {
@@ -512,6 +524,7 @@
       .seg label:active span { scale: 0.96; }
       .seg input:checked + span { background: var(--surface-raised); color: var(--fg); font-weight: 620; box-shadow: 0 1px 2px rgb(0 0 0 / 0.08); }
       .seg input:focus-visible + span { outline: 2px solid var(--ring); outline-offset: 2px; }
+      .schedule-next { margin: 8px 2px 0; color: var(--muted); font-size: 10.5px; }
 
       .foot { padding: 10px 14px max(10px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; }
       .toast {

@@ -7,10 +7,18 @@ const MAX_ENTRIES = 12;
 const MAX_BODY_CHARS = 256_000;
 const MAX_REQUEST_BODY_CHARS = 65_536;
 const MAX_TOTAL_BODY_CHARS = 768_000;
-const MAX_OBSERVER_LIFETIME_MS = 45_000;
+const MAX_OBSERVER_LIFETIME_MS = 180_000;
+const MAX_DOCUMENTS = 100;
+const MAX_INLINE_PDF_BYTES = 8 * 1024 * 1024;
+const MAX_INLINE_PDF_TOTAL_BYTES = 24 * 1024 * 1024;
+const DOCUMENT_HINT = /(?:invoice|receipt|statement|document|download|pdf)/i;
 
 interface DiscoveryPageObserver {
   snapshot(): Promise<CapturedEntry[]>;
+  snapshotDocuments(): Promise<string[]>;
+  snapshotActionDocuments(): Promise<string[]>;
+  beginDocumentAction(): void;
+  endDocumentAction(): void;
   stop(): void;
 }
 
@@ -30,7 +38,13 @@ function installObserver(): void {
   const originalXhrOpen = XMLHttpRequest.prototype.open;
   const originalXhrSend = XMLHttpRequest.prototype.send;
   const originalXhrSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+  const originalCreateObjectURL = URL.createObjectURL;
+  const originalWindowOpen = window.open;
   const entries: CapturedEntry[] = [];
+  const documents: string[] = [];
+  const documentKeys = new Set<string>();
+  const actionDocuments: string[] = [];
+  const actionDocumentKeys = new Set<string>();
   const pending = new Set<Promise<void>>();
   const xhrState = new WeakMap<XMLHttpRequest, {
     method: string;
@@ -39,7 +53,9 @@ function installObserver(): void {
     requestBody?: string;
   }>();
   let totalBodyChars = 0;
+  let totalInlinePdfBytes = 0;
   let stopped = false;
+  let documentActionActive = false;
   const expiryTimer = setTimeout(() => window[OBSERVER_KEY]?.stop(), MAX_OBSERVER_LIFETIME_MS);
 
   const queue = (work: () => Promise<void>): void => {
@@ -88,6 +104,96 @@ function installObserver(): void {
     totalBodyChars += entry.responseBody.length;
   };
 
+  const keepDocumentUrl = (raw: string): void => {
+    if (stopped || documents.length >= MAX_DOCUMENTS || raw.length > 2_048) return;
+    let url: URL;
+    try { url = new URL(raw, location.href); } catch { return; }
+    if (url.protocol !== "https:" || url.username || url.password) return;
+    url.hash = "";
+    const value = url.toString();
+    if (documentActionActive) keepActionDocumentUrl(value);
+    if (documentKeys.has(value)) return;
+    documentKeys.add(value);
+    documents.push(value);
+  };
+
+  const keepActionDocumentUrl = (raw: string): void => {
+    if (stopped || actionDocuments.length >= MAX_DOCUMENTS || raw.length > 2_048) return;
+    let url: URL;
+    try { url = new URL(raw, location.href); } catch { return; }
+    if (url.protocol !== "https:" || url.username || url.password) return;
+    url.hash = "";
+    const value = url.toString();
+    if (actionDocumentKeys.has(value)) return;
+    actionDocumentKeys.add(value);
+    actionDocuments.push(value);
+  };
+
+  const keepPdfBytes = (bytes: Uint8Array): boolean => {
+    if (
+      stopped || documents.length >= MAX_DOCUMENTS || bytes.byteLength === 0 ||
+      bytes.byteLength > MAX_INLINE_PDF_BYTES ||
+      totalInlinePdfBytes + bytes.byteLength > MAX_INLINE_PDF_TOTAL_BYTES ||
+      new TextDecoder().decode(bytes.slice(0, 5)) !== "%PDF-"
+    ) return false;
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 32_768) {
+      binary += String.fromCharCode(...bytes.subarray(offset, Math.min(bytes.length, offset + 32_768)));
+    }
+    const value = `data:application/pdf;base64,${btoa(binary)}`;
+    if (documentActionActive && !actionDocumentKeys.has(value) && actionDocuments.length < MAX_DOCUMENTS) {
+      actionDocumentKeys.add(value);
+      actionDocuments.push(value);
+    }
+    if (documentKeys.has(value)) return true;
+    documentKeys.add(value);
+    documents.push(value);
+    totalInlinePdfBytes += bytes.byteLength;
+    return true;
+  };
+
+  const captureDocumentBlob = async (blob: Blob, fallbackUrl?: string): Promise<void> => {
+    if (blob.size === 0 || blob.size > MAX_INLINE_PDF_BYTES) {
+      if (fallbackUrl) keepDocumentUrl(fallbackUrl);
+      return;
+    }
+    try {
+      const captured = keepPdfBytes(new Uint8Array(await blob.arrayBuffer()));
+      if (!captured && fallbackUrl) keepDocumentUrl(fallbackUrl);
+    } catch {
+      if (fallbackUrl) keepDocumentUrl(fallbackUrl);
+    }
+  };
+
+  const captureJsonDocumentUrls = (body: string): void => {
+    let root: unknown;
+    try { root = JSON.parse(body); } catch { return; }
+    const pendingNodes: Array<{ value: unknown; path: string; depth: number }> = [{ value: root, path: "", depth: 0 }];
+    let visited = 0;
+    while (pendingNodes.length && visited < 2_000 && documents.length < MAX_DOCUMENTS) {
+      const node = pendingNodes.shift()!;
+      visited += 1;
+      if (node.depth > 8) continue;
+      if (typeof node.value === "string") {
+        if (node.value.length <= 2_048 && DOCUMENT_HINT.test(`${node.path} ${node.value}`)) {
+          keepDocumentUrl(node.value);
+        }
+        continue;
+      }
+      if (Array.isArray(node.value)) {
+        for (const item of node.value.slice(0, 200)) {
+          pendingNodes.push({ value: item, path: node.path, depth: node.depth + 1 });
+        }
+        continue;
+      }
+      if (node.value && typeof node.value === "object") {
+        for (const [key, value] of Object.entries(node.value as Record<string, unknown>).slice(0, 200)) {
+          pendingNodes.push({ value, path: `${node.path}.${key}`.slice(-320), depth: node.depth + 1 });
+        }
+      }
+    }
+  };
+
   const wrappedFetch: typeof window.fetch = function(this: Window, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const requestUrl = typeof input === "string" || input instanceof URL ? String(input) : input.url;
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
@@ -97,18 +203,26 @@ function installObserver(): void {
     queue(async () => {
       const response = await responsePromise;
       const contentType = normalizeContentType(response.headers.get("content-type"));
-      if (!isJsonContentType(contentType)) return;
-      const body = await readBoundedResponse(response.clone());
-      if (body === undefined) return;
-      keep({
-        url: response.url || requestUrl,
-        method,
-        status: response.status,
-        contentType,
-        body,
-        requestBody: await requestBody,
-        requestHeaders: headers,
-      });
+      const responseUrl = response.url || requestUrl;
+      if (isJsonContentType(contentType)) {
+        const body = await readBoundedResponse(response.clone());
+        if (body === undefined) return;
+        captureJsonDocumentUrls(body);
+        keep({
+          url: responseUrl,
+          method,
+          status: response.status,
+          contentType,
+          body,
+          requestBody: await requestBody,
+          requestHeaders: headers,
+        });
+      } else if (
+        contentType === "application/pdf" ||
+        (DOCUMENT_HINT.test(responseUrl) && !/(?:json|html|javascript|text\/|image\/)/i.test(contentType))
+      ) {
+        await captureDocumentBlob(await response.clone().blob(), responseUrl);
+      }
     });
     return responsePromise;
   };
@@ -146,29 +260,69 @@ function installObserver(): void {
         const current = xhrState.get(this);
         if (!current) return;
         const contentType = normalizeContentType(this.getResponseHeader("content-type"));
-        if (!isJsonContentType(contentType)) return;
-        let responseBody: string | undefined;
-        if (this.responseType === "json") responseBody = JSON.stringify(this.response);
-        else if (this.responseType === "" || this.responseType === "text") responseBody = this.responseText;
-        if (!responseBody || responseBody.length > MAX_BODY_CHARS) return;
-        keep({
-          url: this.responseURL || current.url,
-          method: current.method,
-          status: this.status,
-          contentType,
-          body: responseBody,
-          requestBody: current.requestBody,
-          requestHeaders: current.requestHeaders,
-        });
+        const responseUrl = this.responseURL || current.url;
+        if (isJsonContentType(contentType)) {
+          let responseBody: string | undefined;
+          if (this.responseType === "json") responseBody = JSON.stringify(this.response);
+          else if (this.responseType === "" || this.responseType === "text") responseBody = this.responseText;
+          if (!responseBody || responseBody.length > MAX_BODY_CHARS) return;
+          captureJsonDocumentUrls(responseBody);
+          keep({
+            url: responseUrl,
+            method: current.method,
+            status: this.status,
+            contentType,
+            body: responseBody,
+            requestBody: current.requestBody,
+            requestHeaders: current.requestHeaders,
+          });
+        } else if (
+          contentType === "application/pdf" ||
+          (DOCUMENT_HINT.test(responseUrl) && !/(?:json|html|javascript|text\/|image\/)/i.test(contentType))
+        ) {
+          if (this.response instanceof Blob) await captureDocumentBlob(this.response, responseUrl);
+          else if (this.response instanceof ArrayBuffer) {
+            if (!keepPdfBytes(new Uint8Array(this.response))) keepDocumentUrl(responseUrl);
+          } else {
+            keepDocumentUrl(responseUrl);
+          }
+        }
       });
     }, { once: true });
     return Reflect.apply(originalXhrSend, this, [body]);
   };
 
+  const wrappedCreateObjectURL: typeof URL.createObjectURL = function(object: Blob | MediaSource): string {
+    const value = Reflect.apply(originalCreateObjectURL, URL, [object]) as string;
+    if (object instanceof Blob && (
+      object.type.toLowerCase() === "application/pdf" || DOCUMENT_HINT.test(object.type)
+    )) {
+      queue(() => captureDocumentBlob(object));
+    }
+    return value;
+  };
+
+  const wrappedWindowOpen: typeof window.open = function(
+    url?: string | URL,
+    target?: string,
+    features?: string,
+  ): WindowProxy | null {
+    if (documentActionActive && url) {
+      // A verified invoice control may produce a signed document URL through a
+      // popup. Retain it for the extension transport and suppress the browser
+      // window so Chrome's popup blocker is never part of invoice collection.
+      keepActionDocumentUrl(String(url));
+      return null;
+    }
+    return Reflect.apply(originalWindowOpen, window, [url, target, features]) as WindowProxy | null;
+  } as typeof window.open;
+
   window.fetch = wrappedFetch;
   XMLHttpRequest.prototype.open = wrappedOpen;
   XMLHttpRequest.prototype.send = wrappedSend;
   XMLHttpRequest.prototype.setRequestHeader = wrappedSetRequestHeader;
+  URL.createObjectURL = wrappedCreateObjectURL;
+  window.open = wrappedWindowOpen;
   window[OBSERVER_KEY] = {
     async snapshot(): Promise<CapturedEntry[]> {
       const current = [...pending];
@@ -180,8 +334,39 @@ function installObserver(): void {
       }
       return entries.map((entry) => structuredClone(entry));
     },
+    async snapshotDocuments(): Promise<string[]> {
+      const current = [...pending];
+      if (current.length) {
+        await Promise.race([
+          Promise.allSettled(current),
+          new Promise<void>((resolve) => setTimeout(resolve, 750)),
+        ]);
+      }
+      return [...documents];
+    },
+    async snapshotActionDocuments(): Promise<string[]> {
+      const current = [...pending];
+      if (current.length) {
+        await Promise.race([
+          Promise.allSettled(current),
+          new Promise<void>((resolve) => setTimeout(resolve, 750)),
+        ]);
+      }
+      return [...actionDocuments];
+    },
+    beginDocumentAction(): void {
+      if (!stopped) {
+        actionDocuments.length = 0;
+        actionDocumentKeys.clear();
+        documentActionActive = true;
+      }
+    },
+    endDocumentAction(): void {
+      documentActionActive = false;
+    },
     stop(): void {
       stopped = true;
+      documentActionActive = false;
       clearTimeout(expiryTimer);
       if (window.fetch === wrappedFetch) window.fetch = originalFetch;
       if (XMLHttpRequest.prototype.open === wrappedOpen) XMLHttpRequest.prototype.open = originalXhrOpen;
@@ -189,7 +374,13 @@ function installObserver(): void {
       if (XMLHttpRequest.prototype.setRequestHeader === wrappedSetRequestHeader) {
         XMLHttpRequest.prototype.setRequestHeader = originalXhrSetRequestHeader;
       }
+      if (URL.createObjectURL === wrappedCreateObjectURL) URL.createObjectURL = originalCreateObjectURL;
+      if (window.open === wrappedWindowOpen) window.open = originalWindowOpen;
       entries.length = 0;
+      documents.length = 0;
+      documentKeys.clear();
+      actionDocuments.length = 0;
+      actionDocumentKeys.clear();
       pending.clear();
       delete window[OBSERVER_KEY];
     },

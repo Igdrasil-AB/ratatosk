@@ -24,7 +24,7 @@ import * as simpleIcons from "simple-icons";
 // Popular billing/SaaS vendors to pre-bundle. Unknown slugs are skipped, so this
 // list can be aspirational — add freely as the vendor library grows.
 const CATALOG = [
-  "stripe", "notion", "figma", "linear", "cloudflare", "googlecloud", "digitalocean",
+  "stripe", "openai", "anthropic", "notion", "figma", "linear", "cloudflare", "googlecloud", "digitalocean",
   "netlify", "supabase", "planetscale", "mongodb", "sentry", "datadog", "postman",
   "gitlab", "atlassian", "jira", "asana", "zoom", "dropbox", "twilio", "hetzner",
   "render", "auth0", "okta", "hubspot", "intercom", "zendesk", "shopify", "fortnox",

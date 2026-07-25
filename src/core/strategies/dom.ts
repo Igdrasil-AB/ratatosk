@@ -10,16 +10,31 @@
  * Prefer network replay. Reach for DOM only when a vendor genuinely renders
  * invoices server-side with no discoverable endpoint — and expect more upkeep.
  */
-import type { DomContinuationSpec, DomInvoices, DomStep, InvoiceRef, RetrievalProof, VendorRecipe } from "../types";
+import type {
+  DomContinuationSpec,
+  DomInvoices,
+  DomStep,
+  InvoiceMetadataEvidence,
+  InvoiceRef,
+  RetrievalProof,
+  VendorRecipe,
+} from "../types";
 import type { RawDocument, Strategy } from "../engine";
 import { DocumentInvalid, DocumentNotFound, DocumentTooLarge, SelectorMiss, UnexpectedResponse } from "../errors";
 import { preferDocumentUrl } from "../document-candidate";
 import { render } from "../template";
 import { createInvoiceListResult } from "../retrieval";
 import { MAX_DOCUMENT_BYTES } from "../document-size";
+import { resolveInvoiceMetadata } from "../invoice-metadata";
+
+export interface DomDocumentObservation {
+  url: string;
+  evidence: InvoiceMetadataEvidence[];
+}
 
 export interface DomDriverRunResult {
   collected: Record<string, string[]>;
+  documents?: DomDocumentObservation[];
   retrieval: RetrievalProof;
 }
 
@@ -37,12 +52,18 @@ export function makeDomStrategy(driver: DomDriver): Strategy {
   return {
     async list(recipe, _vars, _ctx) {
       const spec = (recipe.invoices as DomInvoices).list;
-      const { collected, retrieval } = await driver.run(spec.open, spec.steps, spec.continuation);
+      const { collected, documents = [], retrieval } = await driver.run(spec.open, spec.steps, spec.continuation);
       const hrefs = collected[spec.hrefsFrom];
       if (!hrefs) throw new SelectorMiss(`DOM step never collected "${spec.hrefsFrom}"`, recipe.id);
+      const evidenceByUrl = new Map<string, InvoiceMetadataEvidence[]>();
+      for (const document of documents) {
+        const key = canonicalDocumentHref(document.url);
+        evidenceByUrl.set(key, [
+          ...(evidenceByUrl.get(key) ?? []),
+          ...document.evidence,
+        ].slice(0, 32));
+      }
 
-      // The DOM strategy can only offer opaque document URLs; downstream systems
-      // dedup on these. A richer DOM recipe can add per-row metadata later.
       const refs = new Map<string, { ref: InvoiceRef; legacyVendorInvoiceId: string }>();
       for (const href of hrefs) {
         const identity = canonicalDocumentHref(href);
@@ -51,12 +72,22 @@ export function makeDomStrategy(driver: DomDriver): Strategy {
         const candidate: InvoiceRef = {
           vendorInvoiceId,
           documentUrl: href,
+          ...(evidenceByUrl.get(identity)?.length
+            ? { metadataEvidence: evidenceByUrl.get(identity) }
+            : {}),
         };
         const existing = refs.get(identity);
         refs.set(identity, existing
           ? {
               ...existing,
-              ref: { ...existing.ref, documentUrl: preferDocumentUrl(existing.ref.documentUrl, candidate.documentUrl) },
+              ref: {
+                ...existing.ref,
+                documentUrl: preferDocumentUrl(existing.ref.documentUrl, candidate.documentUrl),
+                metadataEvidence: [
+                  ...(existing.ref.metadataEvidence ?? []),
+                  ...(candidate.metadataEvidence ?? []),
+                ].slice(0, 32),
+              },
             }
           : { ref: candidate, legacyVendorInvoiceId });
       }
@@ -93,11 +124,13 @@ export function makeDomStrategy(driver: DomDriver): Strategy {
       if (!looksPdf) {
         throw new DocumentInvalid(200, normalizedType, recipe.id);
       }
-      const filename = render((recipe.invoices as DomInvoices).document.filename ?? DEFAULT_FILENAME, {
+      const metadata = resolveInvoiceMetadata(ref);
+      const inferredFilename = render((recipe.invoices as DomInvoices).document.filename ?? DEFAULT_FILENAME, {
         vendorId: recipe.id,
-        issuedAt: ref.issuedAt ?? "unknown",
+        issuedAt: metadata.issuedAt ?? "unknown",
         vendorInvoiceId: ref.vendorInvoiceId,
       });
+      const filename = metadata.filename ?? inferredFilename;
       return { bytes, contentType: "application/pdf", filename };
     },
   };

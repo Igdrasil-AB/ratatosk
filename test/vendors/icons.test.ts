@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { brandIcon, iconSlugs } from "../../src/vendors/icons";
 import { ALL_VENDORS } from "../../src/vendors";
+import { knownSupplierIcon } from "../../src/vendors/brand-catalog";
 
 /**
  * The logo pipeline: every vendor that declares an `icon` resolves to real SVG
@@ -36,6 +37,12 @@ describe("brand icons", () => {
     expect(brandIcon("openai")?.title).toBe("OpenAI"); // hand-added, not from simple-icons
     expect(brandIcon("slack")?.title).toBe("Slack");
     expect(brandIcon("openai")!.path.length).toBeGreaterThan(50);
+  });
+
+  it("keeps presentation logos without restoring retired acquisition recipes", () => {
+    expect(knownSupplierIcon("https://chatgpt.com/#settings/Billing")).toBe("openai");
+    expect(knownSupplierIcon("https://claude.ai/settings/billing")).toBe("anthropic");
+    expect(knownSupplierIcon("https://unknown.example/billing")).toBeUndefined();
   });
 
   it("pre-bundles a catalog beyond just the current vendors", () => {

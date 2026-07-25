@@ -47,8 +47,6 @@ export type VendorLifecycleManifest = z.infer<typeof lifecycleManifestSchema>;
 const lifecycleSource: VendorLifecycleManifest = {
   schema: VENDOR_LIFECYCLE_SCHEMA,
   vendors: [
-    unverified("anthropic", "pilot"),
-    unverified("chatgpt", "pilot"),
     unverified("github", "experimental"),
     unverified("railway", "pilot"),
     unverified("slack", "experimental"),

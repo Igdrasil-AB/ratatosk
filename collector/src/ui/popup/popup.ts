@@ -62,6 +62,7 @@ const state = {
   tabAwarenessEnabled: false,
   tabAwarenessRequestPending: false,
   ledgerDateFilter: "all" as LedgerDateFilter,
+  attentionOnly: false,
 };
 
 // ---- helpers --------------------------------------------------------------
@@ -102,11 +103,44 @@ function amount(total?: string, currency?: string): string {
 }
 
 function invoiceDate(entry: LedgerEntry): string {
-  if (entry.issuedAt && /^\d{4}-\d{2}-\d{2}/.test(entry.issuedAt)) {
-    const date = new Date(`${entry.issuedAt.slice(0, 10)}T00:00:00`);
-    if (!Number.isNaN(date.getTime())) return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
+  const match = entry.issuedAt?.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (match) {
+    const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+    if (
+      date.getUTCFullYear() === Number(match[1]) &&
+      date.getUTCMonth() === Number(match[2]) - 1 &&
+      date.getUTCDate() === Number(match[3])
+    ) {
+      return new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric",
+        timeZone: "UTC",
+      }).format(date);
+    }
   }
-  return relTime(entry.collectedAt);
+  return "—";
+}
+
+function invoiceLabel(entry: LedgerEntry): string {
+  if (entry.invoiceNumber) return entry.invoiceNumber;
+  const filename = entry.filename?.replace(/\.pdf$/i, "").trim();
+  if (
+    filename &&
+    !/(?:^|[-_])unknown(?:[-_]|$)|document-[a-f0-9]{12,}/i.test(filename)
+  ) return filename;
+  return "Invoice";
+}
+
+function sourceNeedsAttention(source: SourceView): boolean {
+  return Boolean(
+    source.connection && (
+      source.missingHosts.length > 0 ||
+      source.connection.lastStatus === "auth_expired" ||
+      source.connection.lastStatus === "partial" ||
+      source.connection.lastStatus === "error" ||
+      source.connection.lastStatus === "rate_limited"
+    )
+  );
 }
 
 function categoryLabel(category?: string): string {
@@ -122,7 +156,13 @@ function toast(message: string): void {
   if (toastTimer) clearTimeout(toastTimer);
   toastEl.textContent = message;
   toastEl.classList.add("show");
-  toastTimer = setTimeout(() => toastEl.classList.remove("show"), 4_000);
+  toastTimer = setTimeout(() => {
+    toastEl.classList.remove("show");
+    toastTimer = setTimeout(() => {
+      toastEl.textContent = "";
+      toastTimer = undefined;
+    }, 180);
+  }, 4_000);
 }
 
 function sourceError(vendorId: string, message: string): void {
@@ -135,6 +175,24 @@ function settingsError(message: string): void {
   state.inlineError = { scope: "settings", message };
   renderSettings();
   document.getElementById("settings-error")?.focus();
+}
+
+function replaceApp(markup: string): void {
+  const focused = document.activeElement instanceof HTMLElement && app.contains(document.activeElement)
+    ? {
+        action: document.activeElement.dataset.action,
+        id: document.activeElement.dataset.id,
+        range: document.activeElement.dataset.range,
+      }
+    : undefined;
+  app.innerHTML = markup;
+  if (!focused?.action) return;
+  const selector = [
+    `[data-action="${CSS.escape(focused.action)}"]`,
+    focused.id ? `[data-id="${CSS.escape(focused.id)}"]` : "",
+    focused.range ? `[data-range="${CSS.escape(focused.range)}"]` : "",
+  ].join("");
+  app.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true });
 }
 
 function persistPanelUiState(): void {
@@ -227,18 +285,15 @@ function renderHome(): void {
   const connected = state.sources.filter((source) => source.connection);
   const needsReconnect = connected.filter((source) =>
     source.connection?.lastStatus === "auth_expired" || source.missingHosts.length > 0);
-  const needsAttention = connected.filter((source) =>
-    source.missingHosts.length > 0 || source.connection?.lastStatus === "auth_expired" ||
-    source.connection?.lastStatus === "partial" || source.connection?.lastStatus === "error" ||
-    source.connection?.lastStatus === "rate_limited");
+  const needsAttention = connected.filter(sourceNeedsAttention);
 
   let status = "";
   if (!state.config) {
     status = `<div class="status"><span class="dot warn" aria-hidden="true"></span><strong>Setup Required</strong><span class="sep" aria-hidden="true">·</span><button type="button" class="status-link" data-action="open-settings">Choose Destination</button></div>`;
   } else if (needsReconnect.length) {
-    status = `<button type="button" class="status status-action" data-action="open-vendors"><span class="dot warn" aria-hidden="true"></span><strong>${needsReconnect.length} Vendor${needsReconnect.length > 1 ? "s" : ""} Need Reconnecting</strong><span aria-hidden="true">→</span></button>`;
+    status = `<button type="button" class="status status-action" data-action="open-attention"><span class="dot warn" aria-hidden="true"></span><strong>${needsReconnect.length} Vendor${needsReconnect.length > 1 ? "s" : ""} Need Reconnecting</strong><span aria-hidden="true">→</span></button>`;
   } else if (needsAttention.length) {
-    status = `<button type="button" class="status status-action" data-action="open-vendors"><span class="dot warn" aria-hidden="true"></span><strong>${needsAttention.length} Vendor${needsAttention.length > 1 ? "s" : ""} Need Attention</strong><span aria-hidden="true">→</span></button>`;
+    status = `<button type="button" class="status status-action" data-action="open-attention"><span class="dot warn" aria-hidden="true"></span><strong>${needsAttention.length} Vendor${needsAttention.length > 1 ? "s" : ""} Need Attention</strong><span aria-hidden="true">→</span></button>`;
   } else if (state.schedule.periodMinutes && connected.length) {
     const completeSyncs = connected.map((source) =>
       source.connection?.lastCompleteSyncAt ??
@@ -262,9 +317,13 @@ function renderHome(): void {
       const hasFresh = group.entries.some((entry) => isRecentlyCollected(entry.collectedAt));
       const rows = group.entries.map((entry) => {
         const fresh = isRecentlyCollected(entry.collectedAt) ? '<span class="new" aria-label="New"></span>' : "";
-        const datetime = entry.issuedAt?.slice(0, 10) ?? new Date(entry.collectedAt).toISOString();
-        const collected = entry.issuedAt ? `Collected ${relTime(entry.collectedAt)}` : "Invoice date unavailable";
-        return `<li class="invoice-row"><span class="invoice-row-copy"><span class="invoice-label">Invoice ${fresh}</span><small>${esc(collected)}</small></span><time class="invoice-date" datetime="${esc(datetime)}">${invoiceDate(entry)}</time><span class="invoice-amount">${esc(amount(entry.total, entry.currency))}</span></li>`;
+        const datetime = entry.issuedAt?.slice(0, 10);
+        const displayedDate = invoiceDate(entry);
+        const date = datetime && displayedDate !== "—"
+          ? `<time class="invoice-date" datetime="${esc(datetime)}">${displayedDate}</time>`
+          : `<span class="invoice-date unavailable" aria-label="Invoice date unavailable">—</span>`;
+        const total = amount(entry.total, entry.currency);
+        return `<li class="invoice-row"><span class="invoice-row-copy"><span class="invoice-label">${esc(invoiceLabel(entry))} ${fresh}</span><small>Collected ${relTime(entry.collectedAt)}</small></span>${date}<span class="invoice-amount${total ? "" : " unavailable"}" ${total ? "" : 'aria-label="Invoice amount unavailable"'}>${esc(total || "—")}</span></li>`;
       }).join("");
       return `<details class="supplier-group" data-supplier-id="${esc(group.vendorId)}" ${isOpen ? "open" : ""}>
         <summary>${logo(iconFor(group.vendorId), group.vendorName)}<span class="supplier-group-copy"><strong>${esc(group.vendorName)}${hasFresh ? '<span class="new" aria-label="New"></span>' : ""}</strong><small>${group.entries.length} invoice${group.entries.length === 1 ? "" : "s"}</small></span><span class="supplier-updated">${relTime(group.latestCollectedAt)}</span><span class="supplier-chevron" aria-hidden="true">${chevronIcon()}</span></summary>
@@ -275,7 +334,7 @@ function renderHome(): void {
       ? `<div class="supplier-groups">${groupRows}</div>`
       : `<div class="feed-empty"><strong>No invoices in this period</strong><span>Choose a wider date range to see older invoices.</span></div>`;
     body = `<section class="invoice-history" aria-labelledby="invoice-history-title">
-      <div class="feed-toolbar"><span><strong id="invoice-history-title">Invoices</strong><small>${invoiceCountLabel(visibleEntries.length, state.ledger.length)}</small></span>${ledgerDateFilter()}</div>
+      <div class="feed-toolbar"><span><strong id="invoice-history-title">Invoices</strong><small>${invoiceCountLabel(visibleEntries.length, state.ledger.length)}</small></span><span class="feed-toolbar-actions"><button type="button" class="quiet-link compact" data-action="sync-all">Collect All</button>${ledgerDateFilter()}</span></div>
       ${history}
     </section><div class="add"><button type="button" class="ghost" data-action="open-vendors">Manage Vendors <span aria-hidden="true">→</span></button></div>`;
   } else if (connected.length) {
@@ -300,7 +359,7 @@ function renderHome(): void {
     </section>`;
   }
 
-  app.innerHTML = header() + status + body;
+  replaceApp(header() + status + body);
 }
 
 function sheetHeader(title: string, trailing = ""): string {
@@ -321,7 +380,8 @@ function renderVendors(): void {
     </div>
   </details>` : "";
 
-  const rows = state.sources.map((source) => {
+  const visibleSources = state.attentionOnly ? state.sources.filter(sourceNeedsAttention) : state.sources;
+  const rows = visibleSources.map((source) => {
     const connection = source.connection;
     const isBusy = state.busyVendorId === source.id;
     let sub = source.kind === "discovered" ? new URL(source.primaryOrigin).hostname : categoryLabel(source.category);
@@ -332,7 +392,6 @@ function renderVendors(): void {
     if (connection && source.missingHosts.length > 0) {
       sub = "Vendor access changed — review the newly required site";
       action = `<button type="button" class="btn warn sm" data-action="connect" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}" ${isBusy ? "disabled" : ""}>${isBusy ? "Reviewing…" : "Review Access"}</button>`;
-      secondaryAction = `<button type="button" class="icon-btn danger" data-action="disconnect" data-id="${esc(source.id)}" aria-label="Disconnect ${esc(source.name)}">${xIcon()}</button>`;
     } else if (connection?.lastStatus === "auth_expired") {
       sub = "Session expired — sign in, then reconnect";
       action = `<button type="button" class="btn warn sm" data-action="connect" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}" ${isBusy ? "disabled" : ""}>${isBusy ? "Connecting…" : "Reconnect"}</button>`;
@@ -346,28 +405,30 @@ function renderVendors(): void {
         ? connection.lastError ? `Couldn’t sync — ${connection.lastError}` : "Couldn’t sync — try again"
         : count > 0 ? `${count} collected · synced ${relTime(connection.lastCompleteSyncAt ?? connection.lastRunAt)}` : `Connected · synced ${relTime(connection.lastCompleteSyncAt ?? connection.lastRunAt)}`;
       action = `<button type="button" class="btn outline sm" data-action="sync" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}">Sync</button>`;
-      secondaryAction = `<button type="button" class="icon-btn danger" data-action="disconnect" data-id="${esc(source.id)}" aria-label="Disconnect ${esc(source.name)}">${xIcon()}</button>`;
     }
     const error = state.inlineError?.scope === "vendor" && state.inlineError.vendorId === source.id
       ? `<div class="inline-error" id="vendor-error-${esc(source.id)}" role="alert" tabindex="-1">${esc(state.inlineError.message)}</div>` : "";
-    const diagnostic = connection?.lastStatus && connection.lastStatus !== "ok"
-      ? `<button type="button" class="diagnostic-link" data-action="copy-diagnostic" data-id="${esc(source.id)}">Copy details</button>` : "";
-    const history = connection
-      ? `<button type="button" class="diagnostic-link subtle" data-action="forget-history" data-id="${esc(source.id)}">Forget history</button>`
-      : "";
-    const vendorLinks = diagnostic || history ? `<div class="vendor-links">${diagnostic}${history}</div>` : "";
+    if (connection) {
+      const diagnostic = connection.lastStatus && connection.lastStatus !== "ok"
+        ? `<button type="button" data-action="copy-diagnostic" data-id="${esc(source.id)}">Copy details</button>`
+        : "";
+      secondaryAction = `<details class="vendor-menu"><summary aria-label="More actions for ${esc(source.name)}">${moreIcon()}</summary><div class="vendor-menu-items">${diagnostic}<button type="button" data-action="forget-history" data-id="${esc(source.id)}">Forget history</button><button type="button" class="danger" data-action="disconnect" data-id="${esc(source.id)}">Disconnect</button></div></details>`;
+    }
     const lifecycle = source.kind === "discovered"
       ? `<div class="vlifecycle"><span class="local-badge">Discovered · this browser</span></div>`
       : source.lifecycle?.stage === "pilot"
         ? ""
       : `<div class="vlifecycle">${esc(source.lifecycle ? vendorLifecycleLabel(source.lifecycle) : "Unavailable")}</div>`;
-    return `<li class="vrow">${logo(source.icon, source.name)}<div class="mid"><div class="vn">${esc(source.name)}</div>${lifecycle}<div class="vs" id="vendor-status-${esc(source.id)}">${esc(sub)}</div>${vendorLinks}${error}</div><div class="actions">${action}${secondaryAction}</div></li>`;
+    return `<li class="vrow">${logo(source.icon, source.name)}<div class="mid"><div class="vn">${esc(source.name)}</div>${lifecycle}<div class="vs" id="vendor-status-${esc(source.id)}">${esc(sub)}</div>${error}</div><div class="actions">${action}${secondaryAction}</div></li>`;
   }).join("");
 
   const infoButton = state.vendorGuidanceSeen && !showGuidance
     ? `<button type="button" class="icon-btn" data-action="show-vendor-guidance" aria-label="How vendor connections work">${infoIcon()}</button>` : "";
+  const attentionHeader = state.attentionOnly
+    ? `<div class="attention-filter" role="status"><span>Showing vendors that need attention</span><button type="button" class="quiet-link compact" data-action="show-all-vendors">Show All</button></div>`
+    : "";
   const missingSupplier = discoveryCard();
-  app.innerHTML = `${sheetHeader("Vendors", infoButton)}${guidance}<ul class="vendor-list">${rows}</ul>${missingSupplier}`;
+  replaceApp(`${sheetHeader(state.attentionOnly ? "Vendor Attention" : "Vendors", infoButton)}${attentionHeader}${guidance}<ul class="vendor-list">${rows}</ul>${missingSupplier}`);
 }
 
 function discoveryCard(): string {
@@ -392,21 +453,22 @@ function discoveryCard(): string {
     const emptyResult = discovery.reason === "not_found" || discovery.reason === "limit_reached";
     const title = emptyResult ? "No invoices found" : "Couldn’t check this supplier";
     const detail = discovery.reason === "limit_reached"
-      ? "Ratatosk checked the likely billing pages within its safe search limit. No downloadable invoices were found for this account."
+      ? "Ratatosk checked the likely billing pages within its safe search limit. It found no downloadable invoices, or this account may not include billing access."
       : discovery.reason === "not_found"
-        ? "Ratatosk checked this app’s likely billing pages but found no downloadable invoices for this account."
+        ? "Ratatosk checked this app’s likely billing pages. It found no downloadable invoices, or this account may not include billing access."
         : discovery.message;
     const diagnostic = discovery.diagnosticAvailable
       ? `<button type="button" class="quiet-link compact" data-action="copy-discovery-diagnostic">Copy details</button>`
       : "";
-    return `<aside class="supplier-request discovery-failed" role="${emptyResult ? "status" : "alert"}"><span class="supplier-request-mark" aria-hidden="true">${emptyResult ? "–" : "!"}</span><span class="supplier-request-copy"><strong>${title}</strong><small>${esc(detail)}</small></span><span class="discovery-actions"><button type="button" class="btn tonal sm" data-action="cancel-discovery">${emptyResult ? "Search Again" : "Try Again"}</button>${diagnostic}</span></aside>`;
+    return `<aside class="supplier-request discovery-failed" role="${emptyResult ? "status" : "alert"}"><span class="supplier-request-mark" aria-hidden="true">${emptyResult ? "–" : "!"}</span><span class="supplier-request-copy"><strong>${title}</strong><small>${esc(detail)}</small></span><span class="discovery-actions"><button type="button" class="btn tonal sm" data-action="retry-discovery">${emptyResult ? "Search Again" : "Try Again"}</button>${diagnostic}</span></aside>`;
   }
   if (state.config && !page && !state.tabAwarenessEnabled) {
     return `<aside class="supplier-request tab-awareness" aria-labelledby="tab-awareness-title"><span class="supplier-request-mark" aria-hidden="true">${branchIcon()}</span><span class="supplier-request-copy"><strong id="tab-awareness-title">Find invoices on this site</strong><small>Allow Ratatosk to recognize the supplier in your active tab. Chrome will ask once.</small></span><button type="button" class="supplier-request-link" data-action="enable-tab-awareness" ${state.tabAwarenessRequestPending ? "disabled" : ""}>${state.tabAwarenessRequestPending ? "Preparing…" : "Find Invoices"}</button></aside>`;
   }
   const listed = page ? state.sources.find((source) => source.primaryOrigin === page.origin) : undefined;
   if (listed) {
-    return `<aside class="supplier-request"><span class="supplier-request-mark letter" aria-hidden="true">${esc(listed.name.charAt(0).toUpperCase())}</span><span class="supplier-request-copy"><strong>${esc(listed.name)} is already listed</strong><small>Use its Connect button above for ${esc(page!.hostname)}.</small></span><button type="button" class="supplier-request-link" disabled>Listed Above</button></aside>`;
+    const connected = Boolean(listed.connection);
+    return `<aside class="supplier-request"><span class="supplier-request-mark letter" aria-hidden="true">${esc(listed.name.charAt(0).toUpperCase())}</span><span class="supplier-request-copy"><strong>${esc(listed.name)} is already listed</strong><small>${connected ? "Collect new invoices from this signed-in session." : `Connect it to collect invoices from ${page!.hostname}.`}</small></span><button type="button" class="supplier-request-link" data-action="${connected ? "sync" : "connect"}" data-id="${esc(listed.id)}">${connected ? "Sync Now" : "Connect"}</button></aside>`;
   }
   const ready = Boolean(state.config && page);
   const detail = !state.config
@@ -434,16 +496,16 @@ function renderSettings(): void {
     ? `<div class="context-access"><span><strong>Active-tab switching enabled</strong><small>Ratatosk reads the current tab URL to keep this side panel in context. URLs are not stored as browsing history.</small></span><button type="button" class="btn outline sm" data-action="disable-tab-awareness">Turn Off</button></div>`
     : `<div class="context-access"><span><strong>Recognize supplier tabs automatically</strong><small>Chrome calls this permission “Read your browsing history.” Ratatosk only reads the current tab URL and does not store browsing history.</small></span><button type="button" class="btn tonal sm" data-action="enable-tab-awareness" ${state.tabAwarenessRequestPending ? "disabled" : ""}>${state.tabAwarenessRequestPending ? "Preparing…" : "Enable"}</button></div>`;
 
-  app.innerHTML = `${sheetHeader("Settings")}
+  replaceApp(`${sheetHeader("Settings")}
     <form class="settings-form">
       <fieldset class="grp"><legend>Save Invoices To</legend><div class="opts">
         <label class="opt"><input type="radio" name="destination" value="filesystem" ${filesystemChecked} /><span class="radio" aria-hidden="true"></span><span><strong>This Computer</strong><small>Downloads folder</small></span></label>
         <button type="button" class="opt opt-link ${kind === "igdrasil" ? "selected" : ""}" data-action="${kind === "igdrasil" ? "manage-igdrasil" : "connect-igdrasil"}"><span class="radio" aria-hidden="true"></span><span><strong>Igdrasil Accounting</strong><small>${kind === "igdrasil" ? "Connected · invoices go to your inbox" : "Connect or create an Igdrasil account"}</small></span><span class="open-label">${kind === "igdrasil" ? "Manage" : "Connect"}</span></button>
       </div>${destinationFields}${error}</fieldset>
-      <fieldset class="grp divider"><legend>Check for New Invoices</legend><div class="seg">${scheduleOption("Off", 0)}${scheduleOption("6h", 360)}${scheduleOption("12h", 720)}${scheduleOption("Daily", 1440)}</div></fieldset>
+      <fieldset class="grp divider"><legend>Check for New Invoices</legend><div class="seg">${scheduleOption("Off", 0)}${scheduleOption("6h", 360)}${scheduleOption("12h", 720)}${scheduleOption("Daily", 1440)}</div>${period && state.schedule.nextRunAt ? `<p class="schedule-next">Next check ${relTime(state.schedule.nextRunAt)}</p>` : ""}</fieldset>
       <fieldset class="grp divider"><legend>Browser Context</legend>${tabAwareness}</fieldset>
     </form>
-    <p class="foot">Runs while Chrome is open and uses your signed-in vendor sessions. If Chrome is closed, Ratatosk catches up next time.</p>`;
+    <p class="foot">Runs while Chrome is open and uses your signed-in vendor sessions. If Chrome is closed, Ratatosk catches up next time.</p>`);
 }
 
 // ---- actions --------------------------------------------------------------
@@ -467,6 +529,10 @@ app.addEventListener("click", (event) => {
     void discoverFromUserGesture();
     return;
   }
+  if (action === "retry-discovery") {
+    void retryDiscovery();
+    return;
+  }
   if (action === "connect-discovery" && vendorId) {
     void connectDiscoveryFromUserGesture(vendorId);
     return;
@@ -477,6 +543,7 @@ app.addEventListener("click", (event) => {
       state.ledgerDateFilter = filter;
       persistPanelUiState();
       renderHome();
+      requestAnimationFrame(() => document.querySelector<HTMLElement>(".date-filter summary")?.focus());
     }
     return;
   }
@@ -622,8 +689,8 @@ async function connectDiscoveryFromUserGesture(vendorId: string): Promise<void> 
       return;
     }
     const response = await send({ type: "completeDiscoveryConnect", vendorId });
-    if (!response.ok) toast(response.error);
     await load();
+    if (!response.ok && (state.discovery as DiscoveryStatusView).stage !== "complete") toast(response.error);
   } catch (error) {
     console.error("[collector] discovered supplier connection failed", error);
     await send({ type: "cancelDiscoveryConnect" });
@@ -635,8 +702,10 @@ async function connectDiscoveryFromUserGesture(vendorId: string): Promise<void> 
 async function handle(action: string, vendorId?: string): Promise<void> {
   switch (action) {
     case "open-settings": screen = "settings"; state.inlineError = null; persistPanelUiState(); render(); return;
-    case "open-vendors": screen = "vendors"; state.inlineError = null; persistPanelUiState(); render(); return;
-    case "home": screen = "home"; state.inlineError = null; persistPanelUiState(); await load(); return;
+    case "open-vendors": screen = "vendors"; state.attentionOnly = false; state.inlineError = null; persistPanelUiState(); render(); return;
+    case "open-attention": screen = "vendors"; state.attentionOnly = true; state.inlineError = null; persistPanelUiState(); render(); return;
+    case "show-all-vendors": state.attentionOnly = false; renderVendors(); return;
+    case "home": screen = "home"; state.attentionOnly = false; state.inlineError = null; persistPanelUiState(); await load(); return;
     case "retry-load": await load(); return;
     case "sync": await run({ type: "runNow", vendorId: vendorId! }, vendorId); return;
     case "sync-all": await run({ type: "runNow" }); return;
@@ -685,10 +754,13 @@ async function run(message: Parameters<typeof send>[0], vendorId?: string): Prom
       const waiting = response.summaries.find((summary) => summary.status === "rate_limited" || summary.status === "skipped");
       const expired = response.summaries.find((summary) => summary.status === "auth_expired");
       const failed = response.summaries.find((summary) => summary.status === "error");
-      if (waiting) toast(`Supplier asked Ratatosk to wait until ${relTime(waiting.nextEligibleRunAt)}`);
+      const attention = response.summaries.filter((summary) =>
+        summary.status !== "ok" && summary.status !== "partial").length;
+      if (collected) toast(`Collected ${collected} Invoice${collected === 1 ? "" : "s"}${attention ? ` · ${attention} need attention` : ""}`);
+      else if (waiting) toast(`Supplier asked Ratatosk to wait until ${relTime(waiting.nextEligibleRunAt)}`);
       else if (expired) toast("Session expired — sign in to the supplier and reconnect");
       else if (failed?.error) toast(failed.error);
-      else toast(collected ? `Collected ${collected} Invoice${collected === 1 ? "" : "s"}` : "No New Invoices");
+      else toast("No New Invoices");
     }
     await load();
   } catch (error) {
@@ -696,6 +768,11 @@ async function run(message: Parameters<typeof send>[0], vendorId?: string): Prom
     if (vendorId) sourceError(vendorId, "Ratatosk couldn’t reach the background process. Reopen the extension and try again.");
     else toast("Couldn’t finish. Reopen Ratatosk and try again.");
   }
+}
+
+async function retryDiscovery(): Promise<void> {
+  await send({ type: "cancelDiscovery" });
+  await discoverFromUserGesture();
 }
 
 async function copyVendorDiagnostic(vendorId: string): Promise<void> {
@@ -888,16 +965,43 @@ function ledgerDateFilter(): string {
   return `<details class="date-filter"><summary aria-label="Filter invoices by date">${filterIcon()}<span>${ledgerDateFilterLabel(state.ledgerDateFilter)}</span>${chevronIcon()}</summary><div class="date-filter-options">${options}</div></details>`;
 }
 
+function closeDateFilter(restoreFocus = false): void {
+  const details = document.querySelector<HTMLDetailsElement>(".date-filter[open]");
+  if (!details) return;
+  details.open = false;
+  if (restoreFocus) details.querySelector<HTMLElement>("summary")?.focus();
+}
+
+document.addEventListener("pointerdown", (event) => {
+  const target = event.target;
+  if (target instanceof Node && !document.querySelector(".date-filter")?.contains(target)) closeDateFilter();
+  if (target instanceof Node) {
+    for (const menu of document.querySelectorAll<HTMLDetailsElement>(".vendor-menu[open]")) {
+      if (!menu.contains(target)) menu.open = false;
+    }
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  closeDateFilter(true);
+  const menu = document.querySelector<HTMLDetailsElement>(".vendor-menu[open]");
+  if (menu) {
+    menu.open = false;
+    menu.querySelector<HTMLElement>("summary")?.focus();
+  }
+});
+
 // ---- inline icons ---------------------------------------------------------
 
 function gearIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"/><circle cx="12" cy="12" r="3"/></svg>`; }
 function backIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6"/></svg>`; }
-function xIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>`; }
 function chevronIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>`; }
 function infoIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>`; }
 function branchIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="7" cy="6" r="2.2"/><circle cx="17" cy="8" r="2.2"/><circle cx="7" cy="18" r="2.2"/><path d="M7 8.2v7.6M9.2 8h3.3A4.5 4.5 0 0 1 17 12.5v2.3"/></svg>`; }
 function filterIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h14M5.5 10h9M8 15h4"/></svg>`; }
 function checkIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 8 3 3 7-7"/></svg>`; }
+function moreIcon(): string { return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>`; }
 
 async function boot(): Promise<void> {
   await restorePanelUiState();

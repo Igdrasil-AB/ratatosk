@@ -3,6 +3,7 @@ import {
   AuthFailure,
   collectionFailureEvidence,
   DocumentInvalid,
+  DomActionFailed,
   RetrievalIncomplete,
   UnexpectedResponse,
 } from "../../src/core/errors";
@@ -37,6 +38,16 @@ describe("privacy-safe collection failure evidence", () => {
       cause: "document_invalid",
       httpStatus: 200,
       responseType: "json",
+    });
+  });
+
+  it("distinguishes semantic action failure from selector drift", () => {
+    expect(collectionFailureEvidence(
+      new DomActionFailed("supplier detail omitted", "vendor"),
+      "invoice_list",
+    )).toEqual({
+      stage: "invoice_list",
+      cause: "action_failed",
     });
   });
 

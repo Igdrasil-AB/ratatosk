@@ -15,6 +15,13 @@ import {
 import type { VendorRecipe } from "../../src/core/types";
 
 describe("vendor lifecycle manifest", () => {
+  it("ships only Railway as a bundled recipe and leaves retired AI suppliers to generic discovery", () => {
+    expect(VENDORS.map((vendor) => vendor.id)).toEqual(["railway"]);
+    expect(getVendor("chatgpt")).toBeUndefined();
+    expect(getVendor("anthropic")).toBeUndefined();
+    expect(JSON.stringify(VENDORS)).not.toMatch(/backend-api\/invoices|api\/stripe\/\{org\}\/invoices/);
+  });
+
   it("strictly covers all recipes without publishing sensitive evidence", () => {
     expect(lifecycleCoverageIssues(ALL_VENDORS)).toEqual([]);
     expect(Object.keys(VENDOR_LIFECYCLE_BY_ID).sort()).toEqual(ALL_VENDORS.map((vendor) => vendor.id).sort());
@@ -108,7 +115,7 @@ describe("vendor lifecycle manifest", () => {
   });
 
   it("labels pilot, stale, degraded, and retired states conservatively", () => {
-    const pilot = VENDOR_LIFECYCLE_BY_ID.anthropic;
+    const pilot = VENDOR_LIFECYCLE_BY_ID.railway;
     expect(vendorLifecycleLabel(pilot)).toBe("Pilot · bundled recipe");
     expect(vendorLifecycleLabel({ ...pilot, lastLiveVerifiedAt: "2026-01-01T00:00:00.000Z", nextReviewAt: "2026-02-01T00:00:00.000Z" }, new Date("2026-07-16T00:00:00.000Z"))).toBe("Pilot · bundled recipe");
     expect(vendorLifecycleLabel({ ...pilot, stage: "degraded", healthReason: "vendor_change" })).toBe("Degraded · vendor change");
@@ -118,7 +125,7 @@ describe("vendor lifecycle manifest", () => {
   it("uses the release verification window even when next review is later", () => {
     const now = new Date("2026-07-16T00:00:00.000Z");
     const oldButFutureReview = {
-      ...VENDOR_LIFECYCLE_BY_ID.anthropic,
+      ...VENDOR_LIFECYCLE_BY_ID.railway,
       healthReason: "healthy" as const,
       lastLiveVerifiedAt: "2026-04-16T23:59:59.000Z",
       collectorVersion: pkg.version,
@@ -129,25 +136,25 @@ describe("vendor lifecycle manifest", () => {
 
     expect(vendorLifecycleLabel(oldButFutureReview, now)).toBe("Pilot · bundled recipe");
     expect(isLifecycleRunnable(oldButFutureReview, now)).toBe(true);
-    expect(releaseLifecycleIssues(["anthropic"], { now, collectorVersion: pkg.version }, { anthropic: oldButFutureReview })).toEqual([]);
+    expect(releaseLifecycleIssues(["railway"], { now, collectorVersion: pkg.version }, { railway: oldButFutureReview })).toEqual([]);
     const supported = { ...oldButFutureReview, stage: "supported" as const };
     expect(isLifecycleRunnable(supported, now)).toBe(false);
-    expect(releaseLifecycleIssues(["anthropic"], { now, collectorVersion: pkg.version }, { anthropic: supported }))
-      .toContain("anthropic: live verification is older than 90 days");
+    expect(releaseLifecycleIssues(["railway"], { now, collectorVersion: pkg.version }, { railway: supported }))
+      .toContain("railway: live verification is older than 90 days");
   });
 
   it("never runs a vendor held for security review regardless of its stage", () => {
-    const pilot = VENDOR_LIFECYCLE_BY_ID.anthropic;
+    const pilot = VENDOR_LIFECYCLE_BY_ID.railway;
     const heldPilot = { ...pilot, stage: "pilot" as const, healthReason: "security_hold" as const };
     expect(isLifecycleRunnable(heldPilot)).toBe(false);
     expect(isLifecycleRunnable({ ...pilot, stage: "supported", healthReason: "security_hold" })).toBe(false);
-    expect(releaseLifecycleIssues(["anthropic"], { collectorVersion: pkg.version }, { anthropic: heldPilot }))
-      .toContain("anthropic: health reason security_hold is not release-ready");
+    expect(releaseLifecycleIssues(["railway"], { collectorVersion: pkg.version }, { railway: heldPilot }))
+      .toContain("railway: health reason security_hold is not release-ready");
   });
 
   it("runs bundled pilots without requiring live evidence", () => {
-    const pilot = VENDOR_LIFECYCLE_BY_ID.anthropic;
-    expect(getVendor("anthropic")).toBe(VENDORS.find((recipe) => recipe.id === "anthropic"));
+    const pilot = VENDOR_LIFECYCLE_BY_ID.railway;
+    expect(getVendor("railway")).toBe(VENDORS.find((recipe) => recipe.id === "railway"));
     expect(isLifecycleRunnable(pilot)).toBe(true);
 
     const verified = {
@@ -156,11 +163,11 @@ describe("vendor lifecycle manifest", () => {
       lastLiveVerifiedAt: "2026-07-20T00:00:00.000Z",
       collectorVersion: "0.8.30",
       chromeMajor: 140,
-      evidenceRef: "receipt:anthropic-pilot",
+      evidenceRef: "receipt:railway-pilot",
       nextReviewAt: "2026-08-20T00:00:00.000Z",
     };
     expect(isLifecycleRunnable(verified, new Date("2026-07-21T00:00:00.000Z"))).toBe(true);
-    expect(getVendor("anthropic", { anthropic: verified })).toBe(VENDORS.find((recipe) => recipe.id === "anthropic"));
+    expect(getVendor("railway", { railway: verified })).toBe(VENDORS.find((recipe) => recipe.id === "railway"));
     expect(isLifecycleRunnable({ ...verified, nextReviewAt: "2026-07-20T00:00:00.000Z" }, new Date("2026-07-21T00:00:00.000Z"))).toBe(true);
   });
 
@@ -180,10 +187,11 @@ describe("vendor lifecycle manifest", () => {
 
   it("rejects contradictory retired lifecycle states and never runs a retired reason", () => {
     const contradictory = structuredClone(VENDOR_LIFECYCLE_MANIFEST) as any;
-    contradictory.vendors[0].healthReason = "retired";
+    const railway = contradictory.vendors.find((entry: { vendorId: string }) => entry.vendorId === "railway");
+    railway.healthReason = "retired";
     expect(() => parseVendorLifecycleManifest(contradictory)).toThrow(/retired.*stage/i);
 
-    const pilot = VENDOR_LIFECYCLE_BY_ID.anthropic;
+    const pilot = VENDOR_LIFECYCLE_BY_ID.railway;
     expect(isLifecycleRunnable({ ...pilot, stage: "pilot", healthReason: "retired" })).toBe(false);
     expect(isLifecycleRunnable({ ...pilot, stage: "supported", healthReason: "retired" })).toBe(false);
   });

@@ -238,7 +238,7 @@ async function handle(message: Message): Promise<Response> {
           id: source.recipe.id,
           name: source.recipe.name,
           category: source.recipe.category,
-          icon: source.recipe.icon,
+          icon: source.presentationIcon ?? source.recipe.icon,
           hosts,
           missingHosts: connection ? await missingHostPermissions(hosts) : [],
           lifecycle: source.lifecycle,

@@ -35,6 +35,7 @@ import {
 } from "./errors";
 import { assertAuthenticated, resolveAuthToken } from "./auth";
 import { contentIdempotencyKey, idempotencyKey } from "./dedup";
+import { resolveInvoiceMetadata } from "./invoice-metadata";
 import { extract } from "./extract";
 import { get, getArray } from "./jsonpath";
 import { DEFAULT_SAFE_CONCURRENCY, mapConcurrentOrdered } from "./concurrency";
@@ -245,15 +246,19 @@ async function executeVendor(
       }, async ({ ref, vars: documentVars, key }, _index, signal) => {
         const raw = await strategy.fetchDocument(recipe, ref, documentVars, ctx, signal);
         const contentKey = await contentIdempotencyKey(ctx.companyId, source, raw.bytes);
+        const metadata = resolveInvoiceMetadata(ref);
         return {
           source,
           vendorId: recipe.id,
           vendorName: recipe.name,
           vendorInvoiceId: ref.vendorInvoiceId,
-          issuedAt: ref.issuedAt,
-          total: ref.total,
-          currency: ref.currency,
-          filename: raw.filename,
+          invoiceNumber: metadata.invoiceNumber,
+          issuedAt: metadata.issuedAt,
+          total: metadata.total,
+          currency: metadata.currency,
+          metadataEvidence: ref.metadataEvidence,
+          metadataConflicts: metadata.conflicts,
+          filename: metadata.filename ?? raw.filename,
           contentType: raw.contentType,
           bytes: raw.bytes,
           idempotencyKey: key,

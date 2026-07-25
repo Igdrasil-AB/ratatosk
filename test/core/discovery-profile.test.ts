@@ -255,6 +255,44 @@ describe("discovered supplier profiles", () => {
       .toThrow(/invalid/);
   });
 
+  it("extends only semantic-action candidates with an action-proven document origin", () => {
+    const semanticRecipe = domRecipe();
+    if (semanticRecipe.invoices.strategy === "dom") {
+      semanticRecipe.invoices.list.steps = [
+        { action: "extractSemanticDownloads", as: "documents", maxActions: 8 },
+      ];
+      semanticRecipe.invoices.list.hrefsFrom = "documents";
+    }
+    const semantic = createDiscoveredSupplierProfile({
+      primaryOrigin: origin,
+      entryUrl,
+      displayName: "Example Cloud",
+      nameSource: "page",
+      nameConfidence: "medium",
+      adapterId: "dom-actions",
+      candidateCount: 4,
+      recipe: semanticRecipe,
+    });
+    const links = createDiscoveredSupplierProfile({
+      primaryOrigin: origin,
+      entryUrl,
+      displayName: "Example Cloud",
+      nameSource: "page",
+      nameConfidence: "medium",
+      adapterId: "dom-links",
+      candidateCount: 4,
+      recipe: domRecipe(),
+    });
+
+    const extended = extendCandidateDocumentOrigins(
+      createDiscoveredSupplierCandidateSet([semantic, links]),
+      ["https://assets.withorb.com/*"],
+    );
+
+    expect(extended.candidates[0].recipe.hosts).toContain("https://assets.withorb.com/*");
+    expect(extended.candidates[1].recipe.hosts).not.toContain("https://assets.withorb.com/*");
+  });
+
   it("rejects broad, local, mutating, secret-bearing, and clicking recipes", () => {
     expect(() => exactOriginPattern("http://billing.example.com")).toThrow(/HTTPS/);
     expect(() => exactOriginPattern("https://127.0.0.1")).toThrow(/HTTPS/);
@@ -341,6 +379,9 @@ describe("discovered supplier profiles", () => {
 
   it("drops unsafe page URL data and derives a conservative provisional name", () => {
     expect(safeEntryUrl(`${entryUrl}?token=secret#invoice`)).toBe(`${entryUrl}`);
+    expect(safeEntryUrl(`${origin}/#settings/Billing`)).toBe(`${origin}/#settings/Billing`);
+    expect(safeEntryUrl(`${origin}/#access_token=secret`)).toBe(`${origin}/`);
+    expect(safeEntryUrl(`${origin}/#settings/billing/cancel`)).toBe(`${origin}/`);
     expect(safeEntryUrl(`${origin}/eyJabcdefghijklmnopqrstuvwxyz0123456789abcdef`)).toBe(`${origin}/`);
     expect(deriveSupplierDisplayName({ origin, title: "Invoices | Example Cloud" })).toEqual({
       name: "Example Cloud",
@@ -348,6 +389,15 @@ describe("discovered supplier profiles", () => {
       confidence: "medium",
     });
     expect(deriveSupplierDisplayName({ origin })).toEqual({ name: "Example", source: "domain", confidence: "low" });
+  });
+
+  it("allows a bounded billing SPA fragment as a discovered DOM entry page", () => {
+    const spaEntry = `${origin}/#settings/Billing`;
+    const recipe = domRecipe();
+    recipe.auth.check.request.url = `${origin}/`;
+    if (recipe.invoices.strategy === "dom") recipe.invoices.list.open = spaEntry;
+
+    expect(() => assertDiscoveredRecipePolicy(recipe, origin, spaEntry)).not.toThrow();
   });
 
   it("keeps a tenant identifier only with an explicit container and billing intent", () => {
