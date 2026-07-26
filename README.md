@@ -13,64 +13,86 @@
   · <a href="SECURITY.md">Security</a>
 </p>
 
-Ratatosk is an open-source Chrome extension project for collecting a user's own
-supplier invoices and receipts from vendor billing portals. It uses the browser
-session the user already has, so Ratatosk never asks for or stores vendor
-passwords or two-factor codes.
+Ratatosk is an open-source Chrome extension that collects your own supplier
+invoices and receipts from vendor billing portals and files them where you tell
+it to. It uses the browser session you already have, so it never asks for or
+stores a vendor password or two-factor code.
 
-The repository deliberately produces two separate extensions:
+**It is not a list of supported vendors.** Open a supplier's billing page,
+select **Find Invoices**, and a generic discovery engine works out where that
+portal keeps its invoices — for any portal, not a hard-coded set. Everything
+about that inference runs locally inside the packaged extension.
 
-- **Collector** (`collector/`) is the consumer extension intended for Chrome Web
-  Store review. It collects documents only after the user chooses a destination
-  and connects a vendor. It does not include recording code or the `debugger`
-  permission.
-- **Studio** (`studio/`) is a development-only authoring extension. It records a
-  billing page after explicit, informed consent and creates a redacted draft for
-  a developer to review. It can also create an explicitly approved,
-  structural-only [supplier fingerprint](docs/supplier-fingerprints.md) for Svala.
-  Do not submit Studio as the consumer extension.
+## How it works
 
-Shared, browser-independent code lives in `src/` and is used by both builds.
+Three things happen, all driven by you.
 
-## Download Studio to add a new supplier
+**1. Find Invoices** — from any page in a supplier app.
 
-Studio is the developer build for collecting sanitized technical information
-from a supplier's billing portal so a reviewed Ratatosk recipe can be created.
-It is not the extension used for routine invoice collection.
+Ratatosk snapshots the page you're on without navigating, reloading, or closing
+it, then reopens that exact page once in a hidden tab so it can watch the app
+boot and see the JSON calls the billing UI makes. From there a bounded planner
+follows same-origin, billing-looking routes — read-only `GET` requests in
+disposable inactive tabs, at most 15 pages, depth 3, 30 seconds. It never
+submits a form, and never follows logout, checkout, purchase, cancellation,
+deletion, or authorization links.
 
-Collector links here from its Vendors screen when a supplier is missing. You do
-not need a Svala account or a special code to investigate an authorized supplier.
+It ranks routes by path intent *and* by what the page actually says, so an
+opaque route labelled `Invoices` is still found, and `/<tenant>/settings/billing`
+outranks a guess.
 
-**[Download Ratatosk Studio v0.7.1 (ZIP)](https://github.com/Igdrasil-AB/ratatosk/releases/download/v0.7.1/ratatosk-studio-v0.7.1.zip)**
-· [SHA-256 checksum](https://github.com/Igdrasil-AB/ratatosk/releases/download/v0.7.1/ratatosk-studio-v0.7.1.zip.sha256)
+**2. Connect & Collect** — you approve, then it proves itself.
 
-To install it in Chrome:
+Discovery keeps up to three proof-ranked candidates, covering JSON APIs,
+embedded page data, invoice-context document links, explicit download controls,
+and icon-only download actions confirmed by invoice-table, row, and
+action-column context. Ratatosk shows you the exact origins those candidates
+need, requests only that bounded set, and then downloads and validates a real
+PDF before saving anything. A candidate that doesn't hold up falls through to
+the next one.
 
-1. Download and unzip the Studio ZIP.
-2. Open `chrome://extensions`.
-3. Turn on **Developer mode**.
-4. Select **Load unpacked** and choose the unzipped Studio folder containing
-   `manifest.json`.
+Completion is proven by exhausting the list — the API reporting no next page,
+HTML with no continuation, DOM pagination reaching a stable end — never by
+guessing that "enough" invoices were found. One invoice is a valid result.
 
-> **Developer build warning:** Studio requests Chrome's broad `debugger` and
-> `activeTab` permissions so it can inspect a billing page after explicit
-> consent. Install it only in a dedicated developer profile, use only authorized
-> synthetic supplier accounts, and remove it when the supplier investigation is
-> complete. Studio is separate from Collector and must not be submitted or
-> distributed as the consumer extension.
+**3. Collect on a schedule.**
 
-See [adding a vendor](docs/adding-a-vendor.md) for the reviewed recipe and test
-requirements.
+```text
+chrome.alarms (your schedule)
+   -> service worker wakes
+   -> for each connected supplier
+      -> verify the existing session
+      -> list invoices (API cursor, next-URL, numbered, offset,
+         Load More, or bounded infinite scroll)
+      -> de-duplicate against what was already filed
+      -> download the PDF
+      -> save it to your destination
+```
 
-Approved supplier fingerprints are always saved in Studio's bounded local
-outbox and remain downloadable as JSON. An internal developer may also pair a
-revocable, upload-only Svala intake token and explicitly deliver an item to the
-single reviewed Svala endpoint; capture itself never sends automatically.
+Nothing runs until you pick a destination. With **This Computer**, files land in
+your Downloads folder. With **Igdrasil Accounting**, they upload to your company
+using a revocable, upload-only token — your accounting session token never
+enters the extension.
+
+### What holds it together
+
+- **No remote code, no remote recipes.** The engine is a fixed interpreter over
+  a closed set of packaged primitives. What discovery produces is a structural
+  profile, never downloaded behavior. Nothing is fetched from a backend to
+  decide what the extension does.
+- **Bounded permissions.** Host access is requested per supplier, for the exact
+  origins your own candidates need. No wildcards, no private hosts.
+- **Read-only until you say otherwise.** Search never clicks. Semantic controls
+  are activated only after Connect & Collect, only when visible and enabled, and
+  never when labelled as a payment, purchase, cancellation, or deletion.
+- **Diagnostics carry no data.** When discovery fails, the copyable diagnostic
+  holds the failed stage, a finite cause code, an optional HTTP status family,
+  bounded counts, and `:id`-templated route shapes. Never URLs, selectors,
+  response content, tokens, or invoice identifiers.
+- **No analytics, no ad SDK.** See [PRIVACY.md](PRIVACY.md) and
+  [SECURITY.md](SECURITY.md).
 
 ## Product preview
-
-The Web Store presentation uses the same squirrel and rustic ledger-root artwork
-as the extension itself.
 
 <p align="center">
   <img src="store/assets/screenshots/01-home-1280x800.png" alt="Ratatosk Collector home screen" width="100%">
@@ -80,143 +102,95 @@ as the extension itself.
   <img src="store/assets/screenshots/02-vendors-1280x800.png" alt="Ratatosk connected-vendor screen" width="100%">
 </p>
 
-## How Collector works
+## Supplier support
 
-```text
-chrome.alarms (user-controlled schedule)
-   -> service worker wakes
-   -> for each connected vendor
-      -> verify the existing session
-      -> call that vendor's billing endpoint
-      -> map and de-duplicate invoices
-      -> download the document
-      -> save it to the destination the user selected
-```
+Generic discovery is the path for every supplier, including Anthropic and
+ChatGPT — current browser evidence always beats a stale hard-coded API path.
 
-Vendor access is requested per vendor at connection time. With Igdrasil selected,
-documents are uploaded to the user's Igdrasil company. With local downloads
-selected, documents remain on the user's machine. Collector does not run a vendor
-until a destination has been confirmed.
+A small number of packaged recipes predate the engine. Railway ships as a
+bundled pilot recipe; GitHub, Slack, and Vercel remain repository examples that
+Collector does not expose. New packaged recipes are not the direction of the
+project — a supplier that discovery can't handle is a gap in the engine, and
+that's what we want reported.
 
-Recipes are declarative data, never executable code. The recipe schema is strict,
-bounded, and interpreted only by logic packaged with the extension. Collector
-does not download remote recipes or remotely hosted code. Official vendor
-changes require a reviewed extension release. For an unsupported supplier, the
-user can select **Find Invoices** from any page in the supplier app. Collector
-first snapshots that page without navigating it, then reopens the exact approved
-entry once in an inactive disposable tab before checking other same-origin,
-billing-related pages. A temporary exact-origin `document_start`
-observer is installed before that replay and captures bounded, sanitized JSON
-fetch/XHR evidence while the SPA boots,
-so the packaged inference can recognize GET APIs and explicit read-only GraphQL
-POST queries without the Studio recorder or an AI fallback. The bounded planner combines URL intent with visible
-navigation labels and nearby menu context, so an opaque route labelled `Invoices`
-remains discoverable. If one high-confidence billing route renders only an empty
-shell while inactive, Collector may give that disposable tab one bounded
-visibility lease; it restores the previous tab afterward unless the user changed
-tabs during the probe. Semantic verification uses the same lease through control
-enumeration and document capture, so visibility-gated evidence remains
-reproducible instead of disappearing after discovery. Opaque tenant values are reusable only when the exact
-approved route placed them behind a trusted structural container such as
-`/dashboard/org/{tenant}`. Observed Settings routes are retained as lower-confidence
-bridges to billing pages, tenant-scoped `settings/billing` routes are prioritized,
-and the best contextual/common route is scheduled after at most two observed-route
-probes so one clue source cannot starve the others. Packaged adapters retain up
-to three proof-ranked, strict local-only candidates spanning JSON APIs, embedded
-data, invoice-context document links, explicit download controls, and icon-only
-document actions proven by invoice-table, row, and action-column context. DOM-shaped
-leads are verified only after Connect &
-Collect, Ratatosk requests only their bounded exact-origin union, validates a
-real PDF, and falls through candidate-local shape failures before saving the
-integration. Connected local recipes can enumerate cursor, next-URL, numbered,
-offset, localized Load More, and infinite-scroll invoice lists through packaged
-bounded primitives—without storing remote code or cursor values.
+## Contributing
 
-When verification fails, the copied discovery diagnostic retains a closed,
-privacy-safe root-cause trace: the failed collection stage, finite cause code,
-optional HTTP status/content-type family, and structural retrieval proof
-completed before the failure. It never includes URLs, selectors, response
-content, tokens, or invoice identifiers.
+The most valuable contribution is a supplier the engine fails on, reduced to the
+anonymized page *shape* it missed, so that supplier and every other portal built
+the same way both start working.
+
+Read **[CONTRIBUTING.md](CONTRIBUTING.md)** first — it covers the shape corpus,
+the live-failure iteration loop, and the safety and privacy rules that gate a
+merge.
 
 ## Repository layout
 
 ```text
-collector/              public consumer extension
+collector/              the consumer extension
   manifest.config.ts    Collector-only MV3 permissions and entries
-  src/platform/         Collector browser APIs, storage, scheduling, sinks
-  src/ui/                Collector popup
-  vite.config.ts         emits dist/collector
-
-studio/                 development-only authoring extension
-  manifest.config.ts    Studio-only MV3 permissions, including debugger
-  src/platform/         consented capture and session storage
-  src/ui/                Studio disclosure and recording UI
-  vite.config.ts         emits dist/studio
+  src/platform/         browser APIs, discovery, storage, scheduling, sinks
+  src/ui/popup/         the popup
+  vite.config.ts        emits dist/collector
 
 src/
-  core/                 platform-free engine and recipe schema
+  core/                 platform-free engine, discovery policy, recipe schema
+  core/recorder/        shared capture, redaction, and inference library
   ingest/               destination interfaces and implementations
-  vendors/              reviewed recipes; public and experimental registries
+  vendors/              packaged legacy recipes and their lifecycle manifest
 
-test/                   core, platform, and vendor fixture tests
+test/                   engine, discovery, platform, and fixture tests
 scripts/                validation, icon generation, deterministic packaging
 store/                  Chrome Web Store copy and submission checklist
 ```
 
-The dependency direction is `collector|studio -> shared src`; shared code never
-imports Chrome extension APIs.
+The dependency direction is `collector -> shared src`. Shared code never
+imports Chrome extension APIs or touches page globals, which is why the engine,
+the discovery policy, and every adapter run under Vitest with no browser.
+`npm run check:boundaries` enforces it.
 
 ## Quick start
 
 ```bash
 npm install
-npm run ci
-npm run build
+npm run ci              # typecheck + boundaries + validation + tests
+npm run build:collector # emits dist/collector
 ```
 
-Load Collector from `dist/collector` or Studio from `dist/studio` at
-`chrome://extensions` using **Load unpacked**. Never load both from the same
-directory.
+Load `dist/collector` at `chrome://extensions` → Developer mode → **Load
+unpacked**. Pick a destination, open a supplier's billing page, and select
+**Find Invoices**.
 
-Release the exact Collector artifact intended for review with:
+## Releasing
 
 ```bash
 npm run release:collector
 ```
 
-This writes a ZIP and SHA-256 checksum under `artifacts/`. The ZIP contains the
-Collector manifest at its root and excludes Studio.
+Runs the full test and security gate, then writes a deterministic ZIP and
+SHA-256 checksum under `artifacts/` with the Collector manifest at the root.
+Packaging refuses to ship a bundle containing a `debugger`-backed recorder or a
+fingerprint delivery marker.
 
-Build and inspect the independent Studio release artifact with:
+Publishing stays an explicit operator action. Pushing a `v<package-version>` tag
+runs `.github/workflows/release-collector.yml`, which rebuilds from that exact
+commit, verifies the checksum, and publishes **one** asset pair — the Collector
+ZIP and its `.sha256`. That is the only downloadable artifact this project
+produces.
 
-```bash
-npm run release:studio
-```
+Before calling a supplier supported in a release, complete the live acceptance
+loop in [docs/testing.md](docs/testing.md): two consecutive runs against the same
+known invoice set, the first delivering every expected document and the second
+delivering zero.
 
-This runs the complete test and security gate, validates every vendor recipe and
-fixture, and checks the Studio-specific authoring manifest before writing a
-deterministic Studio-only ZIP and checksum. Collector release validation blocks
-explicit health holds and malformed lifecycle metadata; live attestations remain
-useful operational evidence but are not required for bundled pilot recipes. Publishing remains an explicit operator action;
-the tag workflow runs only after a matching `v<package-version>` tag is pushed.
+## Documentation
 
-## Vendor status
-
-Collector currently exposes Railway as a bundled pilot recipe. Other suppliers,
-including Anthropic and ChatGPT, use the user-initiated generic discovery engine
-so stale private API paths cannot override current browser evidence. GitHub,
-Slack, and Vercel remain contributor examples and are not shipped by Collector.
-
-See [testing a vendor](docs/testing.md), [adding a vendor](docs/adding-a-vendor.md),
-[the architecture](docs/architecture.md), and the
-[Chrome Web Store submission process](store/submission-process.md).
-
-## Privacy and security
-
-Collector includes no analytics or advertising SDK. Its actual data handling,
-destinations, local retention, and permissions are documented in
-[PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md), and the
-[store listing draft](store/listing.md).
+- [Architecture](docs/architecture.md) — the engine, the boundaries, the
+  discovery state machine in detail
+- [Contributing](CONTRIBUTING.md) — how to teach the engine a new shape
+- [Testing a supplier live](docs/testing.md) — the acceptance loop
+- [Privacy](PRIVACY.md) · [Security](SECURITY.md) ·
+  [Store listing](store/listing.md) ·
+  [Submission process](store/submission-process.md)
 
 ## License
 

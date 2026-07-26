@@ -1,7 +1,7 @@
 # Chrome Web Store listing — Ratatosk Invoice Collector
 
 This copy describes only the artifact produced by `npm run package:collector`.
-Do not upload `dist/studio`, a repository archive, or the combined build output.
+Do not upload a repository archive or any other build output.
 
 ## Product details
 
@@ -167,7 +167,7 @@ this exact policy before submission).
 - [ ] Run `npm run release:collector` from a clean, reviewed commit.
 - [ ] Confirm `npm audit --audit-level=high` reports no vulnerabilities.
 - [ ] Verify the ZIP checksum and archive contents.
-- [ ] Inspect the ZIP-root `manifest.json`: no Studio entries, `debugger`,
+- [ ] Inspect the ZIP-root `manifest.json`: no `debugger`,
       cookies, `<all_urls>`, `webRequestBlocking`, source maps, or remote scripts;
       `activeTab`, optional `tabs`, and observation-only `webRequest` are present
       only for their documented flows.

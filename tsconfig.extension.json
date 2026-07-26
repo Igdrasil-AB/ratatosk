@@ -4,5 +4,5 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker", "WebWorker.Iterable"],
     "types": ["chrome", "@crxjs/vite-plugin/client"]
   },
-  "include": ["src/**/*.ts", "collector/src/**/*.ts", "studio/src/**/*.ts"]
+  "include": ["src/**/*.ts", "collector/src/**/*.ts"]
 }

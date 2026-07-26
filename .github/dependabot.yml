@@ -1,7 +1,7 @@
 version: 2
 updates:
-  # Collector holds a session token and optional host access; Studio separately
-  # holds debugger access. Both packages therefore need close dependency review.
+  # Collector holds a session token and optional host access, so every
+  # dependency change needs close review before it reaches a release.
   - package-ecosystem: npm
     directory: /
     schedule:

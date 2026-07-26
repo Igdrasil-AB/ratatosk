@@ -20,7 +20,7 @@ unzip -l artifacts/ratatosk-collector-*.zip
 - [ ] CI, typecheck, validation, and tests pass.
 - [ ] Collector and its checksum are produced under `artifacts/`.
 - [ ] `manifest.json` is at the ZIP root.
-- [ ] The archive contains no `studio`, `.map`, private key, environment file, or
+- [ ] The archive contains no `.map`, private key, environment file, or
       development fixture.
 - [ ] Manifest permissions are exactly `storage`, `alarms`, `notifications`,
       `scripting`, `downloads`, `activeTab`, observation-only `webRequest`, and
@@ -74,7 +74,6 @@ Use the current stable Chrome release and a fresh profile.
 - [ ] Provide a test account with the least access necessary and synthetic data.
 - [ ] Explain how to select a destination, connect the test vendor, run collection,
       verify the result, disconnect, and delete the test data.
-- [ ] State that Studio is a separate development artifact and is not in the ZIP.
 - [ ] Do not ask reviewers to use personal accounts or real financial documents.
 
 ## Pilot exit criteria

@@ -9,8 +9,8 @@ import pkg from "../package.json";
  *
  * SINGLE PURPOSE (Chrome Web Store policy): this public extension only collects a
  * user's own supplier invoices and receipts into a destination they confirm.
- * Recipe authoring lives in the separately built `studio/` extension so Collector
- * never ships the broad `debugger` permission or recording machinery.
+ * Supplier support comes from user-initiated discovery inside this extension, so
+ * Collector never ships the broad `debugger` permission or recording machinery.
  */
 export default defineManifest({
   manifest_version: 3,

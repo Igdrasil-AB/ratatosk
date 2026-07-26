@@ -27,7 +27,7 @@ describe("extension package file collection", () => {
   it("returns ordinary nested files in deterministic order", () => {
     const base = mkdtempSync(join(tmpdir(), "ratatosk-package-"));
     temporary.push(base);
-    const root = join(base, "dist", "studio");
+    const root = join(base, "dist", "collector");
     mkdirSync(join(root, "assets"), { recursive: true });
     writeFileSync(join(root, "manifest.json"), "{}");
     writeFileSync(join(root, "assets", "app.js"), "code");

@@ -1,7 +1,8 @@
 # Security
 
 Ratatosk handles authenticated billing requests and invoice documents, so the
-public Collector is deliberately isolated from the development-only Studio.
+consumer extension is deliberately bounded: no credential custody, no remote
+code, and no authoring capability in the shipped artifact.
 
 ## Reporting a vulnerability
 
@@ -9,7 +10,7 @@ Please report privately through a
 [GitHub security advisory](https://github.com/Igdrasil-AB/ratatosk/security/advisories/new)
 instead of opening a public issue. We aim to acknowledge reports within 72 hours.
 
-Do not include live credentials, invoice documents, or unredacted Studio output
+Do not include live credentials, invoice documents, or unredacted capture output
 in a report unless a maintainer has provided a secure transfer method.
 
 ## Release boundaries
@@ -19,9 +20,12 @@ in a report unless a maintainer has provided a secure transfer method.
   optional `tabs` metadata permission is user-enabled only to follow active-tab
   changes in the persistent side panel. It uses `activeTab`, optional HTTPS
   origins, and a bounded ephemeral page-load observer only during explicit app discovery.
-- `studio/` builds a development tool with `debugger`. It must not be submitted
-  or distributed as the consumer Collector.
 - `src/` contains shared, platform-independent logic. It cannot call Chrome APIs.
+  `src/core/recorder/` is the packaged capture, redaction, and inference library
+  that discovery uses; it performs no CDP recording and has no delivery path.
+- The former Studio authoring build and its supplier-fingerprint delivery have
+  been removed. Collector is the only extension this repository produces, and
+  packaging rejects any bundle that regains a `debugger` or fingerprint marker.
 
 CI packages Collector from `dist/collector` only. Reviewers should inspect the
 manifest inside the release ZIP, not infer permissions from the repository.
@@ -40,9 +44,6 @@ manifest inside the release ZIP, not infer permissions from the repository.
 | Connect bridge | A hostile page installing a token or destination | Content script is limited to `https://accounting.igdrasil.se/*`; worker verifies extension id and exact sender origin; backend URL must be exactly `https://accounting.igdrasil.se`; connect requires a short-lived, one-use state created by an explicit Ratatosk or in-app action |
 | Extension message bus | Web content issuing privileged commands | Consumer/control messages are accepted only when Chrome reports this extension's id and exact `chrome-extension://<this-id>/` sender URL; content-script senders retain their web URL and are rejected |
 | Download paths | Path traversal or unintended overwrite | Folder and filename segments are normalized and tested; local root configuration is validated and bounded |
-| Studio capture | A page leaking secrets through headers, URLs, or bodies | Explicit disclosure checkbox; recording limited to the active HTTPS tab; all request-header values are dropped except normalized `content-type`; auth is represented only by a bounded scheme/header-name marker; URL credentials/query values and secret-like body fields are redacted; state stays in session storage and is cleared on startup |
-| Studio relay | A page fabricating entries for another recording | Per-session nonce, same-window relay checks, active recording-tab check, and worker-side entry rebuilding |
-| Studio fingerprint outbox | Captured account data being retained or delivered without informed approval | A strict structural projection excludes bodies, headers, fixtures, query values, and invoice values; canonical origins and traversal-free patterns are enforced; the exact preview requires authority and share confirmation; local retention is capped at 20 items with 30-day validity; delivery is explicit-only to the fixed `https://svala.igdrasil.se/api/dev/ratatosk/fingerprints` endpoint under Studio's sole Svala host permission, using an extension-local scoped token, no cookies/referrer, redirect refusal, and fingerprint-ID idempotency; startup never delivers pending or retryable records |
 | Collector diagnostics | Error export leaking supplier or accounting data | Diagnostics are an explicit user action and contain only a stable vendor ID/code, package and lifecycle revisions, bounded counts, and normalized timestamps; stored error strings, URLs, headers, bodies, invoice IDs, company IDs, and tokens are excluded by construction |
 | Discovery diagnostics | Search evidence leaking account paths or invoice data | Failure diagnostics are explicit-copy, session-only structural summaries containing bounded page/evidence/candidate counts, candidate numbers, packaged adapter outcome codes, hostnames, and route templates whose opaque segments are replaced by `:id` or `:segment`; origins, raw paths, queries, fragments, headers, bodies, tokens, account/invoice identifiers, and financial values are never included |
 
@@ -52,25 +53,18 @@ manifest inside the release ZIP, not infer permissions from the repository.
   `test/core/recipe-freeze.test.ts`.
 - Tokens cannot follow an arbitrary HTTP sink:
   `src/ingest/http-sink.ts` and `test/core/http-sink-security.test.ts`.
-- Studio reports redact secrets and omit captured HTML bodies:
-  `src/core/recorder/report.ts` and `test/core/report-redact.test.ts`.
 - Download paths cannot escape the configured folder:
   `collector/src/platform/filesystem-sink.ts` and
   `test/core/filesystem-traversal.test.ts`.
 - Captured header values are allowlisted, authentication structure is value-free,
-  and URLs and bodies are sanitized before Studio persists them:
+  and URLs and bodies are sanitized before discovery persists them:
   `src/core/recorder/cdp.ts` and `test/core/recorder-capture.test.ts`.
-- Supplier fingerprints and approval envelopes reject unknown or unsafe fields;
-  outbox retention, expiry, and deduplication are tested in
-  `test/core/supplier-fingerprint.test.ts` and
-  `test/studio/fingerprint-outbox.test.ts`.
+- The consumer ZIP cannot regain an authoring capability:
+  `scripts/package-extension.ts` rejects `chrome.debugger`, recorder, and
+  fingerprint markers in the built bundle.
 
-Manual submission envelopes record the contributor's assertion; they are not
-cryptographic signatures. Origins and schema names can still reveal tenant or
-internal naming and must be inspected before approval. Approved JSON belongs in
-private Svala, not in public issues, commits, or pull-request attachments.
-Public supplier requests must also omit tenant-, workspace-, account-, customer-,
-employee-, and internal-specific origins even when no fingerprint is attached.
+Public supplier reports must omit tenant-, workspace-, account-, customer-,
+employee-, and internal-specific origins.
 
 ## Platform hardening
 
@@ -112,9 +106,6 @@ persistent UI, plus optional `tabs` metadata and optional HTTPS host origins. Or
 requested at runtime for the exact supplier sites shown to the user. It declares
 one narrow content script on the Igdrasil accounting application for the
 user-controlled connection handshake.
-
-Studio requests `storage`, `scripting`, `debugger`, and `activeTab`. Those broad
-authoring capabilities are the reason it is a separate development build.
 
 ## Known operational limits
 

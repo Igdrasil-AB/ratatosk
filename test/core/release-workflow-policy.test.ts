@@ -13,19 +13,14 @@ describe("release metadata workflow policy", () => {
     expect(pkg.scripts["release:collector"]).toContain("npm run validate:collector-release");
     expect(pkg.scripts["validate:collector-release"]).toBe("npm run validate:release");
     expect(pkg.scripts["release:collector"]).not.toContain("allow-unverified-pilot-baseline");
-    expect(pkg.scripts["release:studio"]).toContain("npm run validate:studio-release");
-    expect(pkg.scripts["validate:studio-release"]).toContain("npm run validate");
-    expect(pkg.scripts["validate:studio-release"]).toContain("scripts/validate-studio-release.ts");
   });
 
   it("rechecks source provenance after generation and build, immediately before packaging", () => {
     const scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts as Record<string, string>;
-    for (const target of ["collector", "studio"]) {
-      const steps = scripts[`release:${target}`].split(" && ");
-      expect(steps[0]).toBe("npm run assert:release-source");
-      expect(steps.at(-2)).toBe("npm run assert:release-source");
-      expect(steps.at(-1)).toBe(`npm run package:${target}`);
-      expect(steps.indexOf("npm run ci")).toBeLessThan(steps.lastIndexOf("npm run assert:release-source"));
-    }
+    const steps = scripts["release:collector"].split(" && ");
+    expect(steps[0]).toBe("npm run assert:release-source");
+    expect(steps.at(-2)).toBe("npm run assert:release-source");
+    expect(steps.at(-1)).toBe("npm run package:collector");
+    expect(steps.indexOf("npm run ci")).toBeLessThan(steps.lastIndexOf("npm run assert:release-source"));
   });
 });

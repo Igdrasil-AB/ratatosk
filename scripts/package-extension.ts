@@ -4,11 +4,11 @@ import { join, relative } from "node:path";
 import pkg from "../package.json";
 import { zipDeterministically } from "./deterministic-zip";
 import { assertPackageFileSafe, collectPackageFiles } from "./package-files";
-import { validateCollectorManifest, validateStudioManifest } from "./manifest-validation";
+import { validateCollectorManifest } from "./manifest-validation";
 
 const target = process.argv[2];
-if (target !== "collector" && target !== "studio") {
-  throw new Error("usage: tsx scripts/package-extension.ts <collector|studio>");
+if (target !== "collector") {
+  throw new Error("usage: tsx scripts/package-extension.ts collector");
 }
 
 const root = join("dist", target);
@@ -28,25 +28,20 @@ const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
 };
 if (manifest.manifest_version !== 3) throw new Error(`${target} build is not Manifest V3`);
 if (manifest.version !== pkg.version) throw new Error(`${target} manifest version ${manifest.version} does not match ${pkg.version}`);
-if (target === "collector") validateCollectorManifest(manifest);
-if (target === "studio") validateStudioManifest(manifest);
+validateCollectorManifest(manifest);
 
 const files: Record<string, Uint8Array> = {};
 for (const path of collectPackageFiles(root)) {
   const name = relative(root, path).replaceAll("\\", "/");
   const contents = new Uint8Array(readFileSync(path));
   assertPackageFileSafe(name, contents);
-  if (target === "studio" && /(^|\/)collector(?:\/|$)/i.test(name)) {
-    throw new Error(`Collector file must not ship in Studio: ${name}`);
-  }
-  if (target === "collector" && /(^|\/)studio(?:\/|$)/i.test(name)) {
+  if (/(^|\/)studio(?:\/|$)/i.test(name)) {
     throw new Error(`Studio file must not ship in Collector: ${name}`);
   }
   files[name] = contents;
 }
 if (!files["manifest.json"]) throw new Error("manifest.json must be at the ZIP root");
-if (target === "studio") assertStudioBundle(files);
-if (target === "collector") assertCollectorBundle(files);
+assertCollectorBundle(files);
 
 const bytes = zipDeterministically(files);
 const artifacts = "artifacts";
@@ -61,24 +56,17 @@ writeFileSync(`${destination}.sha256`, `${sha256}  ${filename}\n`);
 console.log(`Packaged ${destination} (${Object.keys(files).length} files)`);
 console.log(`SHA-256 ${sha256}`);
 
-function assertStudioBundle(files: Record<string, Uint8Array>): void {
-  const javascript = Object.entries(files)
-    .filter(([name]) => name.endsWith(".js"))
-    .map(([, contents]) => Buffer.from(contents).toString("utf8"))
-    .join("\n");
-  for (const messageType of ["fingerprintOutboxList", "fingerprintOutboxGet"]) {
-    if (!javascript.includes(messageType)) {
-      throw new Error(`Studio bundle does not contain required recovery message: ${messageType}`);
-    }
-  }
-}
-
 function assertCollectorBundle(files: Record<string, Uint8Array>): void {
   const javascript = Object.entries(files)
     .filter(([name]) => name.endsWith(".js"))
     .map(([, contents]) => Buffer.from(contents).toString("utf8"))
     .join("\n");
-  for (const studioMarker of ["fingerprintOutboxGet", "recorderStart", "chrome.debugger"]) {
-    if (javascript.includes(studioMarker)) throw new Error(`Collector bundle contains Studio marker: ${studioMarker}`);
+  // Authoring capabilities were removed with the Studio build. These markers stay
+  // as a permanent regression guard: the consumer ZIP must never regain a
+  // debugger-backed recorder or a fingerprint delivery path.
+  for (const authoringMarker of ["fingerprintOutboxGet", "recorderStart", "chrome.debugger"]) {
+    if (javascript.includes(authoringMarker)) {
+      throw new Error(`Collector bundle contains an authoring marker: ${authoringMarker}`);
+    }
   }
 }
