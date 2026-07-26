@@ -307,8 +307,7 @@ async function executeVendor(
       const batch = pending.slice(offset, offset + DOCUMENT_FETCH_CONCURRENCY);
       const outcomes = await mapConcurrentOrdered(batch, {
         limit: DOCUMENT_FETCH_CONCURRENCY,
-        stopOnError: (error) =>
-          error instanceof AuthExpired || error instanceof RateLimited || error instanceof DocumentPermissionRequired,
+        stopOnError: isFatalDocumentError,
       }, async ({ ref, vars: documentVars, key }, _index, signal) => {
         const raw = await strategy.fetchDocument(recipe, ref, documentVars, ctx, signal);
         const contentKey = await contentIdempotencyKey(ctx.companyId, source, raw.bytes);
@@ -332,6 +331,17 @@ async function executeVendor(
         } satisfies FetchedDocument;
       });
 
+      // A vendor-wide failure invalidates the whole bounded batch. Inspect the
+      // closed outcome set before any fulfilled sibling can enter the sink;
+      // otherwise source ordering could emit an earlier result and only then
+      // encounter the fatal rejection.
+      const fatalOutcome = outcomes.find((outcome) =>
+        outcome.status === "rejected" && isFatalDocumentError(outcome.error));
+      if (fatalOutcome?.status === "rejected") {
+        options.onFailure?.(collectionFailureEvidence(fatalOutcome.error, "document_fetch", list.retrieval));
+        throw fatalOutcome.error;
+      }
+
       for (const [outcomeIndex, outcome] of outcomes.entries()) {
         const { identityClaims } = batch[outcomeIndex];
         if (outcome.status === "cancelled") {
@@ -341,10 +351,6 @@ async function executeVendor(
         if (outcome.status === "rejected") {
           await releaseClaims(ctx, identityClaims);
           options.onFailure?.(collectionFailureEvidence(outcome.error, "document_fetch", list.retrieval));
-          if (
-            outcome.error instanceof AuthExpired || outcome.error instanceof RateLimited ||
-            outcome.error instanceof DocumentPermissionRequired
-          ) throw outcome.error;
           firstScopeError ??= outcome.error;
           continue;
         }
@@ -425,6 +431,12 @@ async function executeVendor(
       failureCodes: [...new Set(scopeErrors.map(operationalCodeForError))],
     },
   };
+}
+
+function isFatalDocumentError(error: unknown): boolean {
+  return error instanceof AuthExpired ||
+    error instanceof RateLimited ||
+    error instanceof DocumentPermissionRequired;
 }
 
 function configIdentityScope(recipe: VendorRecipe, scopeVars: Record<string, unknown>): string | undefined {

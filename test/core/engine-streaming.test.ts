@@ -289,6 +289,39 @@ describe("streaming vendor engine", () => {
     expect(signals.every((signal) => signal?.aborted)).toBe(true);
   });
 
+  it("never emits a fulfilled sibling from a batch containing a fatal rejection", async () => {
+    let releaseFatal!: () => void;
+    const fatalReady = new Promise<void>((resolve) => { releaseFatal = resolve; });
+    const strategy = {
+      list: vi.fn(async () => completeList([
+        { vendorInvoiceId: "controlled-bytes", issuedAt: "", documentUrl: "https://vendor.example/bytes.pdf" },
+        { vendorInvoiceId: "fatal", issuedAt: "", documentUrl: "https://vendor.example/fatal.pdf" },
+      ])),
+      fetchDocument: vi.fn(async (
+        _recipe: VendorRecipe,
+        ref: { vendorInvoiceId: string },
+      ) => {
+        if (ref.vendorInvoiceId === "fatal") {
+          await fatalReady;
+          throw new RateLimited(1_000);
+        }
+        // Fulfil first. The engine must still inspect the complete batch for a
+        // fatal sibling before allowing this controlled document into the sink.
+        releaseFatal();
+        return {
+          bytes: new TextEncoder().encode("%PDF controlled").buffer,
+          contentType: "application/pdf",
+          filename: "controlled.pdf",
+        };
+      }),
+    };
+    const strategies = { network: strategy, html: strategy, dom: strategy } as StrategyMap;
+    const emit = vi.fn(async () => undefined);
+
+    await expect(streamVendor(recipe, context(), strategies, emit)).rejects.toBeInstanceOf(RateLimited);
+    expect(emit).not.toHaveBeenCalled();
+  });
+
   it("does not fetch or emit documents from an incomplete candidate path", async () => {
     const fetchDocument = vi.fn(async () => ({
       bytes: new TextEncoder().encode("%PDF").buffer,

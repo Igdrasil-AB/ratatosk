@@ -99,7 +99,9 @@ export async function mapConcurrentOrdered<Input, Output>(
       if (index >= items.length) return;
       try {
         const value = await task(items[index], index, controller.signal);
-        outcomes[index] = { status: "fulfilled", index, value };
+        outcomes[index] = controller.signal.aborted && cancellationReason
+          ? { status: "cancelled", index, reason: cancellationReason }
+          : { status: "fulfilled", index, value };
       } catch (error) {
         if (controller.signal.aborted && cancellationReason) {
           outcomes[index] = { status: "cancelled", index, reason: cancellationReason };

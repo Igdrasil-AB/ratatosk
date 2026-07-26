@@ -404,7 +404,9 @@ change destination identity.
 - Add release validation for the synthetic browser-download archetype.
 - Require a versioned, sanitized two-run acceptance receipt for the semantic DOM
   capability before a Collector release can be marked ready.
-- Bump the patch version only after automated and live gates pass.
+- After automated implementation gates pass, bump the local patch candidate
+  before live acceptance so the required receipt names the exact final version.
+  Do not tag, publish, list, or submit it until every live gate passes.
 
 ### Step 8: Run authorized live acceptance
 
@@ -598,9 +600,9 @@ Stop and report if:
 - [x] All remaining programmatic page clicks are reviewed and CI-enforced.
 - [x] Existing profiles use the packaged shared behavior or fail closed with a
       typed reconnect/unsupported outcome.
-- [ ] Filesystem and Igdrasil destinations pass repeated-run tests.
-- [ ] Full CI, security, release validation, build, package, and artifact
-      verification pass.
+- [x] Filesystem and Igdrasil destinations pass repeated-run tests.
+- [x] Full CI, security, build, package, and artifact verification pass.
+- [ ] Release validation passes with the exact-build live acceptance receipt.
 - [ ] Supabase first-run, immediate-second-run, and scheduled-cadence acceptance
       records zero page-owned downloads.
 - [ ] Plan 011 live acceptance is complete.
@@ -611,14 +613,18 @@ Stop and report if:
 ## Sanitized execution evidence (2026-07-27, pre-live)
 
 - Characterization first reproduced the forbidden order, then the corrected
-  focused matrix passed 118 tests.
-- Final local gate: 98 test files, 658 tests, typecheck, architecture boundary,
+  focused matrix passed 125 tests.
+- Final local gate: 98 test files, 664 tests, typecheck, architecture boundary,
   vendor validation, and high-severity dependency audit all exit 0.
+- Real Filesystem and Igdrasil sink adapters each pass a two-run stable-identity
+  regression: one first-run action/delivery and zero second-run actions or
+  deliveries.
 - Collector production build and deterministic 16-file artifact verification
-  exit 0. Candidate:
-  `ratatosk-collector-v0.8.47.zip`, SHA-256
-  `f3a2b4bd351553b0c316e12efb34ae77d7e88a8812eae7dab193f89f746855bd`.
-- The release-specific native-download suite passes 50 tests. Release
+  exit 0, including a literal packaged acquisition-revision assertion.
+  Final unpublished exact-build acceptance candidate:
+  `ratatosk-collector-v0.8.48.zip`, SHA-256
+  `fe2d3dedb71c8b2a6a11d7f698cd6ef44498f5336394b6f2f41523f0090a26b3`.
+- The release-specific native-download suite passes 55 tests. Release
   validation then exits non-zero only because
   `store/semantic-dom-acceptance.json` is absent. This is the intended
   release-blocking state until the exact build passes live acceptance.

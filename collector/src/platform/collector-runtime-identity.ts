@@ -5,7 +5,10 @@ import {
   MAX_EXPLORATION_DEPTH,
   MAX_EXPLORATION_PAGES,
 } from "./discovery-explorer";
-import { DOCUMENT_ACQUISITION_REVISION } from "./acquisition-revision";
+import {
+  DOCUMENT_ACQUISITION_REVISION,
+  DOCUMENT_ACQUISITION_RUNTIME_MARKER,
+} from "./acquisition-revision";
 
 /**
  * One immutable identity for the code and bounded search policy that Chrome is
@@ -23,5 +26,5 @@ export const COLLECTOR_RUNTIME_IDENTITY = Object.freeze({
 
 export function formatCollectorRuntimeIdentity(): string {
   const identity = COLLECTOR_RUNTIME_IDENTITY;
-  return `v${identity.collectorVersion} discovery-engine=${identity.discoveryEngine} document-acquisition=${identity.documentAcquisition} pages=${identity.pages} depth=${identity.depth} budget=${identity.durationMs}ms`;
+  return `v${identity.collectorVersion} discovery-engine=${identity.discoveryEngine} ${DOCUMENT_ACQUISITION_RUNTIME_MARKER} pages=${identity.pages} depth=${identity.depth} budget=${identity.durationMs}ms`;
 }

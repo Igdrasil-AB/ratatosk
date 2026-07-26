@@ -168,7 +168,6 @@ export class SemanticActionObserver {
   private readonly onBeforeRequest = (details: BeforeRequestDetails): void => {
     if (!this.actionActive || details.tabId !== this.tabId) return;
     this.actionRequestIds.add(details.requestId);
-    this.keepActionUrl(details.url);
   };
 
   private readonly onHeadersReceived = (details: ResponseDetails): void => {
@@ -177,12 +176,13 @@ export class SemanticActionObserver {
       header.name?.toLowerCase() === "content-type")?.value;
     const contentDisposition = details.responseHeaders?.find((header) =>
       header.name?.toLowerCase() === "content-disposition")?.value;
-    this.keep({
+    const observation = {
       url: details.url,
       method: details.method,
       contentType,
       filename: filenameFromContentDisposition(contentDisposition),
-    });
+    };
+    if (this.keep(observation)) this.keepActionUrl(details.url);
   };
 
   private readonly onBeforeRedirect = (details: RedirectDetails): void => {
@@ -191,17 +191,18 @@ export class SemanticActionObserver {
       url: details.url,
       method: details.method,
     }, this.allowedOrigins));
-    this.keep({
+    if (this.keep({
       url: details.redirectUrl,
       method: details.method,
       documentIntent: sourceIsDocument,
-    });
-    this.keepActionUrl(details.redirectUrl);
+    })) this.keepActionUrl(details.redirectUrl);
   };
 
   private readonly onDownloadCreated = (item: chrome.downloads.DownloadItem): void => {
     // DownloadItem has no tab id. Admit it only if this exact URL was first
-    // observed on the disposable supplier tab during the current action run.
+    // confirmed as a document response or redirect on the disposable supplier
+    // tab during the current action run. A mere same-time request is not enough
+    // evidence to manipulate a user download.
     if (!this.actionActive || (!this.actionUrls.has(item.url) && !this.actionUrls.has(item.finalUrl))) return;
     this.downloadIds.add(item.id);
     this.keep({
@@ -213,10 +214,10 @@ export class SemanticActionObserver {
     });
   };
 
-  private keep(observation: DocumentObservation): void {
-    if (this.candidates.size >= MAX_DOCUMENT_CANDIDATES) return;
+  private keep(observation: DocumentObservation): boolean {
+    if (this.candidates.size >= MAX_DOCUMENT_CANDIDATES) return false;
     const candidate = documentCandidateFromObservation(observation, this.allowedOrigins);
-    if (!candidate) return;
+    if (!candidate) return false;
     const previous = this.candidates.get(candidate);
     this.candidates.set(candidate, {
       ...previous,
@@ -225,6 +226,7 @@ export class SemanticActionObserver {
       filename: observation.filename ?? previous?.filename,
       documentIntent: observation.documentIntent ?? previous?.documentIntent,
     });
+    return true;
   }
 
   private keepActionUrl(raw: string): void {

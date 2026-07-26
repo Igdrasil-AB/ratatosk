@@ -13,6 +13,7 @@ import type {
 import {
   AuthExpired,
   AuthFailure,
+  DocumentActionFailed,
   DocumentPermissionRequired,
   DomActionFailed,
   SelectorMiss,
@@ -237,7 +238,9 @@ export class BrowserDomDriver implements DomDriver {
             throw new DomActionFailed("semantic action page left the approved origin", this.recipe.id);
           }
           for (const actionRef of result.actions) {
-            if (semanticActions.has(actionRef.vendorInvoiceId)) continue;
+            if (semanticActions.has(actionRef.vendorInvoiceId)) {
+              throw new DocumentActionFailed("document_action_ambiguous", this.recipe.id);
+            }
             const handle = crypto.randomUUID();
             this.semanticActions.set(handle, {
               pageUrl: page.toString(),

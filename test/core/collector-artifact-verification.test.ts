@@ -12,6 +12,8 @@ describe("Collector release artifact verification", () => {
     expect(runbook).toContain("require('./package.json').version");
     expect(runbook).toContain("npm run verify:collector-artifact");
     expect(runbook).toContain('unzip -l "$COLLECTOR_ZIP"');
+    const packager = readFileSync("scripts/package-extension.ts", "utf8");
+    expect(packager).toContain("DOCUMENT_ACQUISITION_RUNTIME_MARKER !== acquisitionMarker");
   });
 
   it("verifies only the explicit version when stale releases coexist", () => {

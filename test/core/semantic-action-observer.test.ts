@@ -100,8 +100,28 @@ describe("semantic action observer boundary", () => {
       url: "https://documents.example/signed/opaque-item",
       method: "GET",
     });
+    // A request on the exact action tab is not enough ownership proof by
+    // itself. The unrelated download with that URL remains untouched until a
+    // document response for the same request chain has been observed.
     downloadCreated.emit({
       id: 2,
+      url: "https://documents.example/signed/opaque-item",
+      finalUrl: "https://documents.example/signed/opaque-item",
+      mime: "application/octet-stream",
+      filename: "/Downloads/unrelated.pdf",
+    });
+    headersReceived.emit({
+      requestId: "request-2",
+      tabId: 7,
+      url: "https://documents.example/signed/opaque-item",
+      method: "GET",
+      responseHeaders: [
+        { name: "Content-Type", value: "application/octet-stream" },
+        { name: "Content-Disposition", value: 'attachment; filename="invoice.pdf"' },
+      ],
+    });
+    downloadCreated.emit({
+      id: 3,
       url: "https://documents.example/signed/opaque-item",
       finalUrl: "https://documents.example/signed/opaque-item",
       mime: "application/octet-stream",
@@ -131,7 +151,7 @@ describe("semantic action observer boundary", () => {
         }],
       },
     ]);
-    expect(observer.snapshotDownloadIds()).toEqual([2]);
+    expect(observer.snapshotDownloadIds()).toEqual([3]);
 
     observer.endAction();
     observer.stop();

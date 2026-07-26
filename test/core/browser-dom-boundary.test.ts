@@ -369,6 +369,13 @@ describe("browser DOM boundary", () => {
             url: "https://documents.example/invoices/123.pdf",
             method: "GET",
           });
+          headersReceived.emit({
+            requestId: "request-1",
+            tabId: 42,
+            url: "https://documents.example/invoices/123.pdf",
+            method: "GET",
+            responseHeaders: [{ name: "Content-Type", value: "application/pdf" }],
+          });
           downloadCreated.emit({
             id: 91,
             url: "https://documents.example/invoices/123.pdf",
@@ -396,6 +403,56 @@ describe("browser DOM boundary", () => {
     expect(removeFile).toHaveBeenCalledWith(91);
     expect(erase).toHaveBeenCalledWith({ id: 91 });
     expect(beforeRequest.listenerCount).toBe(0);
+  });
+
+  it("rejects a stable semantic identity repeated across continuation pages", async () => {
+    const actionId = "a".repeat(32);
+    let enumeration = 0;
+    const executeScript = vi.fn(async (details: { func?: unknown }) => {
+      if (details.func === runSemanticDocumentOperationInPage) {
+        enumeration += 1;
+        return [{ result: {
+          ...emptySemanticEnumeration,
+          actions: [{
+            actionId,
+            vendorInvoiceId: `semantic-${actionId}`,
+            evidence: [],
+          }],
+          observedItems: 1,
+          resolvedItems: 1,
+        } }];
+      }
+      return [{ result: { kind: "advanced" } }];
+    });
+    vi.stubGlobal("chrome", {
+      ...actionBoundaryChromeApis(),
+      tabs: {
+        create: vi.fn(async () => ({ id: 42, windowId: 7, url: "about:blank", status: "complete" })),
+        get: vi.fn(async () => ({
+          id: 42,
+          windowId: 7,
+          url: "https://vendor.example/billing",
+          status: "complete",
+        })),
+        query: vi.fn(async () => [{ id: 11, windowId: 7, active: true, status: "complete" }]),
+        update: vi.fn(async (tabId: number, properties: chrome.tabs.UpdateProperties) => ({
+          id: tabId,
+          windowId: 7,
+          url: properties.url ?? "https://vendor.example/billing",
+          status: "complete",
+        })),
+        remove: vi.fn(async () => undefined),
+        onUpdated: new TestChromeEvent<Record<string, unknown>>(),
+      },
+      scripting: semanticScripting(executeScript),
+    });
+
+    await expect(new BrowserDomDriver(domRecipe()).run(
+      "https://vendor.example/billing",
+      [{ action: "extractSemanticDownloads", as: "documents", maxActions: 8 }],
+      { mode: "auto", maxActions: 1, maxDocuments: 100, timeoutMs: 30_000, allowScroll: true },
+    )).rejects.toMatchObject({ kind: "document_action_ambiguous" });
+    expect(enumeration).toBe(2);
   });
 
   it("fails closed before activation when semantic identities are ambiguous or unstable", async () => {
@@ -444,6 +501,31 @@ describe("browser DOM boundary", () => {
       DISCOVERY_DOM_POLICY,
       Date.now() + 2_000,
     )).rejects.toBeInstanceOf(AuthExpired);
+  });
+
+  it("does not arm or activate a semantic action after cancellation", async () => {
+    const registerContentScripts = vi.fn(async () => undefined);
+    const executeScript = vi.fn(async () => []);
+    vi.stubGlobal("chrome", {
+      ...actionBoundaryChromeApis(),
+      scripting: {
+        registerContentScripts,
+        unregisterContentScripts: vi.fn(async () => undefined),
+        executeScript,
+      },
+    });
+    const controller = new DocumentActionController(origins, "vendor");
+    const abort = new AbortController();
+    abort.abort();
+
+    await expect(controller.resolve(
+      "https://vendor.example/billing",
+      "a".repeat(32),
+      DISCOVERY_DOM_POLICY,
+      abort.signal,
+    )).rejects.toMatchObject({ name: "AbortError" });
+    expect(registerContentScripts).not.toHaveBeenCalled();
+    expect(executeScript).not.toHaveBeenCalled();
   });
 
   it("rejects an untrusted direct-document origin returned by page code", async () => {
@@ -746,6 +828,21 @@ describe("browser DOM boundary", () => {
     expect(actionControllerSource).toMatch(/const downloadControls =[\s\S]{0,1600}?return explicit \|\| contextualIcon/);
     expect(actionControllerSource).toContain("stableMaterial");
     expect(actionControllerSource).toContain("operation.maximumActions");
+  });
+
+  it("never derives a cross-run action identity from presentation text or row position", () => {
+    const start = actionControllerSource.indexOf("const stableMaterial");
+    const end = actionControllerSource.indexOf("const digest", start);
+    const identityPolicy = actionControllerSource.slice(start, end);
+
+    expect(identityPolicy).toContain("explicitAttribute");
+    expect(identityPolicy).toContain("invoiceNumber");
+    expect(identityPolicy).toContain("datedAmount");
+    expect(identityPolicy).toContain("stableAttributes");
+    expect(identityPolicy).not.toContain("row.textContent");
+    expect(identityPolicy).not.toContain("labelOf(element)");
+    expect(identityPolicy).not.toContain("columnContextOf(element)");
+    expect(driverSource).toContain('throw new DocumentActionFailed("document_action_ambiguous"');
   });
 
   it("captures invoice-shaped blob XHRs even without a PDF content type", () => {

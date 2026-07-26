@@ -128,7 +128,7 @@ export class DocumentActionController {
     signal?: AbortSignal,
     relocation?: SemanticActionRelocation,
   ): Promise<SemanticResolutionResult> {
-    if (signal?.aborted) throw new DOMException("document action aborted", "AbortError");
+    throwIfDocumentActionAborted(signal);
     const page = new URL(pageUrl);
     if (!this.allowedOrigins.has(page.origin)) {
       throw new DocumentActionFailed("document_action_ambiguous", this.vendorId);
@@ -150,8 +150,9 @@ export class DocumentActionController {
         navigationDeadline,
       );
       await waitForSupplierTabCommit(tabId, page.toString(), navigationDeadline);
-      if (signal?.aborted) throw new DOMException("document action aborted", "AbortError");
+      throwIfDocumentActionAborted(signal);
       for (let index = 0; index < (relocation?.continuationActions ?? 0); index += 1) {
+        throwIfDocumentActionAborted(signal);
         const advance = await this.advanceOnTab(
           tabId,
           relocation!.documentSelector,
@@ -172,8 +173,11 @@ export class DocumentActionController {
           await withinDeadline(chrome.tabs.update(tabId, { url: next.toString(), active: true }), updateDeadline);
           await waitForSupplierTabCommit(tabId, next.toString(), updateDeadline);
         }
+        throwIfDocumentActionAborted(signal);
       }
+      throwIfDocumentActionAborted(signal);
       return await this.runGuardedOnTab(tabId, "browser_download_unsupported", async () => {
+        throwIfDocumentActionAborted(signal);
         const actionDeadline = Date.now() + 30_000;
         const [injection] = await withinDeadline(chrome.scripting.executeScript({
           target: { tabId: tabId! },
@@ -186,7 +190,7 @@ export class DocumentActionController {
             actionDeadline,
           ],
         }), actionDeadline);
-        if (signal?.aborted) throw new DOMException("document action aborted", "AbortError");
+        throwIfDocumentActionAborted(signal);
         return this.parseSemanticResolution(injection?.result);
       });
     } finally {
@@ -522,6 +526,10 @@ class SemanticPageObserverRegistration {
 
 class DeadlineExceeded extends Error {}
 
+function throwIfDocumentActionAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException("document action aborted", "AbortError");
+}
+
 async function withinDeadline<T>(promise: Promise<T>, deadline: number | null): Promise<T> {
   if (deadline === null) return promise;
   const remaining = deadline - Date.now();
@@ -820,32 +828,28 @@ export async function runSemanticDocumentOperationInPage(
       "data-receipt-id",
       "data-document-id",
       "data-row-id",
-      "data-id",
-      "data-key",
-      "id",
     ].flatMap((name) => {
       const value = normalize(candidate.getAttribute(name), 160);
       return value && !/(?:token|secret|signature|bearer|eyJ[A-Za-z0-9_-]{20,})/i.test(value)
         ? [`${name}=${value}`]
         : [];
     });
-    const structured = evidence.flatMap((claim) => [
-      claim.invoiceNumber ? `invoice=${normalize(claim.invoiceNumber, 160)}` : "",
-      claim.issuedAt ? `date=${claim.issuedAt}` : "",
-      claim.total ? `total=${claim.total}` : "",
-      claim.currency ? `currency=${claim.currency}` : "",
-    ]).filter(Boolean);
-    const rowText = normalize(row.textContent, 500);
-    const material = [
-      ...stableAttributes(row),
-      ...stableAttributes(element),
-      ...structured,
-      `column=${normalize(columnContextOf(element), 120)}`,
-      `label=${labelOf(element)}`,
-      `row=${rowText}`,
-    ].filter((item) => item && !item.endsWith("="));
-    if (!rowText || material.length < 3) return undefined;
-    return material.join("\u0001");
+    const attributes = [...stableAttributes(row), ...stableAttributes(element)];
+    const explicitAttribute = attributes[0];
+    const invoiceNumber = evidence.find((claim) => claim.invoiceNumber)?.invoiceNumber;
+    const datedAmount = evidence.find((claim) =>
+      claim.issuedAt && claim.total && claim.currency);
+    // Presentation text, action labels, row position, and column headings can
+    // change between schedules. They may admit a control but cannot identify
+    // its invoice. Use the strongest available identity alone so optional
+    // lower-priority evidence cannot make the digest drift between schedules.
+    // Collisions are rejected below rather than disambiguated by position.
+    if (explicitAttribute) return explicitAttribute;
+    if (invoiceNumber) return `invoice=${normalize(invoiceNumber, 160)}`;
+    if (datedAmount) {
+      return `date=${datedAmount.issuedAt}\u0001total=${datedAmount.total}\u0001currency=${datedAmount.currency}`;
+    }
+    return undefined;
   };
   const digest = async (value: string): Promise<string> => {
     const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));

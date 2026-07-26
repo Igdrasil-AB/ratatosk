@@ -64,15 +64,15 @@ Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or
   alternate orchestration stack was substituted, and no schedule was activated.
   Provisioning the reviewed platform is the next external prerequisite before a
   paused manual trigger and shadow comparison can produce cutover evidence.
-- Plan 013: the `0.8.47` pre-live candidate separates observational DOM
+- Plan 013: the unpublished `0.8.48` exact-build candidate separates observational DOM
   enumeration from resolution, reserves stable identities before semantic
   actions, and routes all production page activation through reviewed
-  action-scoped owners. The full 658-test suite, boundary check, vendor
+  action-scoped owners. The full 664-test suite, boundary check, vendor
   validation, high-severity audit, Collector build, deterministic package, and
   artifact verification pass. The synthetic release regression passes and the
   release validator then fails closed because the exact-version live acceptance
   receipt is intentionally absent. Candidate ZIP SHA-256:
-  `f3a2b4bd351553b0c316e12efb34ae77d7e88a8812eae7dab193f89f746855bd`.
+  `fe2d3dedb71c8b2a6a11d7f698cd6ef44498f5336394b6f2f41523f0090a26b3`.
 
 ## Dependency graph
 
