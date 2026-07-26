@@ -18,6 +18,10 @@ unzip -l artifacts/ratatosk-collector-*.zip
 ```
 
 - [ ] CI, typecheck, validation, and tests pass.
+- [ ] A fresh `store/semantic-dom-acceptance.json` matches the exact Collector
+      version and acquisition revision; its Supabase, additional-supplier,
+      native-download, filesystem, Igdrasil, immediate-second-run, and
+      configured-cadence cases pass with zero page-owned download delta.
 - [ ] Collector and its checksum are produced under `artifacts/`.
 - [ ] `manifest.json` is at the ZIP root.
 - [ ] The archive contains no `.map`, private key, environment file, or
@@ -45,6 +49,11 @@ Use the current stable Chrome release and a fresh profile.
 - [ ] Grant a pilot vendor's host prompt using a dedicated test account.
 - [ ] Run now; confirm exactly the expected test documents are downloaded.
 - [ ] Run again; confirm duplicates are not downloaded.
+- [ ] For every semantic DOM case, confirm listing activates no document
+      control; the first action follows stable identity reservation; the second
+      run and one configured cadence activate zero accepted identities.
+- [ ] Confirm a synthetic Chrome-native supplier download is contained and
+      rejected, and a simultaneous unrelated user download is untouched.
 - [ ] Sign out of the vendor; confirm the reconnect state and notification.
 - [ ] Disconnect the vendor; confirm its optional host permission is revoked.
 - [ ] From an unsupported synthetic supplier home page, select **Search This

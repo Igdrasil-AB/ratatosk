@@ -47,6 +47,16 @@ manifest inside the release ZIP, not infer permissions from the repository.
 | Collector diagnostics | Error export leaking supplier or accounting data | Diagnostics are an explicit user action and contain only a stable vendor ID/code, package and lifecycle revisions, bounded counts, and normalized timestamps; stored error strings, URLs, headers, bodies, invoice IDs, company IDs, and tokens are excluded by construction |
 | Discovery diagnostics | Search evidence leaking account paths or invoice data | Failure diagnostics are explicit-copy, session-only structural summaries containing bounded page/evidence/candidate counts, candidate numbers, packaged adapter outcome codes, hostnames, and route templates whose opaque segments are replaced by `:id` or `:segment`; origins, raw paths, queries, fragments, headers, bodies, tokens, account/invoice identifiers, and financial values are never included |
 
+Semantic document controls add a stricter transaction boundary to the local
+discovery row above. Enumeration produces a stable supplier-scoped identity and
+an ephemeral run handle without activating the document control. The core
+claims every equivalent identity before one shared controller may re-locate and
+activate exactly one unambiguous control. Exact-action page and browser
+observers are removed in `finally`. A strongly correlated Chrome download is
+contained and classified as unsupported/side-effect rather than delivery proof;
+unrelated downloads are never inspected or modified. Action handles, selectors,
+row text, URLs, filenames, paths, and invoice metadata are never persisted.
+
 ## Security invariants enforced by tests
 
 - Recipe shapes reject unknown behavior: `src/core/schema.ts` and
@@ -62,6 +72,11 @@ manifest inside the release ZIP, not infer permissions from the repository.
 - The consumer ZIP cannot regain an authoring capability:
   `scripts/package-extension.ts` rejects `chrome.debugger`, recorder, and
   fingerprint markers in the built bundle.
+- Raw programmatic page clicks outside the reviewed document-action controller
+  and guarded discovery probe fail `npm run check:boundaries`.
+- A Collector release reruns the native-download regression and requires a
+  fresh exact-version semantic-DOM receipt with zero second/cadence actions and
+  zero page-owned downloads.
 
 Public supplier reports must omit tenant-, workspace-, account-, customer-,
 employee-, and internal-specific origins.

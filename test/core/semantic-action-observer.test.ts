@@ -67,11 +67,13 @@ describe("semantic action observer boundary", () => {
     const observer = new SemanticActionObserver(allowed, platform);
 
     expect(observer.start(7)).toBe(true);
-    beforeRequest.emit({ tabId: 8, url: "https://vendor.example/invoices/wrong/download", method: "GET" });
-    beforeRequest.emit({ tabId: 7, url: "https://vendor.example/invoices/123/download", method: "GET" });
+    observer.beginAction();
+    beforeRequest.emit({ requestId: "wrong-tab", tabId: 8, url: "https://vendor.example/invoices/wrong/download", method: "GET" });
+    beforeRequest.emit({ requestId: "request-1", tabId: 7, url: "https://vendor.example/invoices/123/download", method: "GET" });
     headersReceived.emit({
+      requestId: "request-1",
       tabId: 7,
-      url: "https://documents.example/signed/opaque",
+      url: "https://vendor.example/invoices/123/download",
       method: "GET",
       responseHeaders: [
         { name: "Content-Type", value: "application/pdf" },
@@ -79,6 +81,7 @@ describe("semantic action observer boundary", () => {
       ],
     });
     beforeRedirect.emit({
+      requestId: "request-1",
       tabId: 7,
       url: "https://vendor.example/invoices/123/download",
       redirectUrl: "https://documents.example/signed/redirected",
@@ -92,6 +95,7 @@ describe("semantic action observer boundary", () => {
       filename: "/Downloads/unrelated.pdf",
     });
     beforeRequest.emit({
+      requestId: "request-2",
       tabId: 7,
       url: "https://documents.example/signed/opaque-item",
       method: "GET",
@@ -105,13 +109,13 @@ describe("semantic action observer boundary", () => {
     });
 
     expect(observer.snapshotDocuments()).toEqual([
-      "https://documents.example/signed/opaque",
+      "https://vendor.example/invoices/123/download",
       "https://documents.example/signed/redirected",
       "https://documents.example/signed/opaque-item",
     ]);
     expect(observer.snapshotDocumentObservations()).toEqual([
       {
-        url: "https://documents.example/signed/opaque",
+        url: "https://vendor.example/invoices/123/download",
         evidence: [{
           source: "content-disposition",
           confidence: "medium",
@@ -127,7 +131,9 @@ describe("semantic action observer boundary", () => {
         }],
       },
     ]);
+    expect(observer.snapshotDownloadIds()).toEqual([2]);
 
+    observer.endAction();
     observer.stop();
     expect(beforeRequest.listenerCount).toBe(0);
     expect(headersReceived.listenerCount).toBe(0);

@@ -11,7 +11,9 @@ describe("release metadata workflow policy", () => {
 
     const pkg = JSON.parse(readFileSync("package.json", "utf8"));
     expect(pkg.scripts["release:collector"]).toContain("npm run validate:collector-release");
-    expect(pkg.scripts["validate:collector-release"]).toBe("npm run validate:release");
+    expect(pkg.scripts["validate:collector-release"]).toContain("npm run validate:release");
+    expect(pkg.scripts["validate:collector-release"]).toContain("npm run test:collector-release-regressions");
+    expect(pkg.scripts["validate:collector-release"]).toContain("validate-semantic-dom-acceptance.ts");
     expect(pkg.scripts["release:collector"]).not.toContain("allow-unverified-pilot-baseline");
   });
 

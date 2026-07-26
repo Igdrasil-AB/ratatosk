@@ -9,10 +9,11 @@ describe("collector runtime identity", () => {
     expect(COLLECTOR_RUNTIME_IDENTITY).toEqual({
       collectorVersion: "0.8.47",
       discoveryEngine: 35,
+      documentAcquisition: 1,
       pages: 15,
       depth: 3,
       durationMs: 30_000,
     });
-    expect(formatCollectorRuntimeIdentity()).toBe("v0.8.47 discovery-engine=35 pages=15 depth=3 budget=30000ms");
+    expect(formatCollectorRuntimeIdentity()).toBe("v0.8.47 discovery-engine=35 document-acquisition=1 pages=15 depth=3 budget=30000ms");
   });
 });

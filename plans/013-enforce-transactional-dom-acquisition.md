@@ -23,6 +23,9 @@
   Plan 011 live acceptance and starting Plan 012
 - **Category**: reliability, architecture, security, tests
 - **Planned at**: commit `b7082c8`, 2026-07-27
+- **Status**: IN PROGRESS — automated implementation and package evidence pass;
+  exact-build Chrome load and first/immediate-second/configured-cadence live
+  acceptance remain release-blocking
 
 ## Goal
 
@@ -585,15 +588,15 @@ Stop and report if:
 
 ## Definition of done
 
-- [ ] Failing characterization tests prove the original pre-identity action.
-- [ ] DOM enumeration is document-action-free.
-- [ ] Stable identity reservation happens before every semantic resolution.
-- [ ] One shared platform controller owns every document-producing page action.
-- [ ] Page-owned downloads never count as collected documents.
-- [ ] Native-download, permission, cancellation, crash, and unrelated-download
+- [x] Failing characterization tests prove the original pre-identity action.
+- [x] DOM enumeration is document-action-free.
+- [x] Stable identity reservation happens before every semantic resolution.
+- [x] One shared platform controller owns every document-producing page action.
+- [x] Page-owned downloads never count as collected documents.
+- [x] Native-download, permission, cancellation, crash, and unrelated-download
       tests pass.
-- [ ] All remaining programmatic page clicks are reviewed and CI-enforced.
-- [ ] Existing profiles use the packaged shared behavior or fail closed with a
+- [x] All remaining programmatic page clicks are reviewed and CI-enforced.
+- [x] Existing profiles use the packaged shared behavior or fail closed with a
       typed reconnect/unsupported outcome.
 - [ ] Filesystem and Igdrasil destinations pass repeated-run tests.
 - [ ] Full CI, security, release validation, build, package, and artifact
@@ -601,6 +604,23 @@ Stop and report if:
 - [ ] Supabase first-run, immediate-second-run, and scheduled-cadence acceptance
       records zero page-owned downloads.
 - [ ] Plan 011 live acceptance is complete.
-- [ ] The status row and sanitized execution evidence are updated.
-- [ ] No Web Store release/listing action occurs until all boxes above are
+- [x] The status row and sanitized execution evidence are updated.
+- [x] No Web Store release/listing action occurs until all boxes above are
       checked.
+
+## Sanitized execution evidence (2026-07-27, pre-live)
+
+- Characterization first reproduced the forbidden order, then the corrected
+  focused matrix passed 118 tests.
+- Final local gate: 98 test files, 658 tests, typecheck, architecture boundary,
+  vendor validation, and high-severity dependency audit all exit 0.
+- Collector production build and deterministic 16-file artifact verification
+  exit 0. Candidate:
+  `ratatosk-collector-v0.8.47.zip`, SHA-256
+  `f3a2b4bd351553b0c316e12efb34ae77d7e88a8812eae7dab193f89f746855bd`.
+- The release-specific native-download suite passes 50 tests. Release
+  validation then exits non-zero only because
+  `store/semantic-dom-acceptance.json` is absent. This is the intended
+  release-blocking state until the exact build passes live acceptance.
+- No supplier URL, tenant path, invoice metadata, filename, document, browser
+  History row, credential, or screenshot was retained.

@@ -43,7 +43,15 @@ export interface InvoiceRef {
   /** Previous safe identities accepted only for dedup migration. Strategies
    * bound this list; recipe data cannot supply it directly. */
   identityAliases?: string[];
+  /** Platform-free resolution contract. Semantic actions are opaque, run-scoped
+   * capabilities and are never executed during listing. */
+  resolution?: DocumentResolution;
 }
+
+export type DocumentResolution =
+  | { kind: "direct_url"; url: string }
+  | { kind: "inline_pdf"; handle: string }
+  | { kind: "semantic_action"; handle: string };
 
 export type InvoiceMetadataSource =
   | "network"
@@ -351,7 +359,6 @@ export interface DocumentSpec {
 /** Minimal DOM step language, used only when a vendor has no JSON API to replay. */
 export type DomStep =
   | { action: "waitFor"; selector: string; timeoutMs?: number }
-  | { action: "click"; selector: string }
   | { action: "extractAll"; selector: string; attr: string; as: string }
   /** Packaged browser primitive: inspect explicitly labelled download controls,
    * capture only safe HTTPS GET targets, and never persist page-provided actions. */

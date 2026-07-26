@@ -20,4 +20,16 @@ describe("architecture boundaries", () => {
       { path: "src/core/http.ts", source: "export const request = (url: URL) => fetch(url);" },
     ])).toEqual([]);
   });
+
+  it("rejects raw page activation outside the reviewed action-scoped owners", () => {
+    expect(architectureBoundaryIssues([
+      { path: "collector/src/platform/other.ts", source: "export function run(control: HTMLElement) { control.click(); }" },
+    ])).toEqual([expect.stringMatching(/raw page click/)]);
+    expect(architectureBoundaryIssues([
+      {
+        path: "collector/src/platform/document-action-controller.ts",
+        source: "export function runSemanticDocumentOperationInPage(control: HTMLElement) { control.click(); }",
+      },
+    ])).toEqual([]);
+  });
 });

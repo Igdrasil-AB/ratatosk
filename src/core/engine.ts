@@ -65,6 +65,9 @@ export interface Strategy {
     ctx: RunContext,
     signal?: AbortSignal,
   ): Promise<RawDocument>;
+  /** Release run-scoped capabilities even when every listed identity was
+   * already accepted and therefore never resolved. */
+  dispose?(): Promise<void>;
 }
 
 export type StrategyMap = Record<"network" | "dom" | "html", Strategy>;
@@ -104,9 +107,9 @@ export async function runVendor(
   strategies: StrategyMap,
 ): Promise<RunResult> {
   const documents: FetchedDocument[] = [];
-  const result = await executeVendor(recipe, ctx, strategies, async (document) => {
-    documents.push(document);
-  });
+  const result = await executeVendorWithCleanup(recipe, ctx, strategies, async (document) => {
+      documents.push(document);
+    });
   return {
     vendorId: result.vendorId,
     documents,
@@ -131,7 +134,22 @@ export function streamVendor(
   emit: (document: FetchedDocument) => Promise<void>,
   options: StreamVendorOptions = {},
 ): Promise<StreamRunResult> {
-  return executeVendor(recipe, ctx, strategies, emit, options);
+  return executeVendorWithCleanup(recipe, ctx, strategies, emit, options);
+}
+
+async function executeVendorWithCleanup(
+  recipe: VendorRecipe,
+  ctx: RunContext,
+  strategies: StrategyMap,
+  emit: (document: FetchedDocument) => Promise<void>,
+  options: StreamVendorOptions = {},
+): Promise<StreamRunResult> {
+  const strategy = strategies[recipe.invoices.strategy];
+  try {
+    return await executeVendor(recipe, ctx, strategies, emit, options);
+  } finally {
+    await strategy.dispose?.();
+  }
 }
 
 async function executeVendor(

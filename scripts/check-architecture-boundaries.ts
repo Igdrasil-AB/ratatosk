@@ -35,11 +35,32 @@ export function architectureBoundaryIssues(files: readonly SourceBoundaryFile[])
       if (shared && ts.isIdentifier(node) && PLATFORM_GLOBALS.has(node.text) && isValueReference(node)) {
         issues.push(`${file.path}: shared code references platform global ${node.text}`);
       }
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === "click" &&
+        !isApprovedPageActivation(normalizedPath, node)
+      ) {
+        issues.push(`${file.path}: raw page click is outside an approved action-scoped controller`);
+      }
       ts.forEachChild(node, visit);
     };
     visit(sourceFile);
   }
   return [...new Set(issues)];
+}
+
+function isApprovedPageActivation(path: string, node: ts.Node): boolean {
+  const approved = path === "collector/src/platform/document-action-controller.ts"
+    ? new Set(["runSemanticDocumentOperationInPage", "advanceDomPageInPage"])
+    : path === "collector/src/platform/discovery.ts"
+      ? new Set(["collectPageEvidenceInPage"])
+      : new Set<string>();
+  if (!approved.size) return false;
+  for (let current: ts.Node | undefined = node; current; current = current.parent) {
+    if (ts.isFunctionDeclaration(current) && current.name && approved.has(current.name.text)) return true;
+  }
+  return false;
 }
 
 function isValueReference(node: ts.Identifier): boolean {

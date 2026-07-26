@@ -110,6 +110,21 @@ export class SelectorMiss extends CollectorError {}
  * not complete. This is distinct from a selector drift failure. */
 export class DomActionFailed extends CollectorError {}
 
+export type DocumentActionFailureKind =
+  | "unstable_action_identity"
+  | "document_action_ambiguous"
+  | "browser_download_unsupported"
+  | "document_action_side_effect"
+  | "document_action_timeout";
+
+/** A closed semantic-document transaction outcome. The kind is safe to persist;
+ * the message contains no URL, selector, filename, row value, or supplier data. */
+export class DocumentActionFailed extends CollectorError {
+  constructor(readonly kind: DocumentActionFailureKind, vendorId?: string) {
+    super(kind.replaceAll("_", " "), vendorId);
+  }
+}
+
 /** A path yielded evidence but hit a traversal/action/document cap or left
  * observed items unresolved. Candidate verification should try another path. */
 export class RetrievalIncomplete extends CollectorError {
@@ -150,6 +165,11 @@ export const COLLECTION_FAILURE_CAUSES = [
   "rate_limited",
   "selector_miss",
   "action_failed",
+  "unstable_action_identity",
+  "document_action_ambiguous",
+  "browser_download_unsupported",
+  "document_action_side_effect",
+  "document_action_timeout",
   "unexpected_response",
   "schema_invalid",
   "template_invalid",
@@ -206,6 +226,7 @@ export function collectionFailureEvidence(
     cause = error.kind === "blocked_or_challenged" ? "auth_blocked" : error.kind;
   } else if (error instanceof RateLimited) cause = "rate_limited";
   else if (error instanceof SelectorMiss) cause = "selector_miss";
+  else if (error instanceof DocumentActionFailed) cause = error.kind;
   else if (error instanceof DomActionFailed) cause = "action_failed";
   else if (error instanceof UnexpectedResponse) {
     cause = "unexpected_response";
@@ -259,6 +280,11 @@ export const OPERATIONAL_OUTCOME_CODES = [
   "recipe_incompatible",
   "document_invalid",
   "document_permission_required",
+  "unstable_action_identity",
+  "document_action_ambiguous",
+  "browser_download_unsupported",
+  "document_action_side_effect",
+  "document_action_timeout",
   "retrieval_incomplete",
   "month_range_fallback_all",
   "destination_unavailable",
@@ -279,6 +305,7 @@ export function operationalCodeForError(error: unknown): OperationalOutcomeCode 
   if (error instanceof RateLimited) return "rate_limited";
   if (error instanceof DocumentInvalid || error instanceof DocumentNotFound || error instanceof DocumentTooLarge) return "document_invalid";
   if (error instanceof DocumentPermissionRequired) return "document_permission_required";
+  if (error instanceof DocumentActionFailed) return error.kind;
   if (error instanceof DocumentRedirectRejected) return "document_invalid";
   if (error instanceof RetrievalIncomplete) return "retrieval_incomplete";
   if (error instanceof UnexpectedResponse || error instanceof SelectorMiss || error instanceof SchemaError || error instanceof TemplateError) {
@@ -297,6 +324,11 @@ export function operationalOutcomeLabel(code: OperationalOutcomeCode): string {
     case "recipe_incompatible": return "Supplier integration needs review";
     case "document_invalid": return "Supplier returned an invalid document";
     case "document_permission_required": return "Invoice document access needs approval";
+    case "unstable_action_identity": return "Invoice action has no stable identity";
+    case "document_action_ambiguous": return "Invoice action could not be identified safely";
+    case "browser_download_unsupported": return "Supplier download could not be contained safely";
+    case "document_action_side_effect": return "Supplier action created an unexpected download";
+    case "document_action_timeout": return "Supplier invoice action timed out";
     case "retrieval_incomplete": return "Invoice retrieval was incomplete";
     case "month_range_fallback_all": return "Invoice dates were unavailable, so all history was checked";
     case "destination_unavailable": return "Invoice destination unavailable";

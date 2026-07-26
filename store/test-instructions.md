@@ -47,7 +47,9 @@ This submission contains the Collector extension only. No authoring tool and no
 13. Confirm Ratatosk shows the detected supplier name, its domain, and the number
     of possible invoices without downloading yet. Select **Connect & Collect**,
     approve any additional exact document host, and confirm a valid synthetic PDF
-    is downloaded before the provisional source appears in the list. On the
+    is downloaded before the provisional source appears in the list. Confirm an
+    immediate second sync activates no already-accepted control and creates
+    neither a destination duplicate nor an ordinary Chrome download. On the
     synthetic supplier, confirm a structurally plausible non-PDF candidate falls
     through to the next candidate, and that an explicit download button without
     an `href` is activated only after this confirmation. On the paginated shape,

@@ -332,12 +332,31 @@ function installObserver(): void {
     return Reflect.apply(originalWindowOpen, window, [url, target, features]) as WindowProxy | null;
   } as typeof window.open;
 
+  const captureGeneratedAnchor = (event: MouseEvent): void => {
+    if (!documentActionActive) return;
+    const target = event.composedPath()[0];
+    const anchor = target instanceof Element ? target.closest("a[href]") : null;
+    if (!(anchor instanceof HTMLAnchorElement)) return;
+    const raw = anchor.getAttribute("href");
+    if (!raw) return;
+    let url: URL;
+    try { url = new URL(raw, location.href); } catch { return; }
+    const explicitDocument = anchor.hasAttribute("download") ||
+      url.protocol === "blob:" || url.protocol === "data:" ||
+      /(?:\.pdf$|\/download(?:\/|$))/i.test(url.pathname);
+    // Preserve ordinary same-origin navigation used to reveal billing UI.
+    if (url.origin === location.origin && !explicitDocument) return;
+    if (url.protocol === "https:") keepActionDocumentUrl(url.toString());
+    event.preventDefault();
+  };
+
   window.fetch = wrappedFetch;
   XMLHttpRequest.prototype.open = wrappedOpen;
   XMLHttpRequest.prototype.send = wrappedSend;
   XMLHttpRequest.prototype.setRequestHeader = wrappedSetRequestHeader;
   URL.createObjectURL = wrappedCreateObjectURL;
   window.open = wrappedWindowOpen;
+  document.addEventListener("click", captureGeneratedAnchor, true);
   window[OBSERVER_KEY] = {
     async snapshot(): Promise<CapturedEntry[]> {
       const current = [...pending];
@@ -391,6 +410,7 @@ function installObserver(): void {
       }
       if (URL.createObjectURL === wrappedCreateObjectURL) URL.createObjectURL = originalCreateObjectURL;
       if (window.open === wrappedWindowOpen) window.open = originalWindowOpen;
+      document.removeEventListener("click", captureGeneratedAnchor, true);
       entries.length = 0;
       documents.length = 0;
       documentKeys.clear();

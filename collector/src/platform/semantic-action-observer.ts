@@ -7,6 +7,7 @@ export interface DocumentObservation {
 }
 
 type BeforeRequestDetails = {
+  requestId: string;
   tabId: number;
   url: string;
   method: string;
@@ -76,7 +77,10 @@ export function documentCandidateFromObservation(
 export class SemanticActionObserver {
   private readonly candidates = new Map<string, DocumentObservation>();
   private readonly actionUrls = new Set<string>();
+  private readonly actionRequestIds = new Set<string>();
+  private readonly downloadIds = new Set<number>();
   private started = false;
+  private actionActive = false;
   private tabId: number | undefined;
 
   constructor(
@@ -108,6 +112,23 @@ export class SemanticActionObserver {
     return [...this.candidates.keys()];
   }
 
+  snapshotDownloadIds(): number[] {
+    return [...this.downloadIds];
+  }
+
+  beginAction(): void {
+    if (!this.started) return;
+    this.candidates.clear();
+    this.actionUrls.clear();
+    this.actionRequestIds.clear();
+    this.downloadIds.clear();
+    this.actionActive = true;
+  }
+
+  endAction(): void {
+    this.actionActive = false;
+  }
+
   snapshotDocumentObservations(): Array<{
     url: string;
     evidence: Array<{
@@ -136,18 +157,22 @@ export class SemanticActionObserver {
     try { this.platform?.beforeRedirect.removeListener(this.onBeforeRedirect); } catch { /* unavailable */ }
     try { this.platform?.downloadCreated.removeListener(this.onDownloadCreated); } catch { /* unavailable */ }
     this.started = false;
+    this.actionActive = false;
     this.tabId = undefined;
     this.candidates.clear();
     this.actionUrls.clear();
+    this.actionRequestIds.clear();
+    this.downloadIds.clear();
   }
 
   private readonly onBeforeRequest = (details: BeforeRequestDetails): void => {
-    if (details.tabId !== this.tabId) return;
+    if (!this.actionActive || details.tabId !== this.tabId) return;
+    this.actionRequestIds.add(details.requestId);
     this.keepActionUrl(details.url);
   };
 
   private readonly onHeadersReceived = (details: ResponseDetails): void => {
-    if (details.tabId !== this.tabId) return;
+    if (!this.actionActive || details.tabId !== this.tabId || !this.actionRequestIds.has(details.requestId)) return;
     const contentType = details.responseHeaders?.find((header) =>
       header.name?.toLowerCase() === "content-type")?.value;
     const contentDisposition = details.responseHeaders?.find((header) =>
@@ -161,7 +186,7 @@ export class SemanticActionObserver {
   };
 
   private readonly onBeforeRedirect = (details: RedirectDetails): void => {
-    if (details.tabId !== this.tabId) return;
+    if (!this.actionActive || details.tabId !== this.tabId || !this.actionRequestIds.has(details.requestId)) return;
     const sourceIsDocument = Boolean(documentCandidateFromObservation({
       url: details.url,
       method: details.method,
@@ -171,12 +196,14 @@ export class SemanticActionObserver {
       method: details.method,
       documentIntent: sourceIsDocument,
     });
+    this.keepActionUrl(details.redirectUrl);
   };
 
   private readonly onDownloadCreated = (item: chrome.downloads.DownloadItem): void => {
     // DownloadItem has no tab id. Admit it only if this exact URL was first
     // observed on the disposable supplier tab during the current action run.
-    if (!this.actionUrls.has(item.url) && !this.actionUrls.has(item.finalUrl)) return;
+    if (!this.actionActive || (!this.actionUrls.has(item.url) && !this.actionUrls.has(item.finalUrl))) return;
+    this.downloadIds.add(item.id);
     this.keep({
       url: item.finalUrl || item.url,
       method: "GET",

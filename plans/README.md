@@ -33,7 +33,7 @@ public repository.
 | [010](010-orchestrate-vendor-health-with-temporal.md) | Temporal TypeScript schedules supplier-health evaluation and follow-up | P1 | L | 004, 005, 008 | BLOCKED — the app, schema, and worker manifest are deployed, but production has no operational EKS/Temporal platform; the schedule remains unregistered and paused under the plan's STOP condition |
 | [011](011-cold-replay-and-semantic-download-parity.md) | Unknown SPA invoice routes are captured through exact-entry cold replay and semantic candidates reproduce during verification | P1 | L | — | IN PROGRESS — automated implementation and gates complete; live Supabase structure recognizes 8 invoice actions; end-to-end Supabase/ClickUp delivery and duplicate acceptance remains |
 | [012](012-build-adaptive-supplier-acquisition-fabric.md) | Proven supplier paths repair locally through a packaged capability grammar, diverse fallbacks, shadow proof, atomic promotion, and rollback | P1 | L | 011, 013 | TODO |
-| [013](013-enforce-transactional-dom-acquisition.md) | Every click-capable DOM document path runs after stable identity reservation and cannot leave a page-owned browser download | P0 | L | — | TODO |
+| [013](013-enforce-transactional-dom-acquisition.md) | Every click-capable DOM document path runs after stable identity reservation and cannot leave a page-owned browser download | P0 | L | — | IN PROGRESS — shared transaction/controller, synthetic gates, CI, audit, build, package, and artifact verification pass; exact-build Chrome load and first/second/cadence live acceptance remain |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or
 `REJECTED — <reason>`.
@@ -64,6 +64,15 @@ Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or
   alternate orchestration stack was substituted, and no schedule was activated.
   Provisioning the reviewed platform is the next external prerequisite before a
   paused manual trigger and shadow comparison can produce cutover evidence.
+- Plan 013: the `0.8.47` pre-live candidate separates observational DOM
+  enumeration from resolution, reserves stable identities before semantic
+  actions, and routes all production page activation through reviewed
+  action-scoped owners. The full 658-test suite, boundary check, vendor
+  validation, high-severity audit, Collector build, deterministic package, and
+  artifact verification pass. The synthetic release regression passes and the
+  release validator then fails closed because the exact-version live acceptance
+  receipt is intentionally absent. Candidate ZIP SHA-256:
+  `f3a2b4bd351553b0c316e12efb34ae77d7e88a8812eae7dab193f89f746855bd`.
 
 ## Dependency graph
 

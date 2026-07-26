@@ -213,6 +213,43 @@ describe("discovered candidate fallback", () => {
     ]);
   });
 
+  for (const code of [
+    "unstable_action_identity",
+    "document_action_ambiguous",
+    "browser_download_unsupported",
+    "document_action_side_effect",
+    "document_action_timeout",
+  ] as const) {
+    it(`falls through after the candidate-local ${code} outcome`, async () => {
+      const candidates = set();
+      const run = vi.fn()
+        .mockResolvedValueOnce({
+          vendorId: candidates.id,
+          status: "error",
+          count: 0,
+          code,
+        })
+        .mockResolvedValueOnce({
+          vendorId: candidates.id,
+          status: "ok",
+          count: 1,
+          retrieval: "complete",
+          failedScopes: 0,
+          emptyScopes: 0,
+        });
+
+      const result = await collectFirstWorkingCandidate(candidates, run);
+
+      expect(result).toMatchObject({ kind: "success", attempted: 2 });
+      expect(result.outcomes[0]).toEqual({
+        candidate: 1,
+        adapter: "dom-links",
+        result: code,
+        verifiedDocuments: 0,
+      });
+    });
+  }
+
   it("never falls through after a document was durably delivered", async () => {
     const candidates = set();
     const run = vi.fn().mockResolvedValue({
