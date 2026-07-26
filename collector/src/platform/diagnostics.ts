@@ -10,7 +10,12 @@ export interface CollectorDiagnostic {
   lifecycleRevision: string;
   outcomeCode: OperationalOutcomeCode;
   recordedAt: string | null;
-  counts: { collected: number; failedScopes: number; emptyScopes: number };
+  counts: {
+    collected: number;
+    documentActions: number;
+    failedScopes: number;
+    emptyScopes: number;
+  };
   nextEligibleAt: string | null;
 }
 
@@ -30,6 +35,7 @@ export function buildCollectorDiagnostic(input: {
     recordedAt: isoTimestamp(connection?.lastRunAt),
     counts: {
       collected: boundedCount(connection?.lastCount),
+      documentActions: boundedCount(connection?.lastDocumentActionCount),
       failedScopes: boundedCount(connection?.lastFailedScopes),
       emptyScopes: boundedCount(connection?.lastEmptyScopes),
     },

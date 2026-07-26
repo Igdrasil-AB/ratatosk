@@ -98,10 +98,12 @@ choice across the permission prompt. If the supplier API accepts a date query,
 also confirm its recipe uses the closed run variables; the post-list
 supplier-wide decision remains the acceptance check.
 
-For a semantic DOM supplier, also record the count of page-owned downloads
+For a semantic DOM supplier, copy the redacted diagnostic after each run and
+record `counts.documentActions`. Also record the count of page-owned downloads
 before and after each run without retaining paths, filenames, URLs, or History
 rows. A Chrome-native supplier download is never a Ratatosk success even if its
-URL was observed.
+URL was observed. The immediate second run and configured-cadence diagnostic
+must both report zero document actions.
 
 ## Transactional semantic-DOM release matrix
 

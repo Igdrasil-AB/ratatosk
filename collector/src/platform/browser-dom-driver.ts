@@ -84,9 +84,14 @@ export class BrowserDomDriver implements DomDriver {
   constructor(
     private readonly recipe: VendorRecipe,
     private readonly createInlineDocumentStore: () => InlineDocumentStore = () => new InlineDocumentStore(),
+    onSemanticDocumentAction: () => void = () => undefined,
   ) {
     this.allowedOrigins = new Set(recipe.hosts.map((host) => new URL(host.slice(0, -2)).origin));
-    this.actionController = new DocumentActionController(this.allowedOrigins, recipe.id);
+    this.actionController = new DocumentActionController(
+      this.allowedOrigins,
+      recipe.id,
+      onSemanticDocumentAction,
+    );
   }
 
   async run(url: string, steps: DomStep[], continuation?: DomContinuationSpec): Promise<DomDriverRunResult> {

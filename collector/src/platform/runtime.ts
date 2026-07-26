@@ -25,10 +25,24 @@ import { createSyncMonthWindow, syncMonthWindowVars } from "../../../src/core/sy
  * pass a stricter policy before reaching this runtime; packaged recipes retain
  * the same closed driver contract.
  */
-export function buildStrategies(recipe?: VendorRecipe): StrategyMap {
+export interface StrategyInstrumentation {
+  /** Privacy-safe count only; no action or supplier data crosses this hook. */
+  onSemanticDocumentAction?: () => void;
+}
+
+export function buildStrategies(
+  recipe?: VendorRecipe,
+  instrumentation: StrategyInstrumentation = {},
+): StrategyMap {
   return {
     network: networkStrategy,
-    dom: recipe?.invoices.strategy === "dom" ? makeDomStrategy(new BrowserDomDriver(recipe)) : unavailableDomStrategy,
+    dom: recipe?.invoices.strategy === "dom"
+      ? makeDomStrategy(new BrowserDomDriver(
+          recipe,
+          undefined,
+          instrumentation.onSemanticDocumentAction,
+        ))
+      : unavailableDomStrategy,
     html: htmlStrategy,
   };
 }

@@ -528,6 +528,52 @@ describe("browser DOM boundary", () => {
     expect(executeScript).not.toHaveBeenCalled();
   });
 
+  it("counts exactly one privacy-safe activation at the shared document-action boundary", async () => {
+    let currentUrl = "about:blank";
+    const onDocumentAction = vi.fn();
+    const executeScript = vi.fn(async (details: { func?: unknown }) => {
+      if (details.func === runSemanticDocumentOperationInPage) {
+        return [{ result: {
+          ok: true,
+          kind: "url",
+          url: "https://documents.example/invoices/one.pdf",
+        } }];
+      }
+      return [{ result: undefined }];
+    });
+    vi.stubGlobal("chrome", {
+      ...actionBoundaryChromeApis(),
+      tabs: {
+        create: vi.fn(async () => ({ id: 42, windowId: 7, url: "about:blank", status: "complete" })),
+        get: vi.fn(async (tabId: number) => ({
+          id: tabId,
+          windowId: 7,
+          url: currentUrl,
+          status: "complete",
+        })),
+        query: vi.fn(async () => [{ id: 11, windowId: 7, active: true, status: "complete" }]),
+        update: vi.fn(async (tabId: number, properties: chrome.tabs.UpdateProperties) => {
+          if (properties.url) currentUrl = properties.url;
+          return { id: tabId, windowId: 7, url: currentUrl, status: "complete" };
+        }),
+        remove: vi.fn(async () => undefined),
+        onUpdated: new TestChromeEvent<Record<string, unknown>>(),
+      },
+      scripting: semanticScripting(executeScript),
+    });
+    const controller = new DocumentActionController(origins, "vendor", onDocumentAction);
+
+    await expect(controller.resolve(
+      "https://vendor.example/billing",
+      "a".repeat(32),
+      DISCOVERY_DOM_POLICY,
+    )).resolves.toEqual({
+      kind: "url",
+      url: "https://documents.example/invoices/one.pdf",
+    });
+    expect(onDocumentAction).toHaveBeenCalledOnce();
+  });
+
   it("rejects an untrusted direct-document origin returned by page code", async () => {
     vi.stubGlobal("chrome", {
       ...actionBoundaryChromeApis(),

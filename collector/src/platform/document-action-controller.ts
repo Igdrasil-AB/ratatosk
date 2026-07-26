@@ -79,6 +79,7 @@ export class DocumentActionController {
   constructor(
     private readonly allowedOrigins: ReadonlySet<string>,
     private readonly vendorId: string,
+    private readonly onDocumentAction: () => void = () => undefined,
   ) {}
 
   async registerPageObserver(origin: string): Promise<{ dispose(tabId?: number): Promise<void> }> {
@@ -178,6 +179,9 @@ export class DocumentActionController {
       throwIfDocumentActionAborted(signal);
       return await this.runGuardedOnTab(tabId, "browser_download_unsupported", async () => {
         throwIfDocumentActionAborted(signal);
+        // This is the single metric boundary for document-producing page
+        // activation. It contains no URL, selector, row data, or invoice data.
+        try { this.onDocumentAction(); } catch { /* observability cannot change acquisition */ }
         const actionDeadline = Date.now() + 30_000;
         const [injection] = await withinDeadline(chrome.scripting.executeScript({
           target: { tabId: tabId! },

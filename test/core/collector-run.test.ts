@@ -7,7 +7,10 @@ const mocks = vi.hoisted(() => ({
   resolveCollectorSource: vi.fn(),
   getSinkConfig: vi.fn(),
   buildRunContext: vi.fn(),
-  buildStrategies: vi.fn(() => ({})),
+  buildStrategies: vi.fn((
+    _recipe?: unknown,
+    _instrumentation?: { onSemanticDocumentAction(): void },
+  ) => ({})),
   buildSink: vi.fn(),
   recordCollected: vi.fn(async () => undefined),
   recordRun: vi.fn(async () => undefined),
@@ -147,6 +150,29 @@ describe("Collector per-vendor run coordinator", () => {
         lastStatus: "ok",
         lastCode: "month_range_fallback_all",
       }),
+    );
+  });
+
+  it("reports and persists the privacy-safe semantic action count", async () => {
+    mocks.buildStrategies.mockImplementationOnce((_recipe, instrumentation) => {
+      instrumentation!.onSemanticDocumentAction();
+      instrumentation!.onSemanticDocumentAction();
+      return {};
+    });
+    mocks.streamVendor.mockResolvedValueOnce({
+      vendorId: "vendor-action-count",
+      documentCount: 0,
+      scopes: scopes(),
+    });
+
+    await expect(runVendorById("vendor-action-count")).resolves.toMatchObject({
+      status: "ok",
+      count: 0,
+      documentActionCount: 2,
+    });
+    expect(mocks.recordRun).toHaveBeenCalledWith(
+      "vendor-action-count",
+      expect.objectContaining({ lastDocumentActionCount: 2 }),
     );
   });
 
@@ -370,6 +396,7 @@ describe("Collector per-vendor run coordinator", () => {
       count: 0,
       code: "rate_limited",
       nextEligibleRunAt: 1_800_000,
+      documentActionCount: 0,
       failure: {
         stage: "authentication",
         cause: "rate_limited",

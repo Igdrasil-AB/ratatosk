@@ -51,7 +51,9 @@ Use the current stable Chrome release and a fresh profile.
 - [ ] Run again; confirm duplicates are not downloaded.
 - [ ] For every semantic DOM case, confirm listing activates no document
       control; the first action follows stable identity reservation; the second
-      run and one configured cadence activate zero accepted identities.
+      run and one configured cadence activate zero accepted identities. Copy
+      the redacted diagnostic after each run and record
+      `counts.documentActions`; second and cadence values must both be zero.
 - [ ] Confirm a synthetic Chrome-native supplier download is contained and
       rejected, and a simultaneous unrelated user download is untouched.
 - [ ] Sign out of the vendor; confirm the reconnect state and notification.

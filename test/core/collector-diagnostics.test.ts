@@ -15,6 +15,7 @@ describe("redacted Collector diagnostics", () => {
         lastCode: "destination_unavailable",
         lastError: "https://secret.example?token=synthetic invoice-123 company-456 Bearer credential",
         lastCount: 2,
+        lastDocumentActionCount: 4,
         lastFailedScopes: 1,
         lastEmptyScopes: 3,
       },
@@ -26,7 +27,7 @@ describe("redacted Collector diagnostics", () => {
       lifecycleRevision: "r1",
       outcomeCode: "destination_unavailable",
       recordedAt: "2026-07-16T10:00:00.000Z",
-      counts: { collected: 2, failedScopes: 1, emptyScopes: 3 },
+      counts: { collected: 2, documentActions: 4, failedScopes: 1, emptyScopes: 3 },
       nextEligibleAt: null,
     });
     expect(JSON.stringify(diagnostic)).not.toMatch(/secret|token|invoice-123|company-456|bearer|https?:/i);

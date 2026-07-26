@@ -39,6 +39,9 @@ export interface Connection {
   lastStatus?: ConnectionStatus;
   lastError?: string;
   lastCount?: number;
+  /** Bounded count of document-producing semantic controls activated during
+   * the most recent run. No action identity or supplier data is retained. */
+  lastDocumentActionCount?: number;
   lastCode?: OperationalOutcomeCode;
   lastFailedScopes?: number;
   lastEmptyScopes?: number;

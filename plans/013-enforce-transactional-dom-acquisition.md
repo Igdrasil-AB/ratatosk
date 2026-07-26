@@ -449,6 +449,10 @@ closed outcome
 pass/fail
 ```
 
+Use the run summary or redacted **Copy Diagnostic** output for the bounded
+document-action count (`counts.documentActions`). Do not infer zero actions from
+zero accepted documents.
+
 ## Required automated acceptance matrix
 
 | Case | Expected result |
@@ -613,8 +617,8 @@ Stop and report if:
 ## Sanitized execution evidence (2026-07-27, pre-live)
 
 - Characterization first reproduced the forbidden order, then the corrected
-  focused matrix passed 125 tests.
-- Final local gate: 98 test files, 664 tests, typecheck, architecture boundary,
+  focused matrix passed 126 tests.
+- Final local gate: 98 test files, 666 tests, typecheck, architecture boundary,
   vendor validation, and high-severity dependency audit all exit 0.
 - Real Filesystem and Igdrasil sink adapters each pass a two-run stable-identity
   regression: one first-run action/delivery and zero second-run actions or
@@ -623,10 +627,13 @@ Stop and report if:
   exit 0, including a literal packaged acquisition-revision assertion.
   Final unpublished exact-build acceptance candidate:
   `ratatosk-collector-v0.8.48.zip`, SHA-256
-  `fe2d3dedb71c8b2a6a11d7f698cd6ef44498f5336394b6f2f41523f0090a26b3`.
-- The release-specific native-download suite passes 55 tests. Release
+  `a81c2780805c91ec97eed11132b293e6db10698d84f8443d0f6a53a56404364e`.
+- The release-specific native-download suite passes 56 tests. Release
   validation then exits non-zero only because
   `store/semantic-dom-acceptance.json` is absent. This is the intended
   release-blocking state until the exact build passes live acceptance.
+- Each run now returns and persists one bounded document-action count at the
+  shared controller boundary; the redacted diagnostic exposes it as
+  `counts.documentActions` without action, URL, selector, or invoice data.
 - No supplier URL, tenant path, invoice metadata, filename, document, browser
   History row, credential, or screenshot was retained.

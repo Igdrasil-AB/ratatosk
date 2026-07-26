@@ -67,12 +67,12 @@ Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or
 - Plan 013: the unpublished `0.8.48` exact-build candidate separates observational DOM
   enumeration from resolution, reserves stable identities before semantic
   actions, and routes all production page activation through reviewed
-  action-scoped owners. The full 664-test suite, boundary check, vendor
+  action-scoped owners. The full 666-test suite, boundary check, vendor
   validation, high-severity audit, Collector build, deterministic package, and
   artifact verification pass. The synthetic release regression passes and the
   release validator then fails closed because the exact-version live acceptance
   receipt is intentionally absent. Candidate ZIP SHA-256:
-  `fe2d3dedb71c8b2a6a11d7f698cd6ef44498f5336394b6f2f41523f0090a26b3`.
+  `a81c2780805c91ec97eed11132b293e6db10698d84f8443d0f6a53a56404364e`.
 
 ## Dependency graph
 

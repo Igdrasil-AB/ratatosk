@@ -34,6 +34,8 @@ export interface VendorRunSummary {
   /** Documents whose retrieval and destination identity were verified,
    * including documents the destination had already accepted. */
   verifiedCount?: number;
+  /** Privacy-safe count of semantic document controls activated in this run. */
+  documentActionCount?: number;
   retrieval?: RetrievalCompleteness;
   retrievalProof?: RetrievalProof;
   syncWindow?: SyncWindowStats;
@@ -111,7 +113,19 @@ async function executeRecipeRun(
   const config = await getSinkConfig();
   if (!config) return { vendorId, status: "error", count: 0, error: "choose a destination before collecting" };
   const { ctx, dispose } = buildRunContext(sinkCompanyId(config), recipe, fromMonth);
-  const strategies = buildStrategies(recipe);
+  const acquisitionMetrics = { documentActions: 0 };
+  const strategies = buildStrategies(recipe, {
+    onSemanticDocumentAction: () => {
+      acquisitionMetrics.documentActions = Math.min(10_000, acquisitionMetrics.documentActions + 1);
+    },
+  });
+  const runMetrics = () => ({ documentActionCount: acquisitionMetrics.documentActions });
+  const recordRunOutcome = (
+    patch: Parameters<typeof recordRun>[1],
+  ): Promise<void> => recordRun(vendorId, {
+    ...patch,
+    lastDocumentActionCount: acquisitionMetrics.documentActions,
+  });
 
   console.info(`[collector] running "${vendorId}"…`);
   let acceptedCount = 0;
@@ -197,10 +211,10 @@ async function executeRecipeRun(
 
     const monthFallback = result.syncWindow?.mode === "all_history_fallback";
     const partial = scopes.failed > 0;
-    const code = scopes.failed > 0
+    const code = partial
       ? "partial_scope_failure" as const
       : monthFallback ? "month_range_fallback_all" as const : undefined;
-    await recordRun(vendorId, {
+    await recordRunOutcome({
       lastStatus: partial ? "partial" : "ok",
       lastCount: acceptedCount,
       lastCode: code,
@@ -214,6 +228,7 @@ async function executeRecipeRun(
       status: partial ? "partial" : "ok",
       count: acceptedCount,
       verifiedCount,
+      ...runMetrics(),
       retrieval,
       ...(result.syncWindow ? { syncWindow: result.syncWindow } : {}),
       ...(retrievalProof ? { retrievalProof } : {}),
@@ -248,6 +263,7 @@ async function executeRecipeRun(
         status: "error",
         count: acceptedCount,
         verifiedCount,
+        ...runMetrics(),
         retrieval,
         ...(retrievalProof ? { retrievalProof } : {}),
         ...(failure ? { failure } : {}),
@@ -260,7 +276,7 @@ async function executeRecipeRun(
       notifyReconnect(recipe);
       if (acceptedCount > 0) {
         const message = operationalOutcomeLabel("auth_expired");
-        await recordRun(vendorId, {
+        await recordRunOutcome({
           lastStatus: "partial",
           lastCount: acceptedCount,
           lastCode: "auth_expired",
@@ -271,29 +287,54 @@ async function executeRecipeRun(
           vendorId,
           status: "partial",
           count: acceptedCount,
+          ...runMetrics(),
           retrieval,
           code: "auth_expired",
           error: message,
           ...(failure ? { failure } : {}),
         };
       }
-      await recordRun(vendorId, { lastStatus: "auth_expired", lastCode: "auth_expired", nextEligibleRunAt: undefined });
-      return { vendorId, status: "auth_expired", count: 0, code: "auth_expired", ...(failure ? { failure } : {}) };
+      await recordRunOutcome({ lastStatus: "auth_expired", lastCode: "auth_expired", nextEligibleRunAt: undefined });
+      return {
+        vendorId,
+        status: "auth_expired",
+        count: 0,
+        code: "auth_expired",
+        ...runMetrics(),
+        ...(failure ? { failure } : {}),
+      };
     }
     if (err instanceof AuthFailure) {
       const code = operationalCodeForError(err);
       const message = operationalOutcomeLabel(code);
       console.warn(`[collector] "${vendorId}": ${message.toLowerCase()}`);
       if (acceptedCount > 0) {
-        await recordRun(vendorId, { lastStatus: "partial", lastCount: acceptedCount, lastCode: code, lastError: message, nextEligibleRunAt: undefined });
-        return { vendorId, status: "partial", count: acceptedCount, retrieval, code, error: message, ...(failure ? { failure } : {}) };
+        await recordRunOutcome({ lastStatus: "partial", lastCount: acceptedCount, lastCode: code, lastError: message, nextEligibleRunAt: undefined });
+        return {
+          vendorId,
+          status: "partial",
+          count: acceptedCount,
+          retrieval,
+          code,
+          error: message,
+          ...runMetrics(),
+          ...(failure ? { failure } : {}),
+        };
       }
-      await recordRun(vendorId, { lastStatus: "error", lastCode: code, lastError: message, nextEligibleRunAt: undefined });
-      return { vendorId, status: "error", count: 0, code, error: message, ...(failure ? { failure } : {}) };
+      await recordRunOutcome({ lastStatus: "error", lastCode: code, lastError: message, nextEligibleRunAt: undefined });
+      return {
+        vendorId,
+        status: "error",
+        count: 0,
+        code,
+        error: message,
+        ...runMetrics(),
+        ...(failure ? { failure } : {}),
+      };
     }
     if (err instanceof RateLimited) {
       const eligibleAt = boundedNextEligibleRunAt(err.retryAfterMs);
-      await recordRun(vendorId, {
+      await recordRunOutcome({
         lastStatus: acceptedCount > 0 ? "partial" : "rate_limited",
         lastCount: acceptedCount || undefined,
         lastCode: "rate_limited",
@@ -309,6 +350,7 @@ async function executeRecipeRun(
             code: "rate_limited",
             error: operationalOutcomeLabel("rate_limited"),
             nextEligibleRunAt: eligibleAt,
+            ...runMetrics(),
             ...(failure ? { failure } : {}),
           }
         : {
@@ -317,6 +359,7 @@ async function executeRecipeRun(
             count: 0,
             code: "rate_limited",
             nextEligibleRunAt: eligibleAt,
+            ...runMetrics(),
             ...(failure ? { failure } : {}),
           };
     }
@@ -325,7 +368,7 @@ async function executeRecipeRun(
       const message = operationalOutcomeLabel(code);
       const existing = (await getConnections())[vendorId];
       if (existing) {
-        await recordRun(vendorId, {
+        await recordRunOutcome({
           lastStatus: acceptedCount > 0 ? "partial" : "error",
           lastCount: acceptedCount || undefined,
           lastCode: code,
@@ -342,6 +385,7 @@ async function executeRecipeRun(
         code,
         error: message,
         requiredOrigins: err.requiredOrigins,
+        ...runMetrics(),
         ...(failure ? { failure } : {}),
       };
     }
@@ -349,7 +393,7 @@ async function executeRecipeRun(
     const message = operationalOutcomeLabel(code);
     console.error(`[collector] "${vendorId}": ${message}`);
     if (acceptedCount > 0) {
-      await recordRun(vendorId, { lastStatus: "partial", lastCount: acceptedCount, lastCode: code, lastError: message, nextEligibleRunAt: undefined });
+      await recordRunOutcome({ lastStatus: "partial", lastCount: acceptedCount, lastCode: code, lastError: message, nextEligibleRunAt: undefined });
       return {
         vendorId,
         status: "partial",
@@ -359,9 +403,10 @@ async function executeRecipeRun(
         ...(failure ? { failure } : {}),
         code,
         error: message,
+        ...runMetrics(),
       };
     }
-    await recordRun(vendorId, { lastStatus: "error", lastCode: code, lastError: message, nextEligibleRunAt: undefined });
+    await recordRunOutcome({ lastStatus: "error", lastCode: code, lastError: message, nextEligibleRunAt: undefined });
     return {
       vendorId,
       status: "error",
@@ -371,6 +416,7 @@ async function executeRecipeRun(
       ...(failure ? { failure } : {}),
       code,
       error: message,
+      ...runMetrics(),
     };
   } finally {
     await dispose();
