@@ -1,4 +1,9 @@
-import { inflateSync, deflateSync } from "node:zlib";
+// `node:zlib` deflate output is not stable across Node/zlib builds, so icons
+// regenerated on a different runtime would differ byte-for-byte from the
+// committed ones and fail the release source check. fflate is pure JavaScript
+// and therefore deterministic everywhere, which is why the release ZIP already
+// uses it. PNG IDAT is a zlib stream, so this is `zlibSync`, not `deflateSync`.
+import { unzlibSync, zlibSync } from "fflate";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 const sizes = [16, 32, 48, 128];
@@ -70,7 +75,7 @@ function decodeRgbaPng(bytes: Uint8Array): RgbaImage {
   }
   if (!width || !height || !idat.length) throw new Error("incomplete PNG source");
 
-  const scanlines = new Uint8Array(inflateSync(concat(idat)));
+  const scanlines = unzlibSync(concat(idat));
   const stride = width * channels;
   const expected = height * (stride + 1);
   if (scanlines.length !== expected) throw new Error(`unexpected PNG data length ${scanlines.length}; expected ${expected}`);
@@ -245,7 +250,7 @@ function encodeRgbaPng(image: RgbaImage): Uint8Array {
   return concat([
     new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
     chunk("IHDR", concat([u32(image.width), u32(image.height), new Uint8Array([8, 6, 0, 0, 0])])),
-    chunk("IDAT", new Uint8Array(deflateSync(scanlines, { level: 9 }))),
+    chunk("IDAT", zlibSync(scanlines, { level: 9 })),
     chunk("IEND", new Uint8Array()),
   ]);
 }

@@ -8,7 +8,12 @@ import { execFileSync } from "node:child_process";
 export function assertCleanReleaseSource(run = execFileSync): void {
   const status = run("git", ["status", "--porcelain=v1", "--untracked-files=all"], { encoding: "utf8" }).trim();
   if (status) {
-    throw new Error("release source is dirty; commit or remove all tracked and untracked changes before packaging");
+    // Name the offending paths. This check also runs after generation and build,
+    // where a dirty tree usually means a generated file is not reproducible on
+    // this runtime rather than that someone forgot to commit.
+    throw new Error(
+      `release source is dirty; commit or remove all tracked and untracked changes before packaging:\n${status}`,
+    );
   }
 }
 
