@@ -686,7 +686,140 @@ describe("browser DOM boundary", () => {
     expect(driverSource).not.toContain('this.dispatchEvent(new ProgressEvent("loadend"))');
     expect(driverSource).toContain("control.click()");
   });
+
+  it("waits for each revealed billing tier to mount instead of racing one mutation", async () => {
+    // Every tier of an account menu mounts asynchronously. A framework flips an
+    // unrelated attribute immediately, so a single mutation resolves long
+    // before the next tier exists.
+    const page = stubSemanticPage();
+    try {
+      const result = await runDomStepsInPage(
+        [{ action: "extractSemanticDownloads", as: "documents", maxActions: 8 }],
+        ["https://vendor.example"],
+        DISCOVERY_DOM_POLICY,
+        Date.now() + 20_000,
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        collected: { documents: ["https://vendor.example/invoices/one.pdf"] },
+      });
+      expect(page.clicked).toEqual(["Open profile menu", "Settings", "Billing"]);
+    } finally {
+      page.restore();
+    }
+  }, 20_000);
+
+  it("treats a same-origin address-bar rewrite as the requested page committing", async () => {
+    // Applications routinely restore their shell URL while keeping the
+    // requested surface mounted. Demanding the exact path back would strand
+    // every such supplier on a navigation timeout.
+    const executeScript = vi.fn(async () => [{ result: {
+      ok: true,
+      collected: { documents: [] },
+      retrieval: { observedItems: 0, resolvedItems: 0, unresolvedItems: 0 },
+    } }]);
+    let committedUrl = "about:blank";
+    vi.stubGlobal("chrome", {
+      tabs: {
+        create: vi.fn(async () => ({ id: 42, windowId: 7, url: "about:blank", status: "complete" })),
+        get: vi.fn(async () => ({ id: 42, windowId: 7, url: committedUrl, status: "complete" })),
+        query: vi.fn(async () => [{ id: 11, windowId: 7, active: true, status: "complete" }]),
+        update: vi.fn(async (tabId: number, properties: chrome.tabs.UpdateProperties) => {
+          // The application settles the address bar back on its own shell.
+          if (properties.url) committedUrl = "https://vendor.example/";
+          return { id: tabId, windowId: 7, url: committedUrl, status: "complete" };
+        }),
+        remove: vi.fn(async () => undefined),
+        onUpdated: new TestChromeEvent<Record<string, unknown>>(),
+      },
+      scripting: { executeScript },
+    });
+
+    await new BrowserDomDriver(domRecipe()).run(
+      "https://vendor.example/settings/billing",
+      [{ action: "extractSemanticDownloads", as: "documents", maxActions: 8 }],
+    );
+
+    expect(executeScript).toHaveBeenCalledOnce();
+  });
 });
+
+/**
+ * A minimal account menu whose tiers mount only after the previous click.
+ *
+ * The elements are plain objects because the injected function is serialized
+ * into a page and may only rely on the DOM surface it actually reads.
+ */
+function stubSemanticPage(): { clicked: string[]; restore: () => void } {
+  const clicked: string[] = [];
+  const navigation: unknown[] = [];
+  const downloads: unknown[] = [];
+  const mountDelayMs = 300;
+
+  const control = (
+    attributes: Record<string, string>,
+    text: string,
+    onClick: () => void = () => undefined,
+  ): unknown => ({
+    tagName: "BUTTON",
+    getAttribute: (name: string) => attributes[name] ?? null,
+    hasAttribute: (name: string) => name in attributes,
+    closest: () => null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    getBoundingClientRect: () => ({ width: 120, height: 32 }),
+    textContent: text,
+    click: () => {
+      clicked.push(text);
+      onClick();
+    },
+  });
+
+  const mount = (target: unknown[], element: unknown): void => {
+    setTimeout(() => target.push(element), mountDelayMs);
+  };
+
+  const billingTab = control({ role: "tab" }, "Billing", () => {
+    mount(downloads, control(
+      { "data-href": "https://vendor.example/invoices/one.pdf" },
+      "Download invoice PDF",
+    ));
+  });
+  const settingsItem = control({ role: "menuitem" }, "Settings", () => {
+    mount(navigation, billingTab);
+  });
+  navigation.push(control({ role: "button", "aria-label": "Open profile menu" }, "Open profile menu", () => {
+    mount(navigation, settingsItem);
+  }));
+
+  const navigationSelector = 'button,[role="button"],[role="menuitem"],[role="tab"],a:not([href])';
+  vi.stubGlobal("document", {
+    title: "Vendor",
+    getElementById: () => null,
+    querySelector: () => null,
+    querySelectorAll: (selector: string) => {
+      if (selector === navigationSelector) return [...navigation];
+      if (selector === DISCOVERY_DOM_POLICY.controlSelector) return [...navigation, ...downloads];
+      return [];
+    },
+  });
+  vi.stubGlobal("location", { href: "https://vendor.example/settings/billing", pathname: "/settings/billing" });
+  vi.stubGlobal("getComputedStyle", () => ({ display: "block", visibility: "visible", opacity: "1" }));
+  vi.stubGlobal("window", {});
+  // A framework mutation lands immediately and says nothing about the tier
+  // that is still mounting.
+  vi.stubGlobal("MutationObserver", class {
+    constructor(private readonly callback: () => void) {}
+    observe(): void { this.callback(); }
+    disconnect(): void { /* no observation to release */ }
+  });
+  for (const name of ["HTMLElement", "HTMLAnchorElement", "HTMLButtonElement", "HTMLInputElement"]) {
+    vi.stubGlobal(name, class {});
+  }
+
+  return { clicked, restore: () => vi.unstubAllGlobals() };
+}
 
 function domRecipe() {
   return {

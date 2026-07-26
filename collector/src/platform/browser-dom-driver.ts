@@ -113,8 +113,8 @@ export class BrowserDomDriver implements DomDriver {
         );
         // tabs.update can briefly return the completed about:blank document
         // even though the requested navigation has only just started. Require
-        // the exact supplier URL to commit before injecting any action code.
-        await waitForExactTabComplete(
+        // the supplier document to commit before injecting any action code.
+        await waitForSupplierTabCommit(
           shell.id,
           page.toString(),
           remainingRunMs(navigationDeadline),
@@ -1019,23 +1019,24 @@ export async function runDomStepsInPage(
         invoiceContext.test(`${table} ${page}`);
       return explicit || contextualIcon;
     });
-    const navigationLabelOf = (element: Element): string => [
+    // The navigation pattern is anchored, so each label source is matched on
+    // its own. Joining them turns an accessible name plus its visible text
+    // into one string that no anchored pattern can ever match.
+    const navigationLabelsOf = (element: Element): string[] => [
       element.getAttribute("aria-label"),
       element.getAttribute("title"),
       element.textContent,
-    ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim().slice(0, 120);
-    const waitForNavigationMutation = (): Promise<void> => new Promise((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        observer.disconnect();
-        resolve();
-      };
-      const observer = new MutationObserver(finish);
-      observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
-      const timer = setTimeout(finish, Math.min(1_000, Math.max(150, semanticCaptureDeadline - Date.now())));
+    ].map((value) => (value || "").replace(/\s+/g, " ").trim().slice(0, 120)).filter(Boolean);
+    const navigationControl = (tier: RegExp): HTMLElement | undefined => Array.from(
+      document.querySelectorAll<HTMLElement>('button,[role="button"],[role="menuitem"],[role="tab"],a:not([href])'),
+    ).find((element) => {
+      const labels = navigationLabelsOf(element);
+      return Boolean(
+        labels.length && !labels.some((label) => unsafe.test(label)) &&
+        labels.some((label) => semanticNavigation.test(label) && tier.test(label)) &&
+        !element.closest("form") && visible(element) &&
+        !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true"
+      );
     });
     const revealBillingSurface = async (): Promise<number> => {
       if (downloadControls().length > 0) return 0;
@@ -1045,23 +1046,25 @@ export async function runDomStepsInPage(
         /^(?:settings|preferences)$/i,
         /^(?:account|billing|subscriptions?|invoice\s+history|receipt\s+history|billing\s+history|past\s+invoices?)$/i,
       ];
+      // A tier is worth waiting for only while something can still mount it:
+      // the application's own startup for the first tier, or the previous
+      // click. A single mutation fires on the first unrelated attribute
+      // change, long before the revealed menu exists, so poll for the control
+      // itself. Tiers that nothing is mounting are checked once.
+      let mounting = true;
       for (const tier of tiers) {
         if (Date.now() >= semanticCaptureDeadline || steps >= 3) break;
-        const control = Array.from(document.querySelectorAll<HTMLElement>(
-          'button,[role="button"],[role="menuitem"],[role="tab"],a:not([href])',
-        )).find((element) => {
-          const label = navigationLabelOf(element);
-          return Boolean(
-            label && semanticNavigation.test(label) && tier.test(label) &&
-            !unsafe.test(label) && !element.closest("form") && visible(element) &&
-            !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true"
-          );
-        });
+        const tierDeadline = mounting ? Math.min(semanticCaptureDeadline, Date.now() + 3_000) : 0;
+        let control = navigationControl(tier);
+        while (!control && Date.now() < tierDeadline) {
+          if (downloadControls().length > 0) return steps;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          control = navigationControl(tier);
+        }
+        mounting = Boolean(control);
         if (!control) continue;
-        const changed = waitForNavigationMutation();
         control.click();
         steps += 1;
-        await changed;
         if (downloadControls().length > 0) break;
       }
       return steps;
@@ -1514,7 +1517,15 @@ function waitForTabComplete(tabId: number, timeoutMs = 20_000): Promise<void> {
   });
 }
 
-function waitForExactTabComplete(
+/**
+ * Wait for a freshly created shell tab to commit the requested supplier page.
+ *
+ * The tab starts on about:blank, so only this run's navigation can put it on
+ * the supplier origin. Single-page applications commonly rewrite the address
+ * bar while keeping the requested surface mounted, so a completed document on
+ * the requested origin is the commit signal. Any other origin is not.
+ */
+function waitForSupplierTabCommit(
   tabId: number,
   expectedUrl: string,
   timeoutMs = 20_000,
@@ -1523,10 +1534,7 @@ function waitForExactTabComplete(
   const matches = (tab: chrome.tabs.Tab): boolean => {
     if (tab.status !== "complete" || !tab.url) return false;
     try {
-      const current = new URL(tab.url);
-      return current.origin === expected.origin &&
-        current.pathname === expected.pathname &&
-        current.search === expected.search;
+      return new URL(tab.url).origin === expected.origin;
     } catch {
       return false;
     }

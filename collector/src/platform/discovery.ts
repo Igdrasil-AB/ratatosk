@@ -60,13 +60,32 @@ import { getDiscoveredSuppliers } from "./discovered-suppliers";
 import { DISCOVERY_DOM_POLICY } from "./discovery-dom-policy";
 import { withForegroundTabVisibility } from "./tab-visibility";
 
+/**
+ * Every provider host that admission can accept as a document link.
+ *
+ * Derived from the provider policy so a host can never be admissible as
+ * evidence yet unmatchable when the compiled recipe reopens the page.
+ */
+const PROVIDER_DOCUMENT_LINK_SELECTORS = STRIPE_KNOWN_DOCUMENT_HOSTS.map(
+  (host) => `a[href*="//${new URL(host.slice(0, -2)).host}/" i]`,
+);
+
+/**
+ * The single matcher for document links.
+ *
+ * It must stay a superset of what `findLikelyDocumentLinks` admits. Admission
+ * additionally requires invoice context, so this selector is deliberately the
+ * broader of the two: a narrower one turns a correct billing page into a
+ * selector miss at collection time.
+ */
 const DOM_LINK_SELECTOR = [
   'a[href$=".pdf" i]',
   'a[href*=".pdf?" i]',
+  'a[href*=".pdf#" i]',
   'a[href*="/download" i]',
   'a[href*="/pdf" i]',
   'a[href*="/account/receipt/" i]',
-  'a[href*="invoice.stripe.com/i/" i]',
+  ...PROVIDER_DOCUMENT_LINK_SELECTORS,
   'a[aria-label*="download" i][href]',
   'a[title*="download" i][href]',
   "a[download]",
@@ -311,10 +330,15 @@ export async function discoverSupplierInTab(
         }
 
         const entryUrl = safeEntryUrl(evidence.url);
+        // The requested route, not the URL the application settled on, is what
+        // reproduces this surface. Applications that rewrite the address bar
+        // back to their shell would otherwise compile a recipe that reopens a
+        // page the evidence never came from.
+        const openUrl = requestedEntryUrl(target.url, entryUrl);
         // These four evidence families are inspected for every successfully
         // loaded route, so a large navigation graph cannot starve them.
         markCoverageFamilies(diagnostic, ["observed_network", "embedded_data", "document_provider", "semantic_download"]);
-        const candidates = compileCandidates(evidence, entryUrl, display.name);
+        const candidates = compileCandidates(evidence, entryUrl, display.name, openUrl);
         diagnostic.candidates.compiled += candidates.length;
         const routeEvidence = diagnosticEvidence(evidence);
         if (!candidates.length) recordAttempt(diagnostic, page, target.source, undefined, "no_candidate", Date.now() - pageStartedAt, {
@@ -353,7 +377,7 @@ export async function discoverSupplierInTab(
               score: candidateScore(candidate.adapterId, candidateCount, target.score),
               profile: createDiscoveredSupplierProfile({
                 primaryOrigin: evidence.origin,
-                entryUrl,
+                entryUrl: openUrl,
                 displayName: display.name,
                 nameSource: display.source,
                 nameConfidence: display.confidence,
@@ -526,7 +550,22 @@ function recipeForPreview(recipe: VendorRecipe): VendorRecipe {
   return preview;
 }
 
-export function compileCandidates(evidence: PageEvidence, entryUrl: string, displayName: string): Candidate[] {
+/**
+ * Compile every candidate supported by one page of evidence.
+ *
+ * `entryUrl` is the URL that actually served the inspected document and stays
+ * the base for resolving its links. `openUrl` is the route discovery requested.
+ * Single-page applications routinely rewrite the address bar back to their
+ * shell while keeping the billing surface mounted, so only the requested route
+ * can reopen a DOM candidate. Network and embedded strategies replay a response
+ * we already hold, so they keep the served URL.
+ */
+export function compileCandidates(
+  evidence: PageEvidence,
+  entryUrl: string,
+  displayName: string,
+  openUrl: string = entryUrl,
+): Candidate[] {
   const candidates: Candidate[] = [];
   const resourceEntries: CapturedEntry[] = evidence.resources.map((resource) => ({
     url: resource.url,
@@ -579,7 +618,7 @@ export function compileCandidates(evidence: PageEvidence, entryUrl: string, disp
   }
 
   const links = findLikelyDocumentLinks(evidence.html, entryUrl, evidence.title);
-  const domCandidate = links.length ? directDomRecipe(evidence.origin, entryUrl, displayName, links) : undefined;
+  const domCandidate = links.length ? directDomRecipe(evidence.origin, openUrl, displayName, links) : undefined;
   if (domCandidate) candidates.push({
     adapterId: "dom-links",
     recipe: domCandidate,
@@ -588,7 +627,7 @@ export function compileCandidates(evidence: PageEvidence, entryUrl: string, disp
   });
   const semanticEvidenceCount = evidence.stats.semanticControls + (evidence.stats.semanticSections ?? 0);
   const semanticCandidate = semanticEvidenceCount > 0
-    ? semanticDomRecipe(evidence.origin, entryUrl, displayName, evidence.crossOriginHosts)
+    ? semanticDomRecipe(evidence.origin, openUrl, displayName, evidence.crossOriginHosts)
     : undefined;
   if (semanticCandidate) {
     const admission: CandidateAdmissionSignal[] = [];
@@ -880,57 +919,62 @@ async function collectPageEvidenceInPage(
     return Boolean(label && invoiceSection.test(label) && !unsafeLabel.test(label));
   });
   let semanticNavigationSteps = 0;
-  const semanticNavigationLabelOf = (element: Element): string => [
+  // The navigation pattern is anchored, so each label source is matched on its
+  // own. Joining them turns an accessible name plus its visible text into one
+  // string that no anchored pattern can ever match.
+  const semanticNavigationLabelsOf = (element: Element): string[] => [
     element.getAttribute("aria-label"),
     element.getAttribute("title"),
     element.textContent,
-  ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim().slice(0, 120);
-  const waitForSemanticNavigationMutation = (): Promise<void> => new Promise((resolve) => {
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      observer.disconnect();
-      resolve();
-    };
-    const observer = new MutationObserver(finish);
-    observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
-    const timer = setTimeout(finish, Math.min(1_000, Math.max(150, deadline - Date.now())));
+  ].map((value) => (value || "").replace(/\s+/g, " ").trim().slice(0, 120)).filter(Boolean);
+  const semanticNavigationControl = (tier: RegExp): HTMLElement | undefined => Array.from(
+    document.querySelectorAll<HTMLElement>('button,[role="button"],[role="menuitem"],[role="tab"],a:not([href])'),
+  ).find((element) => {
+    const labels = semanticNavigationLabelsOf(element);
+    return Boolean(
+      labels.length && !labels.some((label) => unsafeLabel.test(label)) &&
+      labels.some((label) => semanticNavigation.test(label) && tier.test(label)) &&
+      !element.closest("form") && visible(element) &&
+      !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true"
+    );
   });
+  const billingSurfaceObserved = (): boolean => Boolean(
+    document.querySelector(routePolicy.documentSelector) ||
+    semanticControls().length ||
+    semanticSections().length
+  );
   const revealSemanticNavigation = async (): Promise<void> => {
-    if (
-      document.querySelector(routePolicy.documentSelector) ||
-      semanticControls().length ||
-      semanticSections().length
-    ) return;
+    if (billingSurfaceObserved()) return;
     const tiers = [
       /(?:open\s+)?profile\s+menu$|account\s+menu$/i,
       /^(?:settings|preferences)$/i,
       /^(?:account|billing|subscriptions?|invoice\s+history|receipt\s+history|billing\s+history|past\s+invoices?)$/i,
     ];
+    // A tier is worth waiting for only while something can still mount it: the
+    // application's own startup for the first tier, or the previous click. A
+    // single mutation fires on the first unrelated attribute change, long
+    // before the revealed menu exists, so poll for the control itself. Tiers
+    // that nothing is mounting are checked once, which keeps pages without any
+    // account UI from spending their whole evidence budget here.
+    //
+    // Revealing shares this page's budget with observed-network and embedded
+    // evidence, so it may claim at most half of what remains.
+    const revealDeadline = Math.min(deadline, Date.now() + Math.max(500, Math.floor((deadline - Date.now()) / 2)));
+    let mounting = true;
     for (const tier of tiers) {
-      if (Date.now() >= deadline || semanticNavigationSteps >= 3) break;
-      const control = Array.from(document.querySelectorAll<HTMLElement>(
-        'button,[role="button"],[role="menuitem"],[role="tab"],a:not([href])',
-      )).find((element) => {
-        const label = semanticNavigationLabelOf(element);
-        return Boolean(
-          label && semanticNavigation.test(label) && tier.test(label) &&
-          !unsafeLabel.test(label) && !element.closest("form") && visible(element) &&
-          !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true"
-        );
-      });
+      if (Date.now() >= revealDeadline || semanticNavigationSteps >= 3) break;
+      const tierDeadline = mounting ? Math.min(revealDeadline, Date.now() + 1_500) : 0;
+      let control = semanticNavigationControl(tier);
+      while (!control && Date.now() < tierDeadline) {
+        if (billingSurfaceObserved()) return;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        control = semanticNavigationControl(tier);
+      }
+      mounting = Boolean(control);
       if (!control) continue;
-      const changed = waitForSemanticNavigationMutation();
       control.click();
       semanticNavigationSteps += 1;
-      await changed;
-      if (
-        document.querySelector(routePolicy.documentSelector) ||
-        semanticControls().length ||
-        semanticSections().length
-      ) break;
+      if (billingSurfaceObserved()) break;
     }
   };
 
@@ -1634,8 +1678,15 @@ function recipeFromDraft(
 function findLikelyDocumentLinks(html: string, baseUrl: string, pageTitle?: string): string[] {
   const links = new Set<string>();
   const invoiceContext = /invoice|receipt|billing|statement|transaction|faktura|kvitto|rechnung|beleg|facture|reçu|factura|recibo|fattura|ricevuta/i;
-  const page = new URL(baseUrl);
-  const pageHasInvoiceContext = invoiceContext.test(`${page.pathname} ${pageTitle ?? ""}`);
+  // The route is a search hypothesis. A guessed /invoices path must never make
+  // a site-wide "Download" link look like invoice evidence, so page context
+  // comes only from independently rendered title and heading text.
+  const headings = [...html.matchAll(/<(?:h1|h2|h3|caption)\b[^>]*>([\s\S]{0,400}?)<\/(?:h1|h2|h3|caption)>/gi)]
+    .slice(0, 12)
+    .map((match) => match[1].replace(/<[^>]*>/g, " "))
+    .join(" ")
+    .slice(0, 2_000);
+  const pageHasInvoiceContext = invoiceContext.test(`${pageTitle ?? ""} ${headings}`);
   for (const match of html.matchAll(/<a\b([^>]*)>/gi)) {
     const attributes = match[1];
     const href = /\bhref="([^"]+)"/i.exec(attributes)?.[1];
@@ -1644,8 +1695,10 @@ function findLikelyDocumentLinks(html: string, baseUrl: string, pageTitle?: stri
       const url = new URL(href, baseUrl);
       if (url.protocol !== "https:" || url.username || url.password) continue;
       const path = url.pathname.toLowerCase();
+      // Only the standalone download attribute counts, matching a[download].
+      // A data-download hook is not re-findable by the compiled recipe.
       const explicitDownload =
-        /\bdownload(?:\s|=|>|$)/i.test(attributes) ||
+        /(?:^|\s)download(?=[\s=>]|$)/i.test(attributes) ||
         /\b(?:aria-label|title)="[^"]*download[^"]*"/i.test(attributes);
       const providerDocument = Boolean(documentProviderForUrl(url));
       const directDocument =
@@ -1758,6 +1811,22 @@ function semanticDomRecipe(
     });
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * The route discovery asked for, when it is a usable supplier entry.
+ *
+ * A route that cannot survive entry normalization is not a better entry than
+ * the URL that actually served the document, so the served URL remains the
+ * fallback.
+ */
+function requestedEntryUrl(requestedUrl: string, servedEntryUrl: string): string {
+  try {
+    const requested = safeEntryUrl(requestedUrl);
+    return new URL(requested).origin === new URL(servedEntryUrl).origin ? requested : servedEntryUrl;
+  } catch {
+    return servedEntryUrl;
   }
 }
 
