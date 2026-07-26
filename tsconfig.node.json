@@ -6,7 +6,6 @@
   },
   "include": [
     "scripts/**/*.ts",
-    "collector/*.config.ts",
-    "studio/*.config.ts"
+    "collector/*.config.ts"
   ]
 }

@@ -8,9 +8,9 @@
 
 **Address:** Kornhamnstorg 61, 111 27 Stockholm, Sweden
 
-This policy applies to the public **Ratatosk — Invoice Collector** Chrome
-extension ("Collector"). It does not apply to the separately built, unpublished
-Ratatosk Studio developer tool. A public copy of this policy is available at
+This policy applies to the **Ratatosk — Invoice Collector** Chrome extension
+("Collector"), the only extension this project distributes. A
+public copy of this policy is available at
 https://igdrasil.se/en/privacy/ratatosk/.
 
 ## Purpose
@@ -89,7 +89,7 @@ or logged.
 
 Collector does not collect analytics, advertising identifiers, precise location,
 or general browsing history. It does not ask for vendor passwords or two-factor
-codes. It does not include the Studio recorder or retain general browser traffic;
+codes. It does not record general browser traffic;
 the temporary discovery observation described above is limited to the explicit
 Find Invoices run and is discarded when that run ends.
 

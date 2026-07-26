@@ -12,9 +12,8 @@ hands.** Everything else is plumbing around that fact.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ collector/   consumer MV3 glue, destination and popup        │
-│ studio/      development-only capture and authoring popup    │
-│ (each builds an independent manifest and extension package)  │
+│ collector/   consumer MV3 glue, discovery, destination, popup │
+│ (the only extension this repository builds and releases)      │
 └───────────────┬──────────────────────────────────────────────┘
                 │ builds a RunContext + StrategyMap, calls…
 ┌───────────────▼─────────────────────────────────────────────┐
@@ -32,15 +31,14 @@ hands.** Everything else is plumbing around that fact.
 ```
 
 The dependency rule is one-directional:
-**collector|studio → shared core/vendors/ingest**. Shared code never imports a
-platform directory. That's what lets the engine, strategies, and every recipe run
-under Vitest with no browser, and it makes it impossible for Studio's entry points
-to leak into the Collector package accidentally.
+**collector → shared core/vendors/ingest**. Shared code never imports a platform
+directory. That's what lets the engine, strategies, the discovery policy, and
+every recipe run under Vitest with no browser.
 
-`collector/manifest.config.ts` and `studio/manifest.config.ts` are separate
-permission boundaries. Collector emits to `dist/collector`; Studio emits to
-`dist/studio`. Release packaging accepts one of those directories and puts only
-that extension's manifest at the ZIP root.
+`collector/manifest.config.ts` is the single permission boundary. Collector emits
+to `dist/collector`, and release packaging puts that manifest at the ZIP root.
+Packaging additionally rejects any `debugger`-backed recorder or fingerprint
+marker, so the consumer artifact cannot regain an authoring capability.
 
 ## Data flow (one sync)
 
@@ -299,30 +297,23 @@ URLs, or response content.
 The source catalog merges official registry recipes with these validated local
 profiles, so scheduling and sync use one engine rather than a parallel scraper.
 
-## Studio authoring boundary
+## Capture library, without an authoring build
 
-Studio is not part of Collector's runtime or release. A developer checks a
-prominent disclosure before recording an active HTTPS tab. Studio can observe
-network metadata, supported response bodies, child-frame traffic, and a DOM
-snapshot. Before session storage, the shared capture boundary drops every request
-header value except a normalized `content-type`; retains only a bounded,
-value-free authentication scheme/header-name marker; sanitizes URLs and
-secret-looking body fields; records bounded redacted JSON paths; and caps bodies.
-Bearer-token source suggestions use only those structural markers and require
-review—Studio never matches or reconstructs a credential value. On stop it
-creates a redacted, manually copied report; captured HTML bodies are not exported.
+`core/recorder/` is the shared capture and inference library that discovery runs
+on: `cdp` sanitizes observed traffic, `redact` and `payment-sensitive` strip
+secret-looking values, `infer` compiles evidence into a draft recipe, and `types`
+holds the shared shapes. It is packaged inside Collector and runs on the user's
+own machine.
 
-Studio also creates a separately validated, structural-only supplier fingerprint.
-The exact fingerprint requires authority confirmation and explicit sharing
-approval before it enters a bounded local outbox. Internal developers can pair a
-revocable upload-only token and explicitly deliver an approved envelope to the
-fixed HTTPS Svala intake endpoint. The token cannot follow redirects or be sent
-to a configured alternate origin; local JSON export remains available. See
-[supplier fingerprints](supplier-fingerprints.md).
+Before anything reaches session storage, that boundary drops every request header
+value except a normalized `content-type`, retains only a bounded, value-free
+authentication scheme/header-name marker, sanitizes URLs and secret-looking body
+fields, records bounded redacted JSON paths, and caps body size. It never matches
+or reconstructs a credential value.
 
-Studio output is always a draft. A human must remove unnecessary data, verify the
-vendor contract in a dedicated test account, add a fixture test, and explicitly
-promote the recipe into the public `VENDORS` registry before a Collector release.
+The separate Studio authoring extension that once wrapped this library in a
+`debugger`-backed recorder, together with its supplier-fingerprint delivery path,
+has been removed. Supplier support now comes from generic discovery only.
 
 ## Unattended, honestly
 

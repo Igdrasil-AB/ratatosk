@@ -11,7 +11,7 @@ describe("Node runtime policy", () => {
     expect(ci).toContain('node: ["20.19.0", "24"]');
     expect(ci).toContain("node-version: ${{ matrix.node }}");
 
-    const release = readFileSync(".github/workflows/release-studio.yml", "utf8");
+    const release = readFileSync(".github/workflows/release-collector.yml", "utf8");
     expect(release).toContain("node-version: 22.12.0");
   });
 });

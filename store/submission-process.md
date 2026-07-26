@@ -34,7 +34,7 @@ unzip -l "$COLLECTOR_ZIP"
 ```
 
 Upload only the exact path in `COLLECTOR_ZIP`, resolved from the reviewed
-package version above. Do not upload the Studio ZIP, `dist/`, a GitHub source
+package version above. Do not upload `dist/`, a GitHub source
 archive, or the repository root.
 
 The packaging command rejects a non-MV3 build, version mismatch, source maps,

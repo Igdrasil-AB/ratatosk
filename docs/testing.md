@@ -1,4 +1,4 @@
-# Testing a vendor live
+# Testing a supplier live
 
 Fixture tests prove mapping and engine behavior. They cannot prove that a current
 vendor endpoint, browser auth flow, or bot-protection rule still works. Complete
@@ -45,8 +45,7 @@ select `dist/collector`.
 Confirm the loaded manifest has `activeTab`, observation-only `webRequest`, and
 optional (not install-time) `tabs` metadata access, but no `webRequestBlocking`,
 `debugger`, cookies, or `<all_urls>` permission. Its optional HTTPS host envelope must grant no site
-access until an exact origin is approved. Do not load `dist/studio` for the
-consumer test.
+access until an exact origin is approved.
 
 ## 2. Choose a destination
 

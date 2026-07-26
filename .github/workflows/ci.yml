@@ -37,7 +37,7 @@ jobs:
         run: npm run validate:release
       - name: Test
         run: npm test
-      - name: Build Collector and Studio independently
-        run: npm run build
+      - name: Build Collector
+        run: npm run build:collector
       - name: Package public Collector
         run: npm run package:collector

@@ -8,8 +8,8 @@ data and rotate its password after review. Do not put these credentials in Git.
 
 Ratatosk collects the signed-in user's own supplier invoices from a vendor the
 user explicitly connects and saves them to the destination the user selects.
-This submission contains Collector only. The separate Ratatosk Studio developer
-tool and its `debugger` permission are not included.
+This submission contains the Collector extension only. No authoring tool and no
+`debugger` permission are included.
 
 ## Test account
 
