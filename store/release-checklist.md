@@ -19,7 +19,7 @@ unzip -l artifacts/ratatosk-collector-*.zip
 
 - [ ] CI, typecheck, validation, and tests pass.
 - [ ] A fresh `store/semantic-dom-acceptance.json` matches the exact Collector
-      version and acquisition revision; its Supabase, additional-supplier,
+      version, acquisition revision, and packaged ZIP SHA-256; its Supabase, additional-supplier,
       native-download, filesystem, Igdrasil, immediate-second-run, and
       configured-cadence cases pass with zero page-owned download delta.
 - [ ] Collector and its checksum are produced under `artifacts/`.
@@ -27,8 +27,9 @@ unzip -l artifacts/ratatosk-collector-*.zip
 - [ ] The archive contains no `.map`, private key, environment file, or
       development fixture.
 - [ ] Manifest permissions are exactly `storage`, `alarms`, `notifications`,
-      `scripting`, `downloads`, `activeTab`, observation-only `webRequest`, and
-      `sidePanel` for the persistent Collector UI;
+      `scripting`, `downloads`, `activeTab`, observation-only `webRequest`,
+      response-header-only `declarativeNetRequest`, and `sidePanel` for the
+      persistent Collector UI;
       `webRequestBlocking` is absent.
 - [ ] Manifest has only the reviewed optional HTTPS envelope and no `<all_urls>`;
       verify installation grants no supplier-site access.
@@ -54,8 +55,9 @@ Use the current stable Chrome release and a fresh profile.
       run and one configured cadence activate zero accepted identities. Copy
       the redacted diagnostic after each run and record
       `counts.documentActions`; second and cadence values must both be zero.
-- [ ] Confirm a synthetic Chrome-native supplier download is contained and
-      rejected, and a simultaneous unrelated user download is untouched.
+- [ ] Confirm a synthetic Chrome-native supplier response is blocked before
+      Chrome creates a download and is rejected, while a simultaneous unrelated
+      user download—including the same URL—remains untouched.
 - [ ] Sign out of the vendor; confirm the reconnect state and notification.
 - [ ] Disconnect the vendor; confirm its optional host permission is revoked.
 - [ ] From an unsupported synthetic supplier home page, select **Search This

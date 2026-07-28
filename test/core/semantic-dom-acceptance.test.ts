@@ -5,11 +5,15 @@ import {
 } from "../../scripts/validate-semantic-dom-acceptance";
 
 describe("semantic DOM release acceptance", () => {
+  const artifactSha256 = "a".repeat(64);
+
   it("accepts only the exact-version, browser-file-free two-run and cadence matrix", () => {
     vi.setSystemTime(new Date("2026-07-27T10:00:00.000Z"));
-    expect(parseSemanticDomAcceptanceReceipt(receipt(), "0.8.48", 1)).toMatchObject({
+    expect(parseSemanticDomAcceptanceReceipt(receipt(), "0.8.48", 2, artifactSha256)).toMatchObject({
       collectorVersion: "0.8.48",
-      acquisitionRevision: 1,
+      acquisitionRevision: 2,
+      artifactSha256,
+      unrelatedUserDownloadSameUrlUntouched: true,
       cases: expect.arrayContaining([
         expect.objectContaining({ siteClass: "supabase", closedOutcome: "collected" }),
       ]),
@@ -19,19 +23,27 @@ describe("semantic DOM release acceptance", () => {
 
   it("rejects stale versions, page-owned files, repeat actions, and private fields", () => {
     vi.setSystemTime(new Date("2026-07-27T10:00:00.000Z"));
-    expect(() => parseSemanticDomAcceptanceReceipt(receipt(), "0.8.49", 1)).toThrow(/0\.8\.49/);
+    expect(() => parseSemanticDomAcceptanceReceipt(receipt(), "0.8.49", 2, artifactSha256)).toThrow(/0\.8\.49/);
+
+    const anotherBuild = receipt();
+    anotherBuild.artifactSha256 = "b".repeat(64);
+    expect(() => parseSemanticDomAcceptanceReceipt(anotherBuild, "0.8.48", 2, artifactSha256)).toThrow(/artifact SHA-256/);
+
+    const touchedUserDownload: Record<string, unknown> = receipt();
+    touchedUserDownload.unrelatedUserDownloadSameUrlUntouched = false;
+    expect(() => parseSemanticDomAcceptanceReceipt(touchedUserDownload, "0.8.48", 2, artifactSha256)).toThrow(/same-URL/);
 
     const browserFile = receipt();
     browserFile.cases[0].pageOwnedDownloadDelta = 1;
-    expect(() => parseSemanticDomAcceptanceReceipt(browserFile, "0.8.48", 1)).toThrow(/browser-file-free/);
+    expect(() => parseSemanticDomAcceptanceReceipt(browserFile, "0.8.48", 2, artifactSha256)).toThrow(/browser-file-free/);
 
     const repeated = receipt();
     repeated.cases[0].secondRunActionCount = 1;
-    expect(() => parseSemanticDomAcceptanceReceipt(repeated, "0.8.48", 1)).toThrow(/idempotent/);
+    expect(() => parseSemanticDomAcceptanceReceipt(repeated, "0.8.48", 2, artifactSha256)).toThrow(/idempotent/);
 
     const sensitive = receipt() as ReturnType<typeof receipt> & { cases: Array<Record<string, unknown>> };
     sensitive.cases[0].url = "https://supplier.example/private";
-    expect(() => parseSemanticDomAcceptanceReceipt(sensitive, "0.8.48", 1)).toThrow(/unapproved field/);
+    expect(() => parseSemanticDomAcceptanceReceipt(sensitive, "0.8.48", 2, artifactSha256)).toThrow(/unapproved field/);
     vi.useRealTimers();
   });
 });
@@ -48,7 +60,9 @@ function receipt() {
   return {
     schema: SEMANTIC_DOM_ACCEPTANCE_SCHEMA,
     collectorVersion: "0.8.48",
-    acquisitionRevision: 1,
+    acquisitionRevision: 2,
+    artifactSha256: "a".repeat(64),
+    unrelatedUserDownloadSameUrlUntouched: true as const,
     completedAt: "2026-07-27T09:00:00.000Z",
     cases: [
       { ...common, siteClass: "supabase", destinationKind: "filesystem", firstRunAcceptedCount: 1, closedOutcome: "collected" },

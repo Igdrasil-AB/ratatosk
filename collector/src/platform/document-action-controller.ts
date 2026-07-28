@@ -70,10 +70,10 @@ export type DomAdvanceResult =
 /**
  * One owner for every click-capable Collector page operation.
  *
- * Browser request/download observation is armed only around the exact
- * operation. Any correlated Chrome download is cancelled, removed, and erased
- * before the operation can return; it is never promoted to a collected
- * document. Page results remain untrusted and are parsed below.
+ * Browser request observation and a response-header blocker are armed only
+ * around the exact disposable tab operation. Attachment responses are stopped
+ * before Chrome can create a global DownloadItem; post-creation cancellation is
+ * forbidden because DownloadItem does not identify its originating tab.
  */
 export class DocumentActionController {
   constructor(
@@ -245,7 +245,14 @@ export class DocumentActionController {
     operation: () => Promise<T>,
   ): Promise<T> {
     const observer = new SemanticActionObserver(this.allowedOrigins);
+    let releaseNativeDownloadGuard: (() => Promise<void>) | undefined;
+    try {
+      releaseNativeDownloadGuard = await installNativeDownloadGuard(tabId);
+    } catch {
+      throw new DocumentActionFailed("document_action_ambiguous", this.vendorId);
+    }
     if (!observer.start(tabId)) {
+      await releaseNativeDownloadGuard().catch(() => undefined);
       throw new DocumentActionFailed("document_action_ambiguous", this.vendorId);
     }
     observer.beginAction();
@@ -259,10 +266,14 @@ export class DocumentActionController {
       await new Promise((resolve) => setTimeout(resolve, 100));
       observer.endAction();
     }
-    const downloadIds = observer.snapshotDownloadIds();
+    const nativeDownloadAttempted = observer.snapshotNativeDownloadAttempted();
     observer.stop();
-    if (downloadIds.length) {
-      await containDownloads(downloadIds);
+    try {
+      await releaseNativeDownloadGuard();
+    } catch {
+      throw new DocumentActionFailed("document_action_ambiguous", this.vendorId);
+    }
+    if (nativeDownloadAttempted) {
       throw new DocumentActionFailed(downloadFailure, this.vendorId);
     }
     if (failure) {
@@ -450,12 +461,76 @@ function semanticPageError(
   return new DocumentActionFailed(code, vendorId);
 }
 
-async function containDownloads(downloadIds: readonly number[]): Promise<void> {
-  for (const id of [...new Set(downloadIds)]) {
-    await chrome.downloads.cancel(id).catch(() => undefined);
-    await chrome.downloads.removeFile(id).catch(() => undefined);
-    await chrome.downloads.erase({ id }).catch(() => undefined);
-  }
+const NATIVE_DOWNLOAD_RESOURCE_TYPES = [
+  "main_frame",
+  "sub_frame",
+  "object",
+  "other",
+] as const;
+
+export async function removeStaleNativeDownloadGuards(): Promise<void> {
+  const api = chrome.declarativeNetRequest;
+  if (!api?.getSessionRules || !api.updateSessionRules) return;
+  const rules = await api.getSessionRules();
+  const removeRuleIds = rules.filter(isNativeDownloadGuardRule).map((rule) => rule.id);
+  if (removeRuleIds.length) await api.updateSessionRules({ removeRuleIds });
+}
+
+function isNativeDownloadGuardRule(rule: chrome.declarativeNetRequest.Rule): boolean {
+  const condition = rule.condition as chrome.declarativeNetRequest.Rule["condition"] & {
+    responseHeaders?: Array<{ header?: string; values?: string[] }>;
+  };
+  return (
+    rule.action.type === ("block" as chrome.declarativeNetRequest.RuleActionType) &&
+    rule.priority === 1 &&
+    condition.urlFilter === "|https" &&
+    condition.tabIds?.length === 1 &&
+    condition.tabIds[0] === rule.id &&
+    condition.responseHeaders?.some((header) =>
+      header.header === "content-disposition" &&
+      header.values?.length === 1 &&
+      header.values[0] === "*attachment*"
+    ) === true
+  );
+}
+
+async function installNativeDownloadGuard(tabId: number): Promise<() => Promise<void>> {
+  if (!Number.isSafeInteger(tabId) || tabId < 1) throw new Error("invalid action tab");
+  // This extension owns no other session rules. Using the exact tab id makes
+  // concurrent guards collision-free, while remove+add atomically replaces a
+  // stale rule left by a terminated service worker.
+  const ruleId = tabId;
+  const rule = {
+    id: ruleId,
+    priority: 1,
+    action: { type: "block" },
+    condition: {
+      tabIds: [tabId],
+      urlFilter: "|https",
+      resourceTypes: NATIVE_DOWNLOAD_RESOURCE_TYPES,
+      responseHeaders: [
+        { header: "content-disposition", values: ["*attachment*"] },
+        { header: "content-type", values: [
+          "*application/octet-stream*",
+          "*application/force-download*",
+          "*application/x-download*",
+        ] },
+      ],
+    },
+  };
+  await chrome.declarativeNetRequest.updateSessionRules({
+    removeRuleIds: [ruleId],
+    // @types/chrome 0.0.x predates Chrome 128 responseHeaders conditions.
+    // The manifest's minimum Chrome version and package tests enforce that
+    // this documented RuleCondition shape is available at runtime.
+    addRules: [rule as unknown as chrome.declarativeNetRequest.Rule],
+  });
+  let released = false;
+  return async () => {
+    if (released) return;
+    await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [ruleId] });
+    released = true;
+  };
 }
 
 async function setPageDocumentActionScope(tabId: number, active: boolean): Promise<boolean> {

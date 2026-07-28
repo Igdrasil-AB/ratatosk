@@ -20,6 +20,7 @@ const manifestPath = join(root, "manifest.json");
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
   version?: string;
   manifest_version?: number;
+  minimum_chrome_version?: string;
   name?: string;
   permissions?: string[];
   host_permissions?: string[];

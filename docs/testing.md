@@ -41,10 +41,12 @@ npm run build:collector
 Open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and
 select `dist/collector`.
 
-Confirm the loaded manifest has `activeTab`, observation-only `webRequest`, and
-optional (not install-time) `tabs` metadata access, but no `webRequestBlocking`,
-`debugger`, cookies, or `<all_urls>` permission. Its optional HTTPS host envelope must grant no site
-access until an exact origin is approved.
+Confirm the loaded manifest has `activeTab`, observation-only `webRequest`,
+response-header-only `declarativeNetRequest`, and optional (not install-time)
+`tabs` metadata access, but no `webRequestBlocking`, `debugger`, cookies, or
+`<all_urls>` permission. Its optional HTTPS host envelope must grant no site
+access until an exact origin is approved. Confirm Chrome 128 or later is used;
+the temporary response-header blocker depends on that minimum version.
 
 ## 2. Choose a destination
 

@@ -64,15 +64,17 @@ Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or
   alternate orchestration stack was substituted, and no schedule was activated.
   Provisioning the reviewed platform is the next external prerequisite before a
   paused manual trigger and shadow comparison can produce cutover evidence.
-- Plan 013: the unpublished `0.8.48` exact-build candidate separates observational DOM
+- Plan 013: the unpublished `0.8.48` acquisition-revision-2 exact-build candidate separates observational DOM
   enumeration from resolution, reserves stable identities before semantic
   actions, and routes all production page activation through reviewed
-  action-scoped owners. The full 666-test suite, boundary check, vendor
+  action-scoped owners. The full 667-test suite, boundary check, vendor
   validation, high-severity audit, Collector build, deterministic package, and
-  artifact verification pass. The synthetic release regression passes and the
-  release validator then fails closed because the exact-version live acceptance
-  receipt is intentionally absent. Candidate ZIP SHA-256:
-  `a81c2780805c91ec97eed11132b293e6db10698d84f8443d0f6a53a56404364e`.
+  artifact verification pass. Native attachment responses are blocked before
+  global download creation, and same-URL user downloads are never observed or
+  mutated. The synthetic release regression passes and the release validator
+  verifies the ZIP before failing closed because the checksum-bound live
+  acceptance receipt is intentionally absent. Candidate ZIP SHA-256:
+  `77405c4565d03ba7bd4568ea00b52414c30cbd196ebafd02a0ca4df894ae37ca`.
 
 ## Dependency graph
 

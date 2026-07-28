@@ -116,11 +116,14 @@ employee-, and internal-specific origins.
 ## Permissions
 
 Collector requests `storage`, `alarms`, `notifications`, `scripting`,
-`downloads`, `activeTab`, observation-only `webRequest`, and `sidePanel` for its
-persistent UI, plus optional `tabs` metadata and optional HTTPS host origins. Origins are
-requested at runtime for the exact supplier sites shown to the user. It declares
-one narrow content script on the Igdrasil accounting application for the
-user-controlled connection handshake.
+`downloads`, `activeTab`, observation-only `webRequest`, response-header-only
+`declarativeNetRequest`, and `sidePanel` for its persistent UI, plus optional
+`tabs` metadata and optional HTTPS host origins. The temporary declarative rule
+is scoped to Ratatosk's exact disposable action tab and prevents attachment
+responses from becoming global Chrome downloads; Ratatosk never cancels or
+deletes existing downloads. Origins are requested at runtime for the exact
+supplier sites shown to the user. It declares one narrow content script on the
+Igdrasil accounting application for the user-controlled connection handshake.
 
 ## Known operational limits
 

@@ -12,6 +12,7 @@ import {
 } from "../../collector/src/platform/browser-dom-driver";
 import {
   DocumentActionController,
+  removeStaleNativeDownloadGuards,
   runSemanticDocumentOperationInPage,
 } from "../../collector/src/platform/document-action-controller";
 import { DISCOVERY_DOM_POLICY } from "../../collector/src/platform/discovery-dom-policy";
@@ -337,7 +338,7 @@ describe("browser DOM boundary", () => {
     expectSemanticOperationCalledOnce(executeScript);
   });
 
-  it("contains a correlated native download instead of treating observation as collection", async () => {
+  it("blocks native responses on the exact action tab without touching global downloads", async () => {
     const beforeRequest = new TestChromeEvent<Record<string, unknown>>();
     const headersReceived = new TestChromeEvent<Record<string, unknown>>();
     const beforeRedirect = new TestChromeEvent<Record<string, unknown>>();
@@ -345,6 +346,9 @@ describe("browser DOM boundary", () => {
     const cancel = vi.fn(async () => undefined);
     const removeFile = vi.fn(async () => undefined);
     const erase = vi.fn(async () => []);
+    const updateSessionRules = vi.fn(async (
+      _options: chrome.declarativeNetRequest.UpdateRuleOptions,
+    ) => undefined);
     vi.stubGlobal("chrome", {
       tabs: {
         create: vi.fn(async () => ({ id: 42, windowId: 7, status: "complete" })),
@@ -374,14 +378,27 @@ describe("browser DOM boundary", () => {
             tabId: 42,
             url: "https://documents.example/invoices/123.pdf",
             method: "GET",
-            responseHeaders: [{ name: "Content-Type", value: "application/pdf" }],
+            responseHeaders: [
+              { name: "Content-Type", value: "application/pdf" },
+              { name: "Content-Disposition", value: 'attachment; filename="invoice.pdf"' },
+            ],
           });
+          // DownloadItem has no tab id. These two events are intentionally
+          // indistinguishable by URL and must both remain outside Ratatosk's
+          // ownership boundary.
           downloadCreated.emit({
             id: 91,
             url: "https://documents.example/invoices/123.pdf",
             finalUrl: "https://documents.example/invoices/123.pdf",
             mime: "application/pdf",
             filename: "/Downloads/invoice.pdf",
+          });
+          downloadCreated.emit({
+            id: 92,
+            url: "https://documents.example/invoices/123.pdf",
+            finalUrl: "https://documents.example/invoices/123.pdf",
+            mime: "application/pdf",
+            filename: "/Downloads/unrelated-user.pdf",
           });
           throw new Error("execution context was destroyed");
         }),
@@ -391,6 +408,7 @@ describe("browser DOM boundary", () => {
         onHeadersReceived: headersReceived,
         onBeforeRedirect: beforeRedirect,
       },
+      declarativeNetRequest: { updateSessionRules },
       downloads: { onCreated: downloadCreated, cancel, removeFile, erase },
     });
 
@@ -399,10 +417,49 @@ describe("browser DOM boundary", () => {
       { action: "extractSemanticDownloads", as: "documents", maxActions: 8 },
     ])).rejects.toMatchObject({ kind: "document_action_side_effect" });
 
-    expect(cancel).toHaveBeenCalledWith(91);
-    expect(removeFile).toHaveBeenCalledWith(91);
-    expect(erase).toHaveBeenCalledWith({ id: 91 });
+    expect(updateSessionRules.mock.calls[0]?.[0]).toMatchObject({
+      addRules: [{
+        action: { type: "block" },
+        condition: {
+          tabIds: [42],
+          responseHeaders: expect.arrayContaining([
+            { header: "content-disposition", values: ["*attachment*"] },
+          ]),
+        },
+      }],
+    });
+    expect(updateSessionRules.mock.calls.at(-1)?.[0]).toMatchObject({
+      removeRuleIds: expect.any(Array),
+    });
+    expect(cancel).not.toHaveBeenCalled();
+    expect(removeFile).not.toHaveBeenCalled();
+    expect(erase).not.toHaveBeenCalled();
     expect(beforeRequest.listenerCount).toBe(0);
+    expect(downloadCreated.listenerCount).toBe(0);
+  });
+
+  it("removes only stale native-response guards after a worker restart", async () => {
+    const updateSessionRules = vi.fn(async (
+      _options: chrome.declarativeNetRequest.UpdateRuleOptions,
+    ) => undefined);
+    vi.stubGlobal("chrome", {
+      declarativeNetRequest: {
+        getSessionRules: vi.fn(async () => [
+          nativeDownloadGuardRule(42),
+          {
+            id: 99,
+            priority: 1,
+            action: { type: "block" },
+            condition: { tabIds: [99], urlFilter: "unrelated" },
+          },
+        ]),
+        updateSessionRules,
+      },
+    });
+
+    await removeStaleNativeDownloadGuards();
+
+    expect(updateSessionRules).toHaveBeenCalledWith({ removeRuleIds: [42] });
   });
 
   it("rejects a stable semantic identity repeated across continuation pages", async () => {
@@ -784,8 +841,9 @@ describe("browser DOM boundary", () => {
   it("uses one action-scoped controller instead of promoting passive browser observations", () => {
     expect(driverSource).toContain("DocumentActionController");
     expect(actionControllerSource).toContain("beginAction");
-    expect(actionControllerSource).toContain("snapshotDownloadIds");
-    expect(actionControllerSource).toContain("containDownloads");
+    expect(actionControllerSource).toContain("snapshotNativeDownloadAttempted");
+    expect(actionControllerSource).toContain("updateSessionRules");
+    expect(actionControllerSource).not.toContain("chrome.downloads.cancel");
     expect(actionControllerSource).not.toContain("snapshotDocuments()");
     expect(driverSource).not.toContain("navigator.sendBeacon =");
     expect(driverSource).not.toContain("HTMLFormElement.prototype.submit =");
@@ -795,6 +853,8 @@ describe("browser DOM boundary", () => {
     expect(observerSource).toContain("snapshotActionDocuments");
     expect(observerSource).toContain("beginDocumentAction");
     expect(observerSource).toContain("originalWindowOpen");
+    expect(observerSource).toContain("captureActionNavigation");
+    expect(observerSource).toContain("event.preventDefault()");
     expect(actionControllerSource).toContain("beginDocumentAction");
     expect(actionControllerSource).toContain("endDocumentAction");
     expect(observerSource).toContain("originalCreateObjectURL");
@@ -1100,6 +1160,9 @@ function actionBoundaryChromeApis(): {
     removeFile: ReturnType<typeof vi.fn>;
     erase: ReturnType<typeof vi.fn>;
   };
+  declarativeNetRequest: {
+    updateSessionRules: ReturnType<typeof vi.fn>;
+  };
 } {
   return {
     webRequest: {
@@ -1113,7 +1176,28 @@ function actionBoundaryChromeApis(): {
       removeFile: vi.fn(async () => undefined),
       erase: vi.fn(async () => []),
     },
+    declarativeNetRequest: {
+      updateSessionRules: vi.fn(async (
+        _options: chrome.declarativeNetRequest.UpdateRuleOptions,
+      ) => undefined),
+    },
   };
+}
+
+function nativeDownloadGuardRule(tabId: number): chrome.declarativeNetRequest.Rule {
+  return {
+    id: tabId,
+    priority: 1,
+    action: { type: "block" as chrome.declarativeNetRequest.RuleActionType },
+    condition: {
+      tabIds: [tabId],
+      urlFilter: "|https",
+      resourceTypes: [],
+      responseHeaders: [
+        { header: "content-disposition", values: ["*attachment*"] },
+      ],
+    },
+  } as unknown as chrome.declarativeNetRequest.Rule;
 }
 
 function semanticScripting(executeScript: ReturnType<typeof vi.fn>) {

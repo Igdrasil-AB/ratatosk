@@ -63,7 +63,7 @@ All of the following are required:
 7. Unrelated user downloads cannot be observed as Ratatosk documents, cancelled,
    renamed, erased, or removed.
 8. Existing discovered profiles receive the shared packaged behavior without a
-   supplier-specific migration or broadened permission.
+   supplier-specific migration or broadened host permission.
 9. Release validation fails if the synthetic native-download regression or the
    live two-run acceptance receipt is missing.
 
@@ -248,10 +248,11 @@ The controller must:
 6. capture bounded PDF bytes or a GET URL on an approved exact origin;
 7. prevent page-owned default download behavior when it can do so without
    suppressing the site's document-generation handler;
-8. treat `downloads.onCreated` as an attempted browser side effect, retaining
-   the ID only inside that exact action;
-9. cancel/erase/remove an extension-caused download only when correlation is
-   strong enough to prove ownership; otherwise fail closed without touching it;
+8. install one temporary response-header block rule scoped to the exact action
+   tab before activation, so attachment and binary responses are stopped before
+   Chrome creates a global `DownloadItem`;
+9. never subscribe to, cancel, erase, rename, remove, or otherwise manipulate
+   global Chrome downloads;
 10. never call the destination sink, seen store, ledger, profile store, or
     scheduler directly;
 11. return one closed outcome and dispose all ephemeral state.
@@ -354,13 +355,15 @@ Support, in order:
 3. action-produced page fetch/XHR URL or bytes;
 4. action-produced `window.open` URL with the popup suppressed;
 5. safely intercepted generated-anchor/default navigation;
-6. typed unsupported browser download when safe containment cannot be proven.
+6. typed unsupported browser download after the exact-tab response is blocked
+   before a global `DownloadItem` exists.
 
-`chrome.downloads.onCreated` must not become a broad cancellation listener.
-Action correlation requires the exact disposable tab request evidence, exact
-URL/request chain, action lifetime, and one pending handle. If Chrome does not
-provide enough evidence to distinguish an unrelated user download, do not
-cancel it; classify the acquisition path as unsupported.
+`chrome.downloads.onCreated` must not be observed or used for containment.
+`DownloadItem` has no originating tab, so post-creation ownership cannot be
+proved. Use a temporary `declarativeNetRequest` session rule whose condition is
+the exact disposable tab plus attachment/binary response headers. Remove the
+rule in the controller cleanup path and classify the blocked acquisition path
+as unsupported.
 
 **Verify**: controller tests cover every terminal state and assert listener,
 tab, page-hook, timer, and in-memory handle cleanup.
@@ -439,6 +442,8 @@ Record only:
 ```text
 collector version
 acquisition revision
+artifact SHA-256
+same-URL unrelated user download untouched
 site class (not tenant)
 destination kind
 first-run accepted count
@@ -461,7 +466,7 @@ zero accepted documents.
 | Direct document link, accepted identity | No fetch and no sink call |
 | Semantic action returns fetch/XHR URL | One controlled fetch, one sink commit |
 | Semantic action returns bounded PDF blob | One sink commit, no browser file |
-| Semantic action starts native download | Side effect contained or typed unsupported; never collected from observation alone |
+| Semantic action starts native download | Response blocked before `DownloadItem`, typed unsupported, never collected from observation alone |
 | Redirect permission missing | Permission continuation, no file, no seen/ledger commit |
 | Invalid/oversized PDF | Closed rejection, no destination or seen commit |
 | Same invoice with rotated signed URL | One action/delivery across runs through stable primary identity |
@@ -599,8 +604,8 @@ Stop and report if:
 - [x] Stable identity reservation happens before every semantic resolution.
 - [x] One shared platform controller owns every document-producing page action.
 - [x] Page-owned downloads never count as collected documents.
-- [x] Native-download, permission, cancellation, crash, and unrelated-download
-      tests pass.
+- [x] Native-download, permission, cancellation, crash, and same-URL
+      unrelated-download tests pass.
 - [x] All remaining programmatic page clicks are reviewed and CI-enforced.
 - [x] Existing profiles use the packaged shared behavior or fail closed with a
       typed reconnect/unsupported outcome.
@@ -614,21 +619,27 @@ Stop and report if:
 - [x] No Web Store release/listing action occurs until all boxes above are
       checked.
 
-## Sanitized execution evidence (2026-07-27, pre-live)
+## Sanitized execution evidence (2026-07-28, pre-live)
 
 - Characterization first reproduced the forbidden order, then the corrected
   focused matrix passed 126 tests.
-- Final local gate: 98 test files, 666 tests, typecheck, architecture boundary,
+- Final local gate: 98 test files, 667 tests, typecheck, architecture boundary,
   vendor validation, and high-severity dependency audit all exit 0.
 - Real Filesystem and Igdrasil sink adapters each pass a two-run stable-identity
   regression: one first-run action/delivery and zero second-run actions or
   deliveries.
 - Collector production build and deterministic 16-file artifact verification
-  exit 0, including a literal packaged acquisition-revision assertion.
+  exit 0, including a literal packaged acquisition-revision `2` assertion.
   Final unpublished exact-build acceptance candidate:
   `ratatosk-collector-v0.8.48.zip`, SHA-256
-  `a81c2780805c91ec97eed11132b293e6db10698d84f8443d0f6a53a56404364e`.
-- The release-specific native-download suite passes 56 tests. Release
+  `77405c4565d03ba7bd4568ea00b52414c30cbd196ebafd02a0ca4df894ae37ca`.
+- The live receipt now carries that exact artifact SHA-256 and a required
+  same-URL unrelated-user-download result. Release validation verifies the ZIP
+  before comparing its computed digest with the receipt.
+- Native attachment/binary responses are blocked by an exact-tab Chrome 128+
+  session rule before `DownloadItem` creation. The controller no longer
+  subscribes to or mutates global Chrome downloads.
+- The release-specific native-download suite passes 57 tests. Release
   validation then exits non-zero only because
   `store/semantic-dom-acceptance.json` is absent. This is the intended
   release-blocking state until the exact build passes live acceptance.

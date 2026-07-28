@@ -20,9 +20,12 @@ describe("release metadata workflow policy", () => {
   it("rechecks source provenance after generation and build, immediately before packaging", () => {
     const scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts as Record<string, string>;
     const steps = scripts["release:collector"].split(" && ");
+    const packageIndex = steps.indexOf("npm run package:collector");
     expect(steps[0]).toBe("npm run assert:release-source");
-    expect(steps.at(-2)).toBe("npm run assert:release-source");
-    expect(steps.at(-1)).toBe("npm run package:collector");
-    expect(steps.indexOf("npm run ci")).toBeLessThan(steps.lastIndexOf("npm run assert:release-source"));
+    expect(steps[packageIndex - 1]).toBe("npm run assert:release-source");
+    expect(steps.at(-1)).toBe("npm run validate:collector-release");
+    expect(steps.indexOf("npm run ci")).toBeLessThan(packageIndex - 1);
+    expect(packageIndex).toBeLessThan(steps.indexOf("npm run validate:collector-release"));
+    expect(scripts["validate:collector-release"]).toContain("npm run verify:collector-artifact");
   });
 });

@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import pkg from "../package.json";
 import { DOCUMENT_ACQUISITION_REVISION } from "../collector/src/platform/acquisition-revision";
@@ -38,6 +40,8 @@ export interface SemanticDomAcceptanceReceipt {
   schema: typeof SEMANTIC_DOM_ACCEPTANCE_SCHEMA;
   collectorVersion: string;
   acquisitionRevision: number;
+  artifactSha256: string;
+  unrelatedUserDownloadSameUrlUntouched: true;
   completedAt: string;
   cases: SemanticDomAcceptanceCase[];
 }
@@ -46,13 +50,36 @@ export function parseSemanticDomAcceptanceReceipt(
   value: unknown,
   expectedVersion = pkg.version,
   expectedRevision = DOCUMENT_ACQUISITION_REVISION,
+  expectedArtifactSha256: string,
 ): SemanticDomAcceptanceReceipt {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("receipt must be an object");
   const raw = value as Record<string, unknown>;
+  const allowedKeys = new Set([
+    "schema",
+    "collectorVersion",
+    "acquisitionRevision",
+    "artifactSha256",
+    "unrelatedUserDownloadSameUrlUntouched",
+    "completedAt",
+    "cases",
+  ]);
+  if (Object.keys(raw).some((key) => !allowedKeys.has(key))) {
+    throw new Error("receipt contains an unapproved field");
+  }
   if (raw.schema !== SEMANTIC_DOM_ACCEPTANCE_SCHEMA) throw new Error("receipt schema is invalid");
   if (raw.collectorVersion !== expectedVersion) throw new Error(`receipt must match Collector ${expectedVersion}`);
   if (raw.acquisitionRevision !== expectedRevision) {
     throw new Error(`receipt must match document acquisition revision ${expectedRevision}`);
+  }
+  if (
+    typeof raw.artifactSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(raw.artifactSha256) ||
+    raw.artifactSha256 !== expectedArtifactSha256
+  ) {
+    throw new Error("receipt must match the exact Collector artifact SHA-256");
+  }
+  if (raw.unrelatedUserDownloadSameUrlUntouched !== true) {
+    throw new Error("receipt must prove the same-URL unrelated user download remained untouched");
   }
   if (typeof raw.completedAt !== "string" || !isRecentIsoDate(raw.completedAt, 30)) {
     throw new Error("receipt completion date must be a valid ISO date from the last 30 days");
@@ -70,6 +97,8 @@ export function parseSemanticDomAcceptanceReceipt(
     schema: SEMANTIC_DOM_ACCEPTANCE_SCHEMA,
     collectorVersion: expectedVersion,
     acquisitionRevision: expectedRevision,
+    artifactSha256: raw.artifactSha256,
+    unrelatedUserDownloadSameUrlUntouched: true,
     completedAt: raw.completedAt,
     cases,
   };
@@ -151,10 +180,20 @@ function isRecentIsoDate(value: string, maximumAgeDays: number): boolean {
 
 function main(): void {
   const path = process.argv[2] || "store/semantic-dom-acceptance.json";
+  const artifactPath = process.argv[3] ||
+    join("artifacts", `ratatosk-collector-v${pkg.version}.zip`);
   try {
-    const receipt = parseSemanticDomAcceptanceReceipt(JSON.parse(readFileSync(path, "utf8")));
+    const artifactSha256 = createHash("sha256")
+      .update(readFileSync(artifactPath))
+      .digest("hex");
+    const receipt = parseSemanticDomAcceptanceReceipt(
+      JSON.parse(readFileSync(path, "utf8")),
+      pkg.version,
+      DOCUMENT_ACQUISITION_REVISION,
+      artifactSha256,
+    );
     console.log(
-      `✓ semantic DOM acceptance: Collector ${receipt.collectorVersion}, acquisition ${receipt.acquisitionRevision}, ${receipt.cases.length} cases`,
+      `✓ semantic DOM acceptance: Collector ${receipt.collectorVersion}, acquisition ${receipt.acquisitionRevision}, artifact ${receipt.artifactSha256}, ${receipt.cases.length} cases`,
     );
   } catch (error) {
     console.error(`✗ semantic DOM acceptance: ${error instanceof Error ? error.message : "invalid receipt"}`);

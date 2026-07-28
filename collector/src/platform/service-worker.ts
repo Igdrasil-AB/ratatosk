@@ -71,11 +71,15 @@ import { CollectionRunCoordinator } from "../../../src/core/concurrency";
 import { isIgdrasilApiBase } from "../../../src/ingest/igdrasil-sink";
 import { disconnectIgdrasil } from "./igdrasil-disconnect";
 import { isSyncMonth } from "../../../src/core/sync-window";
+import { removeStaleNativeDownloadGuards } from "./document-action-controller";
 
 console.info(`[collector] ready ${formatCollectorRuntimeIdentity()}`);
 void initializeHostTokenStorage().catch((error: unknown) => {
   // Credential operations fail closed until Chrome confirms this access level.
   console.error("[collector] credential storage hardening failed", error instanceof Error ? error.name : "error");
+});
+void removeStaleNativeDownloadGuards().catch((error: unknown) => {
+  console.error("[collector] native download guard recovery failed", error instanceof Error ? error.name : "error");
 });
 
 const collectionRuns = new CollectionRunCoordinator();

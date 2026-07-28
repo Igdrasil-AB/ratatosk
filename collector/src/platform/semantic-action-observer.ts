@@ -26,16 +26,10 @@ interface WebRequestEvent<T> {
   removeListener(listener: (details: T) => void): void;
 }
 
-interface DownloadCreatedEvent {
-  addListener(listener: (item: chrome.downloads.DownloadItem) => void): void;
-  removeListener(listener: (item: chrome.downloads.DownloadItem) => void): void;
-}
-
 export interface SemanticActionObserverPlatform {
   beforeRequest: WebRequestEvent<BeforeRequestDetails>;
   headersReceived: WebRequestEvent<ResponseDetails>;
   beforeRedirect: WebRequestEvent<RedirectDetails>;
-  downloadCreated: DownloadCreatedEvent;
 }
 
 const DOCUMENT_ROUTE = /(?:^|[/.?&=_-])(?:invoices?|receipts?|statements?|documents?|downloads?|pdf)(?:$|[/.?&=_-])/i;
@@ -76,9 +70,8 @@ export function documentCandidateFromObservation(
  */
 export class SemanticActionObserver {
   private readonly candidates = new Map<string, DocumentObservation>();
-  private readonly actionUrls = new Set<string>();
   private readonly actionRequestIds = new Set<string>();
-  private readonly downloadIds = new Set<number>();
+  private nativeDownloadAttempted = false;
   private started = false;
   private actionActive = false;
   private tabId: number | undefined;
@@ -98,7 +91,6 @@ export class SemanticActionObserver {
       this.platform.beforeRequest.addListener(this.onBeforeRequest, filter);
       this.platform.headersReceived.addListener(this.onHeadersReceived, filter, ["responseHeaders"]);
       this.platform.beforeRedirect.addListener(this.onBeforeRedirect, filter);
-      this.platform.downloadCreated.addListener(this.onDownloadCreated);
       this.tabId = tabId;
       this.started = true;
       return true;
@@ -112,16 +104,15 @@ export class SemanticActionObserver {
     return [...this.candidates.keys()];
   }
 
-  snapshotDownloadIds(): number[] {
-    return [...this.downloadIds];
+  snapshotNativeDownloadAttempted(): boolean {
+    return this.nativeDownloadAttempted;
   }
 
   beginAction(): void {
     if (!this.started) return;
     this.candidates.clear();
-    this.actionUrls.clear();
     this.actionRequestIds.clear();
-    this.downloadIds.clear();
+    this.nativeDownloadAttempted = false;
     this.actionActive = true;
   }
 
@@ -155,14 +146,12 @@ export class SemanticActionObserver {
     try { this.platform?.beforeRequest.removeListener(this.onBeforeRequest); } catch { /* unavailable */ }
     try { this.platform?.headersReceived.removeListener(this.onHeadersReceived); } catch { /* unavailable */ }
     try { this.platform?.beforeRedirect.removeListener(this.onBeforeRedirect); } catch { /* unavailable */ }
-    try { this.platform?.downloadCreated.removeListener(this.onDownloadCreated); } catch { /* unavailable */ }
     this.started = false;
     this.actionActive = false;
     this.tabId = undefined;
     this.candidates.clear();
-    this.actionUrls.clear();
     this.actionRequestIds.clear();
-    this.downloadIds.clear();
+    this.nativeDownloadAttempted = false;
   }
 
   private readonly onBeforeRequest = (details: BeforeRequestDetails): void => {
@@ -176,13 +165,16 @@ export class SemanticActionObserver {
       header.name?.toLowerCase() === "content-type")?.value;
     const contentDisposition = details.responseHeaders?.find((header) =>
       header.name?.toLowerCase() === "content-disposition")?.value;
+    if (isNativeDownloadResponse(contentType, contentDisposition)) {
+      this.nativeDownloadAttempted = true;
+    }
     const observation = {
       url: details.url,
       method: details.method,
       contentType,
       filename: filenameFromContentDisposition(contentDisposition),
     };
-    if (this.keep(observation)) this.keepActionUrl(details.url);
+    this.keep(observation);
   };
 
   private readonly onBeforeRedirect = (details: RedirectDetails): void => {
@@ -191,26 +183,10 @@ export class SemanticActionObserver {
       url: details.url,
       method: details.method,
     }, this.allowedOrigins));
-    if (this.keep({
+    this.keep({
       url: details.redirectUrl,
       method: details.method,
       documentIntent: sourceIsDocument,
-    })) this.keepActionUrl(details.redirectUrl);
-  };
-
-  private readonly onDownloadCreated = (item: chrome.downloads.DownloadItem): void => {
-    // DownloadItem has no tab id. Admit it only if this exact URL was first
-    // confirmed as a document response or redirect on the disposable supplier
-    // tab during the current action run. A mere same-time request is not enough
-    // evidence to manipulate a user download.
-    if (!this.actionActive || (!this.actionUrls.has(item.url) && !this.actionUrls.has(item.finalUrl))) return;
-    this.downloadIds.add(item.id);
-    this.keep({
-      url: item.finalUrl || item.url,
-      method: "GET",
-      contentType: item.mime,
-      filename: item.filename,
-      documentIntent: true,
     });
   };
 
@@ -229,21 +205,17 @@ export class SemanticActionObserver {
     return true;
   }
 
-  private keepActionUrl(raw: string): void {
-    if (this.actionUrls.size >= 500 || raw.length > 2_048) return;
-    try {
-      const url = new URL(raw);
-      if (
-        url.protocol === "https:" && !url.username && !url.password &&
-        this.allowedOrigins.has(url.origin)
-      ) {
-        url.hash = "";
-        this.actionUrls.add(url.toString());
-      }
-    } catch {
-      // Ignore browser-internal and malformed request URLs.
-    }
-  }
+}
+
+function isNativeDownloadResponse(
+  contentType: string | undefined,
+  contentDisposition: string | undefined,
+): boolean {
+  if (/(?:^|;)\s*attachment(?:\s*;|$)/i.test(contentDisposition ?? "")) return true;
+  const type = (contentType ?? "").split(";", 1)[0].trim().toLowerCase();
+  return type === "application/octet-stream" ||
+    type === "application/force-download" ||
+    type === "application/x-download";
 }
 
 function filenameFromContentDisposition(value: string | undefined): string | undefined {
@@ -268,6 +240,5 @@ function chromeSemanticActionObserverPlatform(): SemanticActionObserverPlatform 
     beforeRequest: chrome.webRequest.onBeforeRequest as unknown as WebRequestEvent<BeforeRequestDetails>,
     headersReceived: chrome.webRequest.onHeadersReceived as unknown as WebRequestEvent<ResponseDetails>,
     beforeRedirect: chrome.webRequest.onBeforeRedirect as unknown as WebRequestEvent<RedirectDetails>,
-    downloadCreated: chrome.downloads.onCreated,
   };
 }
