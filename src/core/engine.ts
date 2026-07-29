@@ -21,6 +21,7 @@ import type {
   RetrievalProof,
   RunContext,
   RunResult,
+  SyncWindowStats,
   VendorRecipe,
 } from "./types";
 import {
@@ -40,6 +41,7 @@ import { extract } from "./extract";
 import { get, getArray } from "./jsonpath";
 import { DEFAULT_SAFE_CONCURRENCY, mapConcurrentOrdered } from "./concurrency";
 import { isBoundedTenantIdentifierSegment } from "./discovery";
+import { filterInvoiceRefsBySyncWindow } from "./sync-window";
 
 /** Hard runtime limits complement recipe validation: runtime responses are
  * untrusted and config dimensions multiply one another. */
@@ -75,6 +77,7 @@ export interface StreamRunResult {
   retrievalProofs: RetrievalProof[];
   /** Exact single-scope traversal evidence for local candidate diagnostics. */
   retrievalProof?: InvoiceListResult["retrieval"];
+  syncWindow?: SyncWindowStats;
   scopes: RunResult["scopes"];
 }
 
@@ -109,6 +112,7 @@ export async function runVendor(
     documents,
     retrieval: result.retrieval,
     retrievalProofs: result.retrievalProofs,
+    ...(result.syncWindow ? { syncWindow: result.syncWindow } : {}),
     scopes: result.scopes,
   };
 }
@@ -165,6 +169,16 @@ async function executeVendor(
   let emptyScopes = 0;
   let documentCount = 0;
   const retrievalProofs: RetrievalProof[] = [];
+  const syncWindowStats: SyncWindowStats | undefined = ctx.syncWindow
+    ? {
+        range: ctx.syncWindow,
+        matched: 0,
+        skippedBefore: 0,
+        skippedAfter: 0,
+        skippedUndated: 0,
+        complete: true,
+      }
+    : undefined;
 
   const plans: Array<{ vars: Record<string, unknown>; list: InvoiceListResult; identityScope?: string }> = [];
 
@@ -182,9 +196,19 @@ async function executeVendor(
         ));
         continue;
       }
+      let boundedList = list;
+      if (ctx.syncWindow && syncWindowStats) {
+        const filtered = filterInvoiceRefsBySyncWindow(list.refs, ctx.syncWindow);
+        syncWindowStats.matched += filtered.matched;
+        syncWindowStats.skippedBefore += filtered.skippedBefore;
+        syncWindowStats.skippedAfter += filtered.skippedAfter;
+        syncWindowStats.skippedUndated += filtered.skippedUndated;
+        syncWindowStats.complete = syncWindowStats.complete && filtered.skippedUndated === 0;
+        boundedList = { ...list, refs: filtered.refs };
+      }
       succeededScopes++;
-      if (list.refs.length === 0) emptyScopes++;
-      plans.push({ vars, list, identityScope: configIdentityScope(recipe, scopeVars) });
+      if (boundedList.refs.length === 0) emptyScopes++;
+      plans.push({ vars, list: boundedList, identityScope: configIdentityScope(recipe, scopeVars) });
     } catch (err) {
       options.onFailure?.(collectionFailureEvidence(err, "invoice_list"));
       // A dead session or missing document-provider permission is vendor-wide,
@@ -350,6 +374,7 @@ async function executeVendor(
     retrieval: retrievalErrorCount === 0 ? "complete" : "partial",
     retrievalProofs,
     ...(retrievalProofs.length === 1 ? { retrievalProof: retrievalProofs[0] } : {}),
+    ...(syncWindowStats ? { syncWindow: syncWindowStats } : {}),
     scopes: {
       total: scopes.length,
       succeeded: succeededScopes,

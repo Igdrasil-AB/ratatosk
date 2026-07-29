@@ -40,12 +40,17 @@ const historyDialog = document.getElementById("history-dialog") as HTMLDialogEle
 const historyName = document.getElementById("history-name") as HTMLElement;
 const confirmHistory = document.getElementById("confirm-history") as HTMLButtonElement;
 const cancelHistory = document.getElementById("cancel-history") as HTMLButtonElement;
+const syncDialog = document.getElementById("sync-dialog") as HTMLDialogElement;
+const syncFromMonth = document.getElementById("sync-from-month") as HTMLInputElement;
+const confirmSync = document.getElementById("confirm-sync") as HTMLButtonElement;
+const cancelSync = document.getElementById("cancel-sync") as HTMLButtonElement;
 const VENDOR_GUIDANCE_SEEN = "ui.vendorGuidanceSeen.v1";
 
 let screen: PanelScreen = "home";
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let disconnectVendorId: string | null = null;
 let historyVendorId: string | null = null;
+let pendingSyncTarget: { vendorId?: string } | null = null;
 let hasLoadedBackgroundState = false;
 const expandedSupplierIds = new Set<string>();
 const state = {
@@ -398,7 +403,9 @@ function renderVendors(): void {
     } else if (connection) {
       const count = connection.lastCount ?? 0;
       sub = connection.lastStatus === "partial"
-        ? `${count > 0 ? `${count} collected` : "No new invoices"} · ${connection.lastFailedScopes ?? 0} account scope${connection.lastFailedScopes === 1 ? "" : "s"} skipped`
+        ? connection.lastCode === "month_range_incomplete"
+          ? `${count > 0 ? `${count} collected` : "No new invoices"} · some invoices had no trustworthy issue month`
+          : `${count > 0 ? `${count} collected` : "No new invoices"} · ${connection.lastFailedScopes ?? 0} account scope${connection.lastFailedScopes === 1 ? "" : "s"} skipped`
         : connection.lastStatus === "rate_limited"
           ? `Supplier asked Ratatosk to wait · resumes ${relTime(connection.nextEligibleRunAt)}`
           : connection.lastStatus === "error"
@@ -707,8 +714,8 @@ async function handle(action: string, vendorId?: string): Promise<void> {
     case "show-all-vendors": state.attentionOnly = false; renderVendors(); return;
     case "home": screen = "home"; state.attentionOnly = false; state.inlineError = null; persistPanelUiState(); await load(); return;
     case "retry-load": await load(); return;
-    case "sync": await run({ type: "runNow", vendorId: vendorId! }, vendorId); return;
-    case "sync-all": await run({ type: "runNow" }); return;
+    case "sync": openSyncDialog(vendorId!); return;
+    case "sync-all": openSyncDialog(); return;
     case "disconnect": openDisconnectDialog(vendorId!); return;
     case "forget-history": openHistoryDialog(vendorId!); return;
     case "disable-tab-awareness": await disableTabAwareness(); return;
@@ -754,12 +761,21 @@ async function run(message: Parameters<typeof send>[0], vendorId?: string): Prom
       const waiting = response.summaries.find((summary) => summary.status === "rate_limited" || summary.status === "skipped");
       const expired = response.summaries.find((summary) => summary.status === "auth_expired");
       const failed = response.summaries.find((summary) => summary.status === "error");
+      const incompleteWindow = response.summaries.find((summary) => summary.code === "month_range_incomplete");
+      const bounded = response.summaries.find((summary) => summary.syncWindow);
       const attention = response.summaries.filter((summary) =>
         summary.status !== "ok" && summary.status !== "partial").length;
-      if (collected) toast(`Collected ${collected} Invoice${collected === 1 ? "" : "s"}${attention ? ` · ${attention} need attention` : ""}`);
+      if (collected) {
+        const suffix = incompleteWindow
+          ? " · some invoices had no trustworthy issue month"
+          : attention ? ` · ${attention} need attention` : "";
+        toast(`Collected ${collected} Invoice${collected === 1 ? "" : "s"}${suffix}`);
+      }
       else if (waiting) toast(`Supplier asked Ratatosk to wait until ${relTime(waiting.nextEligibleRunAt)}`);
       else if (expired) toast("Session expired — sign in to the supplier and reconnect");
       else if (failed?.error) toast(failed.error);
+      else if (incompleteWindow) toast("No invoices with a trustworthy issue month were found in that range");
+      else if (bounded?.syncWindow) toast(`No new invoices from ${monthLabel(bounded.syncWindow.range.fromMonth)}`);
       else toast("No New Invoices");
     }
     await load();
@@ -768,6 +784,38 @@ async function run(message: Parameters<typeof send>[0], vendorId?: string): Prom
     if (vendorId) sourceError(vendorId, "Ratatosk couldn’t reach the background process. Reopen the extension and try again.");
     else toast("Couldn’t finish. Reopen Ratatosk and try again.");
   }
+}
+
+function openSyncDialog(vendorId?: string): void {
+  pendingSyncTarget = vendorId ? { vendorId } : {};
+  const now = new Date();
+  syncFromMonth.max = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  syncDialog.showModal();
+  requestAnimationFrame(() => syncFromMonth.focus());
+}
+
+confirmSync.addEventListener("click", () => {
+  if (!pendingSyncTarget || !syncFromMonth.reportValidity()) return;
+  const target = pendingSyncTarget;
+  const fromMonth = syncFromMonth.value || undefined;
+  syncDialog.close();
+  pendingSyncTarget = null;
+  const message: Extract<Parameters<typeof send>[0], { type: "runNow" }> = {
+    type: "runNow",
+    ...(target.vendorId ? { vendorId: target.vendorId } : {}),
+    ...(fromMonth ? { fromMonth } : {}),
+  };
+  void run(message, target.vendorId);
+});
+
+cancelSync.addEventListener("click", () => syncDialog.close());
+syncDialog.addEventListener("close", () => { pendingSyncTarget = null; });
+
+function monthLabel(value: string): string {
+  const match = /^(\d{4})-(\d{2})$/.exec(value);
+  if (!match) return value;
+  return new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric", timeZone: "UTC" })
+    .format(new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1)));
 }
 
 async function retryDiscovery(): Promise<void> {

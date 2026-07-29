@@ -69,6 +69,13 @@ chrome.alarms (your schedule)
       -> save it to your destination
 ```
 
+Manual collection can optionally start from a chosen month and year. Ratatosk
+lists the supplier's invoices, then filters on the resolved issue month before
+it downloads any PDF. Invoices with a missing or conflicting issue month are
+skipped and reported as incomplete instead of being guessed into the range.
+Leaving the month empty checks all available history; scheduled collection keeps
+its existing all-history-plus-dedup behavior.
+
 Nothing runs until you pick a destination. With **This Computer**, files land in
 your Downloads folder. With **Igdrasil Accounting**, they upload to your company
 using a revocable, upload-only token — your accounting session token never

@@ -75,6 +75,23 @@ Open the popup and connect the vendor.
 5. Sign out of the vendor and run again; confirm `Reconnect` and the notification.
 6. Disconnect the vendor and confirm Chrome revoked its optional host permission.
 
+For the month-bounded manual path, use a fixture or dedicated account with at
+least one invoice before the chosen starting month and one inside the range.
+Select **Collect**, choose only the starting month and year, and confirm:
+
+- the range runs from that month through the current month, inclusively;
+- only invoices whose resolved issue month is in range reach document fetch and
+  the destination;
+- an invoice with no trustworthy issue month, or conflicting equally strong
+  date evidence, is not downloaded and the run reports partial coverage;
+- repeating the same bounded run delivers no duplicates;
+- leaving the starting month empty retains the all-history behavior.
+
+Exercise this once with structured API/embedded-page dates and once with a DOM
+row date. If the supplier API accepts a date query, also confirm its recipe uses
+the closed run variables; the pre-download engine boundary remains the
+acceptance check.
+
 For an unsupported supplier, open its signed-in home or billing page and select
 **Search This App**. Confirm Chrome names only that exact site, the active tab is
 not navigated/reloaded/scrolled/closed, and an inactive tab replays the exact

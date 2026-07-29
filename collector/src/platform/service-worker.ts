@@ -70,6 +70,7 @@ import { canContinueSupplierDiscovery } from "./discovery-continuation";
 import { CollectionRunCoordinator } from "../../../src/core/concurrency";
 import { isIgdrasilApiBase } from "../../../src/ingest/igdrasil-sink";
 import { disconnectIgdrasil } from "./igdrasil-disconnect";
+import { isSyncMonth } from "../../../src/core/sync-window";
 
 console.info(`[collector] ready ${formatCollectorRuntimeIdentity()}`);
 void initializeHostTokenStorage().catch((error: unknown) => {
@@ -321,6 +322,9 @@ async function handle(message: Message): Promise<Response> {
       });
 
     case "runNow": {
+      if (message.fromMonth && !isSyncMonth(message.fromMonth)) {
+        return { ok: false, error: "Choose a valid starting month that is not in the future." };
+      }
       if (message.vendorId) {
         // Background contexts cannot open permission prompts. If a recipe gains
         // hosts, send the user back through Connect rather than silently failing.
@@ -329,10 +333,10 @@ async function handle(message: Message): Promise<Response> {
         if (recipe && !(await hasHostPermissions(vendorPermissionOrigins(recipe, connection)))) {
           return { ok: false, error: "vendor access changed; reconnect this vendor" };
         }
-        const summary = await collectionRuns.runInteractive(() => runVendorById(message.vendorId!));
+        const summary = await collectionRuns.runInteractive(() => runVendorById(message.vendorId!, message.fromMonth));
         return { ok: true, summaries: [summary] };
       }
-      return { ok: true, summaries: await collectionRuns.runInteractive(() => runAllConnected()) };
+      return { ok: true, summaries: await collectionRuns.runInteractive(() => runAllConnected(message.fromMonth)) };
     }
 
     case "getVendorDiagnostic": {

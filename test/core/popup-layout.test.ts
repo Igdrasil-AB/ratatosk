@@ -156,6 +156,18 @@ describe("Collector popup layout regressions", () => {
     expect(popupSource).toContain('data-action="sync-all">Collect All');
   });
 
+  it("asks for an optional starting month before manual collection", () => {
+    expect(popupStyles).toContain('id="sync-dialog"');
+    expect(popupStyles).toContain('id="sync-from-month" type="month" min="1970-01"');
+    expect(popupStyles).toContain("Leave empty to check all available history");
+    expect(popupSource).toContain("openSyncDialog(vendorId!)");
+    expect(popupSource).toContain("openSyncDialog()");
+    expect(popupSource).toContain("...(fromMonth ? { fromMonth } : {})");
+    expect(serviceWorkerSource).toContain("isSyncMonth(message.fromMonth)");
+    expect(popupSource).toContain('connection.lastCode === "month_range_incomplete"');
+    expect(popupSource).toContain("some invoices had no trustworthy issue month");
+  });
+
   it("closes the date menu with Escape or an outside click and clears stale toast text", () => {
     expect(popupSource).toContain("closeDateFilter(true)");
     expect(popupSource).toContain('document.addEventListener("pointerdown"');

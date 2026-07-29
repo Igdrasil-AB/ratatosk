@@ -1,5 +1,5 @@
 import { streamVendor } from "../../../src/core/engine";
-import type { FetchedDocument, RetrievalCompleteness, RetrievalProof, VendorRecipe } from "../../../src/core/types";
+import type { FetchedDocument, RetrievalCompleteness, RetrievalProof, SyncWindowStats, VendorRecipe } from "../../../src/core/types";
 import {
   AuthExpired,
   AuthFailure,
@@ -36,6 +36,7 @@ export interface VendorRunSummary {
   verifiedCount?: number;
   retrieval?: RetrievalCompleteness;
   retrievalProof?: RetrievalProof;
+  syncWindow?: SyncWindowStats;
   code?: OperationalOutcomeCode;
   failedScopes?: number;
   emptyScopes?: number;
@@ -70,13 +71,13 @@ class DiscoveryAdmissionError extends Error {
   }
 }
 
-export function runVendorById(vendorId: string): Promise<VendorRunSummary> {
+export function runVendorById(vendorId: string, fromMonth?: string): Promise<VendorRunSummary> {
   const existing = vendorRuns.get(vendorId);
   if (existing) return existing;
 
   const task = resolveCollectorSource(vendorId)
     .then((source) => source?.recipe
-      ? executeRecipeRun(source.recipe)
+      ? executeRecipeRun(source.recipe, undefined, false, fromMonth)
       : { vendorId, status: "error", count: 0, error: "unknown vendor" } as VendorRunSummary)
     .finally(() => {
       if (vendorRuns.get(vendorId) === task) vendorRuns.delete(vendorId);
@@ -97,6 +98,7 @@ async function executeRecipeRun(
   recipe: VendorRecipe,
   afterFirstDelivery?: (document: FetchedDocument) => Promise<void>,
   requireCompleteRetrieval = false,
+  fromMonth?: string,
 ): Promise<VendorRunSummary> {
   const vendorId = recipe.id;
 
@@ -107,7 +109,7 @@ async function executeRecipeRun(
 
   const config = await getSinkConfig();
   if (!config) return { vendorId, status: "error", count: 0, error: "choose a destination before collecting" };
-  const { ctx, dispose } = buildRunContext(sinkCompanyId(config), recipe);
+  const { ctx, dispose } = buildRunContext(sinkCompanyId(config), recipe, fromMonth);
   const strategies = buildStrategies(recipe);
 
   console.info(`[collector] running "${vendorId}"…`);
@@ -192,8 +194,11 @@ async function executeRecipeRun(
     retrievalProof = result.retrievalProof;
     console.info(`[collector] "${vendorId}": ok — ${acceptedCount} document(s)`);
 
-    const partial = scopes.failed > 0;
-    const code = partial ? "partial_scope_failure" as const : undefined;
+    const windowIncomplete = result.syncWindow !== undefined && !result.syncWindow.complete;
+    const partial = scopes.failed > 0 || windowIncomplete;
+    const code = scopes.failed > 0
+      ? "partial_scope_failure" as const
+      : windowIncomplete ? "month_range_incomplete" as const : undefined;
     await recordRun(vendorId, {
       lastStatus: partial ? "partial" : "ok",
       lastCount: acceptedCount,
@@ -209,6 +214,7 @@ async function executeRecipeRun(
       count: acceptedCount,
       verifiedCount,
       retrieval,
+      ...(result.syncWindow ? { syncWindow: result.syncWindow } : {}),
       ...(retrievalProof ? { retrievalProof } : {}),
       ...(code ? { code } : {}),
       failedScopes: scopes.failed,
@@ -378,7 +384,7 @@ function fallbackFailureStage(error: unknown): CollectionFailureStage {
 }
 
 /** Run every connected vendor in sequence (keeps concurrency gentle on the host). */
-export async function runAllConnected(): Promise<VendorRunSummary[]> {
+export async function runAllConnected(fromMonth?: string): Promise<VendorRunSummary[]> {
   const ids = Object.keys(await getConnections());
   const summaries: VendorRunSummary[] = [];
   for (const id of ids) {
@@ -388,7 +394,7 @@ export async function runAllConnected(): Promise<VendorRunSummary[]> {
       // scheduled sync must not resurrect or execute a path that is no longer
       // present in the current source catalog.
       if (!(await resolveCollectorSource(id))) continue;
-      summaries.push(await runVendorById(id));
+      summaries.push(await runVendorById(id, fromMonth));
     } catch (error) {
       const code = operationalCodeForError(error);
       const message = operationalOutcomeLabel(code);

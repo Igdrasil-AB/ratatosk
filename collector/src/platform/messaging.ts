@@ -30,7 +30,7 @@ export type Message =
   | { type: "connect"; vendorId: string }
   | { type: "disconnect"; vendorId: string }
   | { type: "forgetVendorHistory"; vendorId: string }
-  | { type: "runNow"; vendorId?: string }
+  | { type: "runNow"; vendorId?: string; fromMonth?: string }
   | { type: "getVendorDiagnostic"; vendorId: string }
   | { type: "getLedger" }
   | { type: "getSchedule" }

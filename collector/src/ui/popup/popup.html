@@ -561,6 +561,19 @@
       .dialog-body { padding: 18px; }
       .dialog-body h2 { margin: 0 0 7px; font-size: 16px; line-height: 1.3; text-wrap: balance; }
       .dialog-body p { color: var(--muted); font-size: 12.5px; }
+      .dialog-field { margin-top: 14px; display: grid; gap: 6px; }
+      .dialog-field label { color: var(--fg); font-size: 12px; font-weight: 620; }
+      .dialog-field input {
+        min-height: 42px;
+        width: 100%;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: var(--surface);
+        color: var(--fg);
+        font: inherit;
+      }
+      .dialog-field small { color: var(--muted); font-size: 10.5px; line-height: 1.4; }
       .dialog-actions { padding: 0 18px 18px; display: flex; justify-content: flex-end; gap: 8px; }
 
       .skeleton { min-height: 260px; }
@@ -591,6 +604,18 @@
     <dialog id="history-dialog" role="alertdialog" aria-labelledby="history-title" aria-describedby="history-description">
       <div class="dialog-body"><h2 id="history-title">Forget <span id="history-name"></span> history?</h2><p id="history-description">Ratatosk will forget which invoices it delivered and remove them from this list. Existing files are not deleted, and the next sync may download them again.</p></div>
       <div class="dialog-actions"><button type="button" class="btn outline" id="cancel-history">Cancel</button><button type="button" class="btn danger" id="confirm-history">Forget History</button></div>
+    </dialog>
+    <dialog id="sync-dialog" aria-labelledby="sync-title" aria-describedby="sync-description">
+      <div class="dialog-body">
+        <h2 id="sync-title">Collect invoices</h2>
+        <p id="sync-description">Choose the first invoice month Ratatosk should collect.</p>
+        <div class="dialog-field">
+          <label for="sync-from-month">Starting month</label>
+          <input id="sync-from-month" type="month" min="1970-01" autocomplete="off">
+          <small>Leave empty to check all available history. Ratatosk never collects invoices from a later month.</small>
+        </div>
+      </div>
+      <div class="dialog-actions"><button type="button" class="btn outline" id="cancel-sync">Cancel</button><button type="button" class="btn" id="confirm-sync">Collect</button></div>
     </dialog>
     <script type="module" src="./popup.ts"></script>
   </body>
