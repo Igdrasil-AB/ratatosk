@@ -67,23 +67,36 @@ expressions from recipes or the UI.
 Every strategy already normalizes invoice metadata into the same `InvoiceRef`
 contract. Network and embedded-page candidates map a discovered date-like field
 to `issuedAt`. DOM candidates carry labelled row dates as provenance-bearing
-metadata evidence. The engine resolves that shared evidence and applies the
+metadata evidence. A supplier-provided `YYYY-MM` billing period is sufficient
+for this filter even though downstream accounting metadata still requires a
+full valid date. The engine resolves that shared evidence and applies the
 month boundary after complete list traversal but before identity reservation or
-PDF materialization. This keeps correctness supplier-independent:
+PDF materialization. First-time discovery stores the month choice in its
+session-state handoff before requesting permissions, so an already-granted
+permission cannot race ahead into an unbounded candidate run.
+
+The decision is supplier-wide and keeps behavior explainable:
 
 - invoices before the starting month or after the current month are skipped;
-- a unique trustworthy issue month is eligible;
-- missing, invalid, or equally strong conflicting dates are skipped and make the
-  run explicitly partial rather than guessing or downloading;
+- when every listed invoice has a unique trustworthy issue date, only in-range
+  invoices are eligible;
+- when any successful scope contains a missing, invalid, or equally strong
+  conflicting date, every scope falls back to normal all-history collection;
+- the completion result and first-time discovery card explicitly disclose that
+  all history was used because date filtering was unavailable;
 - an unbounded run retains the existing all-history behavior.
 
 List APIs that support server-side bounds may use the closed run variables
 `syncFromYearMonth`, `syncFromDate`, `syncFromIso`,
 `syncFromEpochSeconds`/`syncFromEpochMs`, and the matching
 `syncToExclusive*` values in a recipe request. This is an efficiency
-optimization only. The engine still enforces the normalized invoice month, so a
-supplier that ignores or misinterprets its query cannot expand the requested
-download set.
+optimization only and is safe only for a reviewed API contract that guarantees
+date coverage or supports an unbounded retry. Generic discovery enumerates the
+available metadata before filtering. The engine still enforces the normalized
+invoice month, so a supplier that ignores or misinterprets its query cannot
+expand a reliably dated requested set. When the normalized response contains an
+unreliable date, the document phase deliberately uses the disclosed all-history
+fallback instead.
 
 ## Concurrency and cancellation
 

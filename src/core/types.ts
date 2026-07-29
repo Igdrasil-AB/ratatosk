@@ -118,12 +118,12 @@ export interface SyncMonthWindow {
 
 export interface SyncWindowStats {
   range: SyncMonthWindow;
+  /** One supplier-wide decision made after every successful scope is listed. */
+  mode: "bounded" | "all_history_fallback";
   matched: number;
   skippedBefore: number;
   skippedAfter: number;
   skippedUndated: number;
-  /** False when at least one listed invoice lacked a trustworthy issue month. */
-  complete: boolean;
 }
 
 /** A fully materialized invoice document, ready to hand to an {@link IngestSink}. */

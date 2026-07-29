@@ -23,7 +23,7 @@ export type Message =
   | { type: "beginDiscovery"; tabId: number; origin: string }
   | { type: "completeDiscovery" }
   | { type: "cancelDiscovery" }
-  | { type: "beginDiscoveryConnect"; vendorId: string }
+  | { type: "beginDiscoveryConnect"; vendorId: string; fromMonth?: string }
   | { type: "completeDiscoveryConnect"; vendorId: string }
   | { type: "cancelDiscoveryConnect" }
   | { type: "dismissDiscovery" }

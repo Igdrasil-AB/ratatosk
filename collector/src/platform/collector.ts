@@ -90,8 +90,9 @@ export function runVendorById(vendorId: string, fromMonth?: string): Promise<Ven
 export function runDiscoveredCandidate(
   recipe: VendorRecipe,
   afterFirstDelivery: (document: FetchedDocument) => Promise<void>,
+  fromMonth?: string,
 ): Promise<VendorRunSummary> {
-  return executeRecipeRun(recipe, afterFirstDelivery, true);
+  return executeRecipeRun(recipe, afterFirstDelivery, true, fromMonth);
 }
 
 async function executeRecipeRun(
@@ -194,11 +195,11 @@ async function executeRecipeRun(
     retrievalProof = result.retrievalProof;
     console.info(`[collector] "${vendorId}": ok — ${acceptedCount} document(s)`);
 
-    const windowIncomplete = result.syncWindow !== undefined && !result.syncWindow.complete;
-    const partial = scopes.failed > 0 || windowIncomplete;
+    const monthFallback = result.syncWindow?.mode === "all_history_fallback";
+    const partial = scopes.failed > 0;
     const code = scopes.failed > 0
       ? "partial_scope_failure" as const
-      : windowIncomplete ? "month_range_incomplete" as const : undefined;
+      : monthFallback ? "month_range_fallback_all" as const : undefined;
     await recordRun(vendorId, {
       lastStatus: partial ? "partial" : "ok",
       lastCount: acceptedCount,

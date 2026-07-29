@@ -81,16 +81,23 @@ Select **Collect**, choose only the starting month and year, and confirm:
 
 - the range runs from that month through the current month, inclusively;
 - only invoices whose resolved issue month is in range reach document fetch and
-  the destination;
+  the destination when every listed invoice is reliably dated;
 - an invoice with no trustworthy issue month, or conflicting equally strong
-  date evidence, is not downloaded and the run reports partial coverage;
+  date evidence, switches the whole supplier to all-history collection;
+- both the completion message and persisted supplier status disclose that
+  all history was used because invoice dates were unavailable;
+- a first-time selection newer than every reliably dated invoice returns to the
+  discovery preview and asks for an earlier month instead of weakening the
+  verification rule or silently collecting older invoices;
 - repeating the same bounded run delivers no duplicates;
 - leaving the starting month empty retains the all-history behavior.
 
 Exercise this once with structured API/embedded-page dates and once with a DOM
-row date. If the supplier API accepts a date query, also confirm its recipe uses
-the closed run variables; the pre-download engine boundary remains the
-acceptance check.
+row date. Repeat the matrix during first-time discovery: **Find Invoices** must
+finish before the month choice appears, and **Connect & Collect** must retain the
+choice across the permission prompt. If the supplier API accepts a date query,
+also confirm its recipe uses the closed run variables; the post-list
+supplier-wide decision remains the acceptance check.
 
 For an unsupported supplier, open its signed-in home or billing page and select
 **Search This App**. Confirm Chrome names only that exact site, the active tab is

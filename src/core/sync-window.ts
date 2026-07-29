@@ -1,8 +1,7 @@
 import type { InvoiceRef, SyncMonthWindow } from "./types";
-import { resolveInvoiceMetadata } from "./invoice-metadata";
+import { resolveInvoiceIssueMonth } from "./invoice-metadata";
 
 const YEAR_MONTH = /^(\d{4})-(0[1-9]|1[0-2])$/;
-const ISSUED_AT_MONTH = /^(\d{4})-(0[1-9]|1[0-2])(?:-\d{2}(?:T.*)?|$)/;
 const EARLIEST_YEAR = 1970;
 
 export interface SyncWindowFilterResult {
@@ -70,7 +69,7 @@ export function filterInvoiceRefsBySyncWindow(
     // Network/HTML strategies expose issuedAt directly. DOM discovery carries
     // the same fact as provenance-bearing row evidence, so resolve the shared
     // metadata contract before applying the supplier-independent boundary.
-    const month = invoiceMonth(resolveInvoiceMetadata(ref).issuedAt);
+    const month = resolveInvoiceIssueMonth(ref);
     if (!month) {
       result.skippedUndated += 1;
     } else if (month < range.fromMonth) {
@@ -92,12 +91,6 @@ export function isSyncMonth(value: string, now = new Date()): boolean {
   } catch {
     return false;
   }
-}
-
-function invoiceMonth(value: string | undefined): string | undefined {
-  const match = ISSUED_AT_MONTH.exec(value ?? "");
-  if (!match) return undefined;
-  return `${match[1]}-${match[2]}`;
 }
 
 function parseYearMonth(value: string): { year: number; month: number } {

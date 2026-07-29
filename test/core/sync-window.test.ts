@@ -7,7 +7,7 @@ import {
   filterInvoiceRefsBySyncWindow,
   syncMonthWindowVars,
 } from "../../src/core/sync-window";
-import type { RunContext, VendorRecipe } from "../../src/core/types";
+import type { InvoiceRef, RunContext, VendorRecipe } from "../../src/core/types";
 
 describe("month-bounded collection", () => {
   it("normalizes a user month into inclusive calendar-month template variables", () => {
@@ -44,6 +44,7 @@ describe("month-bounded collection", () => {
       { vendorInvoiceId: "first", issuedAt: "2026-03-01" },
       { vendorInvoiceId: "last", issuedAt: "2026-07-31T23:59:59Z" },
       { vendorInvoiceId: "future", issuedAt: "2026-08-01" },
+      { vendorInvoiceId: "month-only", issuedAt: "2026-05" },
       {
         vendorInvoiceId: "dom-row",
         metadataEvidence: [{
@@ -59,15 +60,29 @@ describe("month-bounded collection", () => {
           { source: "network", confidence: "high", issuedAt: "2026-05-15" },
         ],
       },
+      {
+        vendorInvoiceId: "same-month-different-days",
+        metadataEvidence: [
+          { source: "dom-row", confidence: "high", issuedAt: "2026-06-01" },
+          { source: "network", confidence: "high", issuedAt: "2026-06-30" },
+        ],
+      },
+      { vendorInvoiceId: "invalid-date", issuedAt: "2026-02-30" },
       { vendorInvoiceId: "unknown" },
     ], range);
 
-    expect(result.refs.map((ref) => ref.vendorInvoiceId)).toEqual(["first", "last", "dom-row"]);
+    expect(result.refs.map((ref) => ref.vendorInvoiceId)).toEqual([
+      "first",
+      "last",
+      "month-only",
+      "dom-row",
+      "same-month-different-days",
+    ]);
     expect(result).toMatchObject({
-      matched: 3,
+      matched: 5,
       skippedBefore: 1,
       skippedAfter: 1,
-      skippedUndated: 2,
+      skippedUndated: 3,
     });
   });
 
@@ -102,70 +117,126 @@ describe("month-bounded collection", () => {
     expect(result.refs.map((ref) => ref.vendorInvoiceId)).toEqual(["current"]);
   });
 
-  it("enforces the month window before document materialization", async () => {
-    const fetched: string[] = [];
-    const recipe = testRecipe();
-    const strategy = {
-      list: vi.fn(async () => ({
-        refs: [
-          { vendorInvoiceId: "old", issuedAt: "2025-12-31", documentUrl: "https://vendor.example/old.pdf" },
-          { vendorInvoiceId: "current", issuedAt: "2026-01-20", documentUrl: "https://vendor.example/current.pdf" },
-          { vendorInvoiceId: "undated", documentUrl: "https://vendor.example/undated.pdf" },
-        ],
-        retrieval: {
-          completeness: "complete" as const,
-          termination: "explicit_end" as const,
-          pagesVisited: 1,
-          observedItems: 3,
-          resolvedItems: 3,
-          unresolvedItems: 0,
-        },
-      })),
-      fetchDocument: vi.fn(async (_recipe: VendorRecipe, ref: { vendorInvoiceId: string }) => {
-        fetched.push(ref.vendorInvoiceId);
-        return {
-          bytes: new Uint8Array([37, 80, 68, 70]).buffer,
-          contentType: "application/pdf",
-          filename: `${ref.vendorInvoiceId}.pdf`,
-        };
-      }),
-    };
-    const ctx: RunContext = {
-      companyId: "company",
-      vars: {},
-      syncWindow: createSyncMonthWindow("2026-01", new Date("2026-07-29T12:00:00Z")),
-      seen: {
-        has: async () => false,
-        claimIfAbsent: async () => crypto.randomUUID(),
-        release: async () => undefined,
-        add: async () => undefined,
-      },
-      fetch: vi.fn(async () => ({
-        status: 200,
-        ok: true,
-        json: async () => ({}),
-        arrayBuffer: async () => new ArrayBuffer(0),
-        headers: { get: () => "application/json" },
-      })),
-    };
-
-    const result = await runVendor(recipe, ctx, {
-      network: strategy,
-      html: strategy,
-      dom: strategy,
-    } as StrategyMap);
-
+  it("enforces the month range before PDF materialization when every invoice is dated", async () => {
+    const { fetched, result } = await runRefs([
+      { vendorInvoiceId: "old", issuedAt: "2025-12-31", documentUrl: "https://vendor.example/old.pdf" },
+      { vendorInvoiceId: "current", issuedAt: "2026-01-20", documentUrl: "https://vendor.example/current.pdf" },
+    ]);
     expect(fetched).toEqual(["current"]);
     expect(result.documents.map((document) => document.vendorInvoiceId)).toEqual(["current"]);
     expect(result.syncWindow).toMatchObject({
+      mode: "bounded",
+      matched: 1,
+      skippedBefore: 1,
+      skippedAfter: 0,
+      skippedUndated: 0,
+    });
+  });
+
+  it("falls the entire supplier back to all history when one invoice cannot be dated reliably", async () => {
+    const { fetched, result } = await runRefs([
+      { vendorInvoiceId: "old", issuedAt: "2025-12-31", documentUrl: "https://vendor.example/old.pdf" },
+      { vendorInvoiceId: "current", issuedAt: "2026-01-20", documentUrl: "https://vendor.example/current.pdf" },
+      { vendorInvoiceId: "undated", documentUrl: "https://vendor.example/undated.pdf" },
+    ]);
+
+    expect(fetched).toEqual(["old", "current", "undated"]);
+    expect(result.documents.map((document) => document.vendorInvoiceId)).toEqual(["old", "current", "undated"]);
+    expect(result.syncWindow).toMatchObject({
+      mode: "all_history_fallback",
       matched: 1,
       skippedBefore: 1,
       skippedAfter: 0,
       skippedUndated: 1,
-      complete: false,
+    });
+  });
+
+  it("applies one all-history fallback across every supplier account scope", async () => {
+    const { fetched, result } = await runRefs((vars) => vars.account === "dated"
+      ? [
+          { vendorInvoiceId: "old", issuedAt: "2025-12-31", documentUrl: "https://vendor.example/old.pdf" },
+          { vendorInvoiceId: "current", issuedAt: "2026-01-20", documentUrl: "https://vendor.example/current.pdf" },
+        ]
+      : [{ vendorInvoiceId: "undated", documentUrl: "https://vendor.example/undated.pdf" }],
+    true);
+
+    expect(fetched).toEqual(["old", "current", "undated"]);
+    expect(result.syncWindow).toMatchObject({
+      mode: "all_history_fallback",
+      matched: 1,
+      skippedBefore: 1,
+      skippedUndated: 1,
     });
   });
 });
+
+async function runRefs(
+  source: InvoiceRef[] | ((vars: Record<string, unknown>) => InvoiceRef[]),
+  scoped = false,
+) {
+  const fetched: string[] = [];
+  const recipe = testRecipe();
+  if (scoped) {
+    recipe.config = [{
+      id: "account",
+      discover: {
+        request: { url: "https://vendor.example/accounts" },
+        items: "accounts",
+        value: "id",
+      },
+    }];
+  }
+  const strategy = {
+    list: vi.fn(async (_recipe: VendorRecipe, vars: Record<string, unknown>) => {
+      const refs = typeof source === "function" ? source(vars) : source;
+      return {
+        refs,
+        retrieval: {
+          completeness: "complete" as const,
+          termination: "explicit_end" as const,
+          pagesVisited: 1,
+          observedItems: refs.length,
+          resolvedItems: refs.length,
+          unresolvedItems: 0,
+        },
+      };
+    }),
+    fetchDocument: vi.fn(async (_recipe: VendorRecipe, ref: InvoiceRef) => {
+      fetched.push(ref.vendorInvoiceId);
+      return {
+        bytes: new Uint8Array([37, 80, 68, 70, ref.vendorInvoiceId.charCodeAt(0)]).buffer,
+        contentType: "application/pdf",
+        filename: `${ref.vendorInvoiceId}.pdf`,
+      };
+    }),
+  };
+  const ctx: RunContext = {
+    companyId: "company",
+    vars: {},
+    syncWindow: createSyncMonthWindow("2026-01", new Date("2026-07-29T12:00:00Z")),
+    seen: {
+      has: async () => false,
+      claimIfAbsent: async () => crypto.randomUUID(),
+      release: async () => undefined,
+      add: async () => undefined,
+    },
+    fetch: vi.fn(async (spec) => ({
+      status: 200,
+      ok: true,
+      json: async () => spec.url.endsWith("/accounts")
+        ? { accounts: [{ id: "dated" }, { id: "undated" }] }
+        : {},
+      arrayBuffer: async () => new ArrayBuffer(0),
+      headers: { get: () => "application/json" },
+    })),
+  };
+  const result = await runVendor(recipe, ctx, {
+    network: strategy,
+    html: strategy,
+    dom: strategy,
+  } as StrategyMap);
+  return { fetched, result };
+}
 
 function testRecipe(): VendorRecipe {
   return {

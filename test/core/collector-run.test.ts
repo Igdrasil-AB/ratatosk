@@ -114,14 +114,14 @@ describe("Collector per-vendor run coordinator", () => {
     expect(mocks.buildSink).toHaveBeenCalledWith(config);
   });
 
-  it("passes a month-only boundary into the run and reports missing issue months as partial", async () => {
+  it("passes a month-only boundary into the run and records an all-history date fallback", async () => {
     const syncWindow = {
       range: { granularity: "month" as const, fromMonth: "2026-03", throughMonth: "2026-07" },
+      mode: "all_history_fallback" as const,
       matched: 2,
       skippedBefore: 4,
       skippedAfter: 0,
       skippedUndated: 1,
-      complete: false,
     };
     mocks.streamVendor.mockResolvedValueOnce({
       vendorId: "vendor-month-window",
@@ -132,8 +132,8 @@ describe("Collector per-vendor run coordinator", () => {
 
     await expect(runVendorById("vendor-month-window", "2026-03")).resolves.toMatchObject({
       vendorId: "vendor-month-window",
-      status: "partial",
-      code: "month_range_incomplete",
+      status: "ok",
+      code: "month_range_fallback_all",
       syncWindow,
     });
     expect(mocks.buildRunContext).toHaveBeenCalledWith(
@@ -144,8 +144,8 @@ describe("Collector per-vendor run coordinator", () => {
     expect(mocks.recordRun).toHaveBeenCalledWith(
       "vendor-month-window",
       expect.objectContaining({
-        lastStatus: "partial",
-        lastCode: "month_range_incomplete",
+        lastStatus: "ok",
+        lastCode: "month_range_fallback_all",
       }),
     );
   });
@@ -269,11 +269,13 @@ describe("Collector per-vendor run coordinator", () => {
       return { accepted: true };
     });
 
-    await runDiscoveredCandidate({ id: "discovered-vendor", name: "Discovered" } as never, async () => {
+    const recipe = { id: "discovered-vendor", name: "Discovered" } as never;
+    await runDiscoveredCandidate(recipe, async () => {
       order.push("admit");
-    });
+    }, "2026-03");
 
     expect(order).toEqual(["sink", "admit"]);
+    expect(mocks.buildRunContext).toHaveBeenCalledWith("company", recipe, "2026-03");
   });
 
   it("durably records an accepted delivery but fails discovery when admission persistence fails", async () => {

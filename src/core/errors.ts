@@ -260,7 +260,7 @@ export const OPERATIONAL_OUTCOME_CODES = [
   "document_invalid",
   "document_permission_required",
   "retrieval_incomplete",
-  "month_range_incomplete",
+  "month_range_fallback_all",
   "destination_unavailable",
   "connection_persistence_failed",
   "partial_scope_failure",
@@ -298,7 +298,7 @@ export function operationalOutcomeLabel(code: OperationalOutcomeCode): string {
     case "document_invalid": return "Supplier returned an invalid document";
     case "document_permission_required": return "Invoice document access needs approval";
     case "retrieval_incomplete": return "Invoice retrieval was incomplete";
-    case "month_range_incomplete": return "Some invoices had no trustworthy issue month";
+    case "month_range_fallback_all": return "Invoice dates were unavailable, so all history was checked";
     case "destination_unavailable": return "Invoice destination unavailable";
     case "connection_persistence_failed": return "Supplier connection could not be saved";
     case "partial_scope_failure": return "Some account scopes need attention";

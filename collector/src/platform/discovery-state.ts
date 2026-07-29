@@ -10,6 +10,7 @@ import {
 import { OPERATIONAL_OUTCOME_CODES, operationalOutcomeLabel } from "../../../src/core/errors";
 import { parseDiscoveryDiagnostic, type DiscoveryDiagnosticV1 } from "./discovery-diagnostic";
 import { parseExplorationCheckpoint, type ExplorationCheckpoint } from "./discovery-explorer";
+import { isSyncMonth } from "../../../src/core/sync-window";
 
 const KEY = "supplierDiscovery.v1";
 const ACTIVE_TTL_MS = 15 * 60_000;
@@ -29,17 +30,20 @@ export const DISCOVERY_FAILURE_MESSAGES = {
   timeCap: "Ratatosk reached its safe search-time limit before it could verify an invoice source.",
   pageCap: "Ratatosk checked its safe page limit without verifying an invoice source.",
   capacity: "Ratatosk has reached its local discovered-supplier limit. Disconnect one discovered supplier and try again.",
+  monthRangeEmpty: "No invoices were available from that month. Choose an earlier month or leave it empty to collect all history.",
 } as const;
 
 type DiscoveryState =
   | { stage: "awaiting_permission" | "scanning"; runId: string; tabId: number; origin: string; checkpoint?: ExplorationCheckpoint; updatedAt: number }
-  | { stage: "preview" | "confirming"; runId: string; candidates: DiscoveredSupplierCandidateSetV1; diagnostic: DiscoveryDiagnosticV1; updatedAt: number }
-  | { stage: "complete"; runId: string; vendorId: string; name: string; count: number; updatedAt: number }
+  | { stage: "preview"; runId: string; candidates: DiscoveredSupplierCandidateSetV1; diagnostic: DiscoveryDiagnosticV1; updatedAt: number }
+  | { stage: "confirming"; runId: string; candidates: DiscoveredSupplierCandidateSetV1; diagnostic: DiscoveryDiagnosticV1; fromMonth?: string; updatedAt: number }
+  | { stage: "complete"; runId: string; vendorId: string; name: string; count: number; monthFallbackAll?: boolean; updatedAt: number }
   | { stage: "failed"; runId: string; message: string; origins: string[]; diagnostic?: DiscoveryDiagnosticV1; updatedAt: number };
 
 export interface PendingSupplierDiscovery {
   runId: string;
   candidates: DiscoveredSupplierCandidateSetV1;
+  fromMonth?: string;
 }
 
 export type DiscoveryStatusView =
@@ -55,7 +59,7 @@ export type DiscoveryStatusView =
     requiredOrigins: readonly string[];
   }
   | { stage: "connecting"; name: string }
-  | { stage: "complete"; vendorId: string; name: string; count: number }
+  | { stage: "complete"; vendorId: string; name: string; count: number; monthFallbackAll?: boolean }
   | {
     stage: "failed";
     message: string;
@@ -116,24 +120,31 @@ export async function setSupplierDiscoveryPreview(
   });
 }
 
-export async function beginSupplierDiscoveryConnect(vendorId: string): Promise<PendingSupplierDiscovery | undefined> {
+export async function beginSupplierDiscoveryConnect(
+  vendorId: string,
+  fromMonth?: string,
+): Promise<PendingSupplierDiscovery | undefined> {
   return transition(async () => {
     const state = await read();
     if (!state || state.stage !== "preview" || state.candidates.id !== vendorId) return undefined;
+    if (fromMonth && !isSyncMonth(fromMonth)) return undefined;
     await write({
-    stage: "confirming",
-    runId: state.runId,
-    candidates: state.candidates,
-    diagnostic: state.diagnostic,
-    updatedAt: Date.now(),
+      stage: "confirming",
+      runId: state.runId,
+      candidates: state.candidates,
+      diagnostic: state.diagnostic,
+      ...(fromMonth ? { fromMonth } : {}),
+      updatedAt: Date.now(),
     });
-    return { runId: state.runId, candidates: state.candidates };
+    return { runId: state.runId, candidates: state.candidates, ...(fromMonth ? { fromMonth } : {}) };
   });
 }
 
 export async function getPendingSupplierDiscoveryConnect(): Promise<PendingSupplierDiscovery | undefined> {
   const state = await read();
-  return state?.stage === "confirming" ? { runId: state.runId, candidates: state.candidates } : undefined;
+  return state?.stage === "confirming"
+    ? { runId: state.runId, candidates: state.candidates, ...(state.fromMonth ? { fromMonth: state.fromMonth } : {}) }
+    : undefined;
 }
 
 export async function getPendingSupplierDiscoveryDiagnostic(runId: string): Promise<DiscoveryDiagnosticV1 | undefined> {
@@ -145,7 +156,13 @@ export async function restoreSupplierDiscoveryPreview(runId: string): Promise<bo
   return transition(async () => {
     const state = await read();
     if (!state || state.runId !== runId || state.stage !== "confirming") return false;
-    await write({ ...state, stage: "preview", updatedAt: Date.now() });
+    await write({
+      stage: "preview",
+      runId: state.runId,
+      candidates: state.candidates,
+      diagnostic: state.diagnostic,
+      updatedAt: Date.now(),
+    });
     return true;
   });
 }
@@ -166,17 +183,24 @@ export async function requireSupplierDiscoveryDocumentOrigins(runId: string, ori
   });
 }
 
-export async function completeSupplierDiscovery(runId: string, vendorId: string, name: string, count: number): Promise<boolean> {
+export async function completeSupplierDiscovery(
+  runId: string,
+  vendorId: string,
+  name: string,
+  count: number,
+  monthFallbackAll = false,
+): Promise<boolean> {
   return transition(async () => {
     const state = await read();
     if (!state || state.runId !== runId || state.stage !== "confirming") return false;
     await write({
-    stage: "complete",
-    runId,
-    vendorId: safeId(vendorId),
-    name: safeName(name),
-    count: Math.max(0, Math.min(500, Math.trunc(count))),
-    updatedAt: Date.now(),
+      stage: "complete",
+      runId,
+      vendorId: safeId(vendorId),
+      name: safeName(name),
+      count: Math.max(0, Math.min(500, Math.trunc(count))),
+      ...(monthFallbackAll ? { monthFallbackAll: true } : {}),
+      updatedAt: Date.now(),
     });
     return true;
   });
@@ -243,7 +267,13 @@ export async function getSupplierDiscoveryStatus(): Promise<DiscoveryStatusView>
       requiredOrigins: requiredCandidateOrigins(state.candidates),
     };
     case "confirming": return { stage: "connecting", name: state.candidates.displayName };
-    case "complete": return { stage: "complete", vendorId: state.vendorId, name: state.name, count: state.count };
+    case "complete": return {
+      stage: "complete",
+      vendorId: state.vendorId,
+      name: state.name,
+      count: state.count,
+      ...(state.monthFallbackAll ? { monthFallbackAll: true } : {}),
+    };
     case "failed": return {
       stage: "failed",
       message: state.message,
@@ -285,10 +315,17 @@ function parseState(value: unknown): DiscoveryState | undefined {
   }
   if (raw.stage === "preview" || raw.stage === "confirming") {
     try {
+      const fromMonth = raw.stage === "confirming" && typeof raw.fromMonth === "string"
+        ? raw.fromMonth
+        : undefined;
+      if (raw.stage === "confirming" && raw.fromMonth !== undefined && (!fromMonth || !isSyncMonth(fromMonth))) {
+        return undefined;
+      }
       return {
         stage: raw.stage,
         runId: raw.runId, candidates: parseDiscoveredSupplierCandidateSet(raw.candidates),
         diagnostic: parseDiscoveryDiagnostic(raw.diagnostic),
+        ...(fromMonth ? { fromMonth } : {}),
         updatedAt,
       };
     } catch {
@@ -299,7 +336,20 @@ function parseState(value: unknown): DiscoveryState | undefined {
   }
   if (raw.stage === "complete") {
     if (typeof raw.vendorId !== "string" || typeof raw.name !== "string" || !Number.isFinite(raw.count)) return undefined;
-    try { return { stage: raw.stage, runId: raw.runId, vendorId: safeId(raw.vendorId), name: safeName(raw.name), count: Math.max(0, Math.min(500, Math.trunc(Number(raw.count)))), updatedAt }; } catch { return undefined; }
+    if (raw.monthFallbackAll !== undefined && raw.monthFallbackAll !== true) return undefined;
+    try {
+      return {
+        stage: raw.stage,
+        runId: raw.runId,
+        vendorId: safeId(raw.vendorId),
+        name: safeName(raw.name),
+        count: Math.max(0, Math.min(500, Math.trunc(Number(raw.count)))),
+        ...(raw.monthFallbackAll === true ? { monthFallbackAll: true } : {}),
+        updatedAt,
+      };
+    } catch {
+      return undefined;
+    }
   }
   if (raw.stage === "failed" && typeof raw.message === "string") {
     try {
