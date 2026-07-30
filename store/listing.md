@@ -20,11 +20,11 @@ Collect your own supplier invoices from billing portals using your existing brow
 Ratatosk collects your own supplier invoices and receipts from vendor
 billing portals and saves them to the destination you choose.
 
-Choose Igdrasil or a local Downloads folder, connect a listed vendor, and
-select your schedule. Ratatosk then uses the session already open in Chrome to
-request that vendor's billing data, download new documents, and de-duplicate them.
-If a supplier is not listed, Find Invoices can check the page you opened and a
-small set of same-origin billing-related pages using packaged, read-only adapters.
+Choose Igdrasil or a local Downloads folder, open a supplier billing app, select
+Find Invoices, and choose your schedule. Ratatosk then uses the session already
+open in Chrome to request that vendor's billing data, download new documents,
+and de-duplicate them. Find Invoices checks the page you opened and a small set
+of same-origin billing-related pages using packaged, read-only adapters.
 Ratatosk shows the detected name, domain, candidate count, and exact sites before
 it downloads anything. A local provisional supplier is kept only after a valid
 PDF is collected. After Connect & Collect, packaged bounded continuation can
@@ -47,9 +47,9 @@ You stay in control:
   Igdrasil.
 - There is no analytics, advertising, browsing-history tracking, or sale of data.
 
-Railway is currently available as a bundled pilot. Other suppliers are verified
-from their current billing pages through Ratatosk's user-initiated generic
-discovery flow, avoiding stale private API paths.
+Suppliers are added only through Ratatosk's user-initiated discovery flow.
+Ratatosk does not preselect or advertise a bundled recipe as one of your
+suppliers.
 
 Ratatosk is open source: https://github.com/Igdrasil-AB/ratatosk
 
