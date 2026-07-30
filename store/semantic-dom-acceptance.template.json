@@ -1,0 +1,70 @@
+{
+  "schema": "ratatosk.semantic-dom-acceptance.v1",
+  "collectorVersion": "REPLACE_WITH_EXACT_VERSION",
+  "acquisitionRevision": 2,
+  "artifactSha256": "REPLACE_WITH_EXACT_64_CHARACTER_LOWERCASE_SHA256",
+  "unrelatedUserDownloadSameUrlUntouched": true,
+  "completedAt": "REPLACE_WITH_CURRENT_ISO_TIMESTAMP",
+  "cases": [
+    {
+      "siteClass": "supabase",
+      "destinationKind": "filesystem",
+      "firstRunAcceptedCount": 1,
+      "secondRunActionCount": 0,
+      "secondRunAcceptedCount": 0,
+      "cadenceRunActionCount": 0,
+      "cadenceRunAcceptedCount": 0,
+      "pageOwnedDownloadDelta": 0,
+      "closedOutcome": "collected",
+      "pass": true
+    },
+    {
+      "siteClass": "additional-semantic-supplier",
+      "destinationKind": "filesystem",
+      "firstRunAcceptedCount": 1,
+      "secondRunActionCount": 0,
+      "secondRunAcceptedCount": 0,
+      "cadenceRunActionCount": 0,
+      "cadenceRunAcceptedCount": 0,
+      "pageOwnedDownloadDelta": 0,
+      "closedOutcome": "collected",
+      "pass": true
+    },
+    {
+      "siteClass": "additional-semantic-supplier",
+      "destinationKind": "igdrasil",
+      "firstRunAcceptedCount": 1,
+      "secondRunActionCount": 0,
+      "secondRunAcceptedCount": 0,
+      "cadenceRunActionCount": 0,
+      "cadenceRunAcceptedCount": 0,
+      "pageOwnedDownloadDelta": 0,
+      "closedOutcome": "collected",
+      "pass": true
+    },
+    {
+      "siteClass": "synthetic-local-native-download",
+      "destinationKind": "filesystem",
+      "firstRunAcceptedCount": 0,
+      "secondRunActionCount": 0,
+      "secondRunAcceptedCount": 0,
+      "cadenceRunActionCount": 0,
+      "cadenceRunAcceptedCount": 0,
+      "pageOwnedDownloadDelta": 0,
+      "closedOutcome": "browser_download_unsupported",
+      "pass": true
+    },
+    {
+      "siteClass": "synthetic-local-native-download",
+      "destinationKind": "igdrasil",
+      "firstRunAcceptedCount": 0,
+      "secondRunActionCount": 0,
+      "secondRunAcceptedCount": 0,
+      "cadenceRunActionCount": 0,
+      "cadenceRunAcceptedCount": 0,
+      "pageOwnedDownloadDelta": 0,
+      "closedOutcome": "browser_download_unsupported",
+      "pass": true
+    }
+  ]
+}

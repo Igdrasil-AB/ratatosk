@@ -18,12 +18,25 @@ export default defineManifest({
   version: pkg.version,
   description:
     "Collect your own supplier invoices and receipts from vendor billing pages using your existing browser session — no passwords stored.",
-  minimum_chrome_version: "116",
+  minimum_chrome_version: "128",
   // webRequest is observation-only: a bounded listener follows the request ID
   // of a user-approved Stripe capability URL so a changed exact redirect origin
   // can be offered through the existing runtime permission flow. No headers,
   // bodies, cookies, blocking, or request modification are exposed.
-  permissions: ["storage", "alarms", "notifications", "scripting", "downloads", "activeTab", "webRequest", "sidePanel"],
+  // declarativeNetRequest uses one temporary session rule scoped to the exact
+  // disposable action tab. Chrome 128 response-header conditions let Collector
+  // stop attachment responses before a global DownloadItem exists.
+  permissions: [
+    "storage",
+    "alarms",
+    "notifications",
+    "scripting",
+    "downloads",
+    "activeTab",
+    "webRequest",
+    "declarativeNetRequest",
+    "sidePanel",
+  ],
   // Required for service-worker fetches that upload to the Igdrasil API. Keep
   // exact-origin; vendor access remains optional and is requested on connect.
   host_permissions: ["https://accounting.igdrasil.se/*"],

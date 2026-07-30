@@ -1,5 +1,6 @@
 export interface CollectorManifestBoundary {
   name?: string;
+  minimum_chrome_version?: string;
   permissions?: string[];
   host_permissions?: string[];
   optional_permissions?: string[];
@@ -13,7 +14,20 @@ export interface CollectorManifestBoundary {
 export function validateCollectorManifest(manifest: CollectorManifestBoundary): void {
   if (manifest.name !== "Ratatosk — Invoice Collector") throw new Error("unexpected Collector name");
 
-  const expected = ["activeTab", "alarms", "downloads", "notifications", "scripting", "sidePanel", "storage", "webRequest"];
+  if (manifest.minimum_chrome_version !== "128") {
+    throw new Error("Collector must require Chrome 128 for response-header download blocking");
+  }
+  const expected = [
+    "activeTab",
+    "alarms",
+    "declarativeNetRequest",
+    "downloads",
+    "notifications",
+    "scripting",
+    "sidePanel",
+    "storage",
+    "webRequest",
+  ];
   const actual = [...(manifest.permissions ?? [])].sort();
   if (!sameStringSet(actual, expected)) {
     throw new Error(`unexpected Collector permissions: ${actual.join(", ")}`);

@@ -10,14 +10,34 @@ import {
   requiresDisposableDomTab,
   runDomStepsInPage,
 } from "../../collector/src/platform/browser-dom-driver";
+import {
+  DocumentActionController,
+  removeStaleNativeDownloadGuards,
+  runSemanticDocumentOperationInPage,
+} from "../../collector/src/platform/document-action-controller";
 import { DISCOVERY_DOM_POLICY } from "../../collector/src/platform/discovery-dom-policy";
-import { DocumentPermissionRequired } from "../../src/core/errors";
+import { AuthExpired, DocumentPermissionRequired } from "../../src/core/errors";
 
 const driverSource = readFileSync("collector/src/platform/browser-dom-driver.ts", "utf8");
+const actionControllerSource = readFileSync("collector/src/platform/document-action-controller.ts", "utf8");
 const discoverySource = readFileSync("collector/src/platform/discovery.ts", "utf8");
 const observerSource = readFileSync("collector/src/platform/discovery-page-observer.ts", "utf8");
 const policySource = readFileSync("collector/src/platform/discovery-dom-policy.ts", "utf8");
 const pageRetrieval = { observedItems: 1, resolvedItems: 1, unresolvedItems: 0 };
+const emptySemanticEnumeration = {
+  ok: true,
+  kind: "enumeration",
+  directDocuments: [],
+  actions: [],
+  observedItems: 0,
+  resolvedItems: 0,
+  unresolvedItems: 0,
+  unstableItems: 0,
+  ambiguousItems: 0,
+  truncated: false,
+  navigationSteps: 0,
+  sectionObserved: false,
+} as const;
 
 describe("browser DOM boundary", () => {
   const origins = new Set(["https://vendor.example", "https://documents.example"]);
@@ -140,7 +160,7 @@ describe("browser DOM boundary", () => {
       undefined,
     )).toBe(false);
     expect(requiresDisposableDomTab(
-      [{ action: "click", selector: "button.load-more" }],
+      [{ action: "extractSemanticDownloads", as: "documents", maxActions: 8 }],
       undefined,
     )).toBe(true);
   });
@@ -167,14 +187,19 @@ describe("browser DOM boundary", () => {
       execution += 1;
       if (execution === 1) {
         return [{ result: {
-          ok: true,
-          collected: { documents: ["https://documents.example/invoices/one.pdf"] },
-          retrieval: { observedItems: 1, resolvedItems: 1, unresolvedItems: 0 },
+          ...emptySemanticEnumeration,
+          directDocuments: [{
+            url: "https://documents.example/invoices/one.pdf",
+            evidence: [],
+          }],
+          observedItems: 1,
+          resolvedItems: 1,
         } }];
       }
       return [{ result: { kind: "exhausted" } }];
     });
     vi.stubGlobal("chrome", {
+      ...actionBoundaryChromeApis(),
       tabs: {
         create,
         get: vi.fn(async () => ({
@@ -188,7 +213,7 @@ describe("browser DOM boundary", () => {
         remove: vi.fn(async () => undefined),
         onUpdated: new TestChromeEvent<Record<string, unknown>>(),
       },
-      scripting: { executeScript },
+      scripting: semanticScripting(executeScript),
     });
 
     try {
@@ -225,12 +250,11 @@ describe("browser DOM boundary", () => {
       expect(activeTabId).toBe(42);
       expect(currentUrl).toBe("https://vendor.example/billing");
       return [{ result: {
-        ok: true,
-        collected: { documents: [] },
-        retrieval: { observedItems: 0, resolvedItems: 0, unresolvedItems: 0 },
+        ...emptySemanticEnumeration,
       } }];
     });
     vi.stubGlobal("chrome", {
+      ...actionBoundaryChromeApis(),
       tabs: {
         create: vi.fn(async () => ({ id: 42, windowId: 7, url: "about:blank", status: "complete" })),
         get: vi.fn(async () => ({
@@ -244,7 +268,7 @@ describe("browser DOM boundary", () => {
         remove: vi.fn(async () => undefined),
         onUpdated: { addListener: vi.fn(), removeListener: vi.fn() },
       },
-      scripting: { executeScript },
+      scripting: semanticScripting(executeScript),
     });
 
     const driver = new BrowserDomDriver(domRecipe());
@@ -267,12 +291,11 @@ describe("browser DOM boundary", () => {
     const executeScript = vi.fn(async () => {
       expect(committed).toBe(true);
       return [{ result: {
-        ok: true,
-        collected: { documents: [] },
-        retrieval: { observedItems: 0, resolvedItems: 0, unresolvedItems: 0 },
+        ...emptySemanticEnumeration,
       } }];
     });
     vi.stubGlobal("chrome", {
+      ...actionBoundaryChromeApis(),
       tabs: {
         create: vi.fn(async () => ({
           id: 42,
@@ -304,7 +327,7 @@ describe("browser DOM boundary", () => {
         remove: vi.fn(async () => undefined),
         onUpdated,
       },
-      scripting: { executeScript },
+      scripting: semanticScripting(executeScript),
     });
 
     await new BrowserDomDriver(domRecipe()).run(
@@ -312,15 +335,20 @@ describe("browser DOM boundary", () => {
       [{ action: "extractSemanticDownloads", as: "documents", maxActions: 8 }],
     );
 
-    expect(executeScript).toHaveBeenCalledOnce();
+    expectSemanticOperationCalledOnce(executeScript);
   });
 
-  it("recovers a browser-observed document when navigation destroys the injected action context", async () => {
+  it("blocks native responses on the exact action tab without touching global downloads", async () => {
     const beforeRequest = new TestChromeEvent<Record<string, unknown>>();
     const headersReceived = new TestChromeEvent<Record<string, unknown>>();
     const beforeRedirect = new TestChromeEvent<Record<string, unknown>>();
     const downloadCreated = new TestChromeEvent<Record<string, unknown>>();
-    let execution = 0;
+    const cancel = vi.fn(async () => undefined);
+    const removeFile = vi.fn(async () => undefined);
+    const erase = vi.fn(async () => []);
+    const updateSessionRules = vi.fn(async (
+      _options: chrome.declarativeNetRequest.UpdateRuleOptions,
+    ) => undefined);
     vi.stubGlobal("chrome", {
       tabs: {
         create: vi.fn(async () => ({ id: 42, windowId: 7, status: "complete" })),
@@ -339,22 +367,40 @@ describe("browser DOM boundary", () => {
         registerContentScripts: vi.fn(async () => undefined),
         unregisterContentScripts: vi.fn(async () => undefined),
         executeScript: vi.fn(async () => {
-          execution += 1;
-          if (execution === 1) {
-            beforeRequest.emit({
-              tabId: 42,
-              url: "https://documents.example/invoices/123.pdf",
-              method: "GET",
-            });
-            headersReceived.emit({
-              tabId: 42,
-              url: "https://documents.example/invoices/123.pdf",
-              method: "GET",
-              responseHeaders: [{ name: "Content-Type", value: "application/pdf" }],
-            });
-            throw new Error("execution context was destroyed");
-          }
-          return [];
+          beforeRequest.emit({
+            requestId: "request-1",
+            tabId: 42,
+            url: "https://documents.example/invoices/123.pdf",
+            method: "GET",
+          });
+          headersReceived.emit({
+            requestId: "request-1",
+            tabId: 42,
+            url: "https://documents.example/invoices/123.pdf",
+            method: "GET",
+            responseHeaders: [
+              { name: "Content-Type", value: "application/pdf" },
+              { name: "Content-Disposition", value: 'attachment; filename="invoice.pdf"' },
+            ],
+          });
+          // DownloadItem has no tab id. These two events are intentionally
+          // indistinguishable by URL and must both remain outside Ratatosk's
+          // ownership boundary.
+          downloadCreated.emit({
+            id: 91,
+            url: "https://documents.example/invoices/123.pdf",
+            finalUrl: "https://documents.example/invoices/123.pdf",
+            mime: "application/pdf",
+            filename: "/Downloads/invoice.pdf",
+          });
+          downloadCreated.emit({
+            id: 92,
+            url: "https://documents.example/invoices/123.pdf",
+            finalUrl: "https://documents.example/invoices/123.pdf",
+            mime: "application/pdf",
+            filename: "/Downloads/unrelated-user.pdf",
+          });
+          throw new Error("execution context was destroyed");
         }),
       },
       webRequest: {
@@ -362,21 +408,249 @@ describe("browser DOM boundary", () => {
         onHeadersReceived: headersReceived,
         onBeforeRedirect: beforeRedirect,
       },
-      downloads: { onCreated: downloadCreated },
+      declarativeNetRequest: { updateSessionRules },
+      downloads: { onCreated: downloadCreated, cancel, removeFile, erase },
     });
 
     const driver = new BrowserDomDriver(domRecipe());
-    const result = await driver.run("https://vendor.example/billing", [
+    await expect(driver.run("https://vendor.example/billing", [
       { action: "extractSemanticDownloads", as: "documents", maxActions: 8 },
-    ]);
+    ])).rejects.toMatchObject({ kind: "document_action_side_effect" });
 
-    expect(result.collected.documents).toEqual(["https://documents.example/invoices/123.pdf"]);
-    expect(result.retrieval).toMatchObject({
-      completeness: "complete",
-      resolvedItems: 1,
-      unresolvedItems: 0,
+    expect(updateSessionRules.mock.calls[0]?.[0]).toMatchObject({
+      addRules: [{
+        action: { type: "block" },
+        condition: {
+          tabIds: [42],
+          responseHeaders: expect.arrayContaining([
+            { header: "content-disposition", values: ["*attachment*"] },
+          ]),
+        },
+      }],
     });
+    expect(updateSessionRules.mock.calls.at(-1)?.[0]).toMatchObject({
+      removeRuleIds: expect.any(Array),
+    });
+    expect(cancel).not.toHaveBeenCalled();
+    expect(removeFile).not.toHaveBeenCalled();
+    expect(erase).not.toHaveBeenCalled();
     expect(beforeRequest.listenerCount).toBe(0);
+    expect(downloadCreated.listenerCount).toBe(0);
+  });
+
+  it("removes only stale native-response guards after a worker restart", async () => {
+    const updateSessionRules = vi.fn(async (
+      _options: chrome.declarativeNetRequest.UpdateRuleOptions,
+    ) => undefined);
+    vi.stubGlobal("chrome", {
+      declarativeNetRequest: {
+        getSessionRules: vi.fn(async () => [
+          nativeDownloadGuardRule(42),
+          {
+            id: 99,
+            priority: 1,
+            action: { type: "block" },
+            condition: { tabIds: [99], urlFilter: "unrelated" },
+          },
+        ]),
+        updateSessionRules,
+      },
+    });
+
+    await removeStaleNativeDownloadGuards();
+
+    expect(updateSessionRules).toHaveBeenCalledWith({ removeRuleIds: [42] });
+  });
+
+  it("rejects a stable semantic identity repeated across continuation pages", async () => {
+    const actionId = "a".repeat(32);
+    let enumeration = 0;
+    const executeScript = vi.fn(async (details: { func?: unknown }) => {
+      if (details.func === runSemanticDocumentOperationInPage) {
+        enumeration += 1;
+        return [{ result: {
+          ...emptySemanticEnumeration,
+          actions: [{
+            actionId,
+            vendorInvoiceId: `semantic-${actionId}`,
+            evidence: [],
+          }],
+          observedItems: 1,
+          resolvedItems: 1,
+        } }];
+      }
+      return [{ result: { kind: "advanced" } }];
+    });
+    vi.stubGlobal("chrome", {
+      ...actionBoundaryChromeApis(),
+      tabs: {
+        create: vi.fn(async () => ({ id: 42, windowId: 7, url: "about:blank", status: "complete" })),
+        get: vi.fn(async () => ({
+          id: 42,
+          windowId: 7,
+          url: "https://vendor.example/billing",
+          status: "complete",
+        })),
+        query: vi.fn(async () => [{ id: 11, windowId: 7, active: true, status: "complete" }]),
+        update: vi.fn(async (tabId: number, properties: chrome.tabs.UpdateProperties) => ({
+          id: tabId,
+          windowId: 7,
+          url: properties.url ?? "https://vendor.example/billing",
+          status: "complete",
+        })),
+        remove: vi.fn(async () => undefined),
+        onUpdated: new TestChromeEvent<Record<string, unknown>>(),
+      },
+      scripting: semanticScripting(executeScript),
+    });
+
+    await expect(new BrowserDomDriver(domRecipe()).run(
+      "https://vendor.example/billing",
+      [{ action: "extractSemanticDownloads", as: "documents", maxActions: 8 }],
+      { mode: "auto", maxActions: 1, maxDocuments: 100, timeoutMs: 30_000, allowScroll: true },
+    )).rejects.toMatchObject({ kind: "document_action_ambiguous" });
+    expect(enumeration).toBe(2);
+  });
+
+  it("fails closed before activation when semantic identities are ambiguous or unstable", async () => {
+    for (const counts of [
+      { unstableItems: 1, ambiguousItems: 0, kind: "unstable_action_identity" },
+      { unstableItems: 0, ambiguousItems: 2, kind: "document_action_ambiguous" },
+    ]) {
+      vi.stubGlobal("chrome", {
+        ...actionBoundaryChromeApis(),
+        scripting: {
+          executeScript: vi.fn(async () => [{ result: {
+            ...emptySemanticEnumeration,
+            observedItems: counts.unstableItems + counts.ambiguousItems,
+            unresolvedItems: counts.unstableItems + counts.ambiguousItems,
+            unstableItems: counts.unstableItems,
+            ambiguousItems: counts.ambiguousItems,
+          } }]),
+        },
+      });
+      const controller = new DocumentActionController(origins, "vendor");
+      await expect(controller.enumerateOnTab(
+        7,
+        8,
+        DISCOVERY_DOM_POLICY,
+        Date.now() + 2_000,
+      )).rejects.toMatchObject({ kind: counts.kind });
+    }
+  });
+
+  it("preserves semantic authentication outcomes and refuses an unarmed page observer", async () => {
+    vi.stubGlobal("chrome", {
+      ...actionBoundaryChromeApis(),
+      scripting: {
+        registerContentScripts: vi.fn(async () => { throw new Error("unavailable"); }),
+        unregisterContentScripts: vi.fn(async () => undefined),
+        executeScript: vi.fn(async () => [{ result: { ok: false, code: "auth_expired" } }]),
+      },
+    });
+    const controller = new DocumentActionController(origins, "vendor");
+
+    await expect(controller.registerPageObserver("https://vendor.example"))
+      .rejects.toMatchObject({ kind: "document_action_ambiguous" });
+    await expect(controller.enumerateOnTab(
+      7,
+      8,
+      DISCOVERY_DOM_POLICY,
+      Date.now() + 2_000,
+    )).rejects.toBeInstanceOf(AuthExpired);
+  });
+
+  it("does not arm or activate a semantic action after cancellation", async () => {
+    const registerContentScripts = vi.fn(async () => undefined);
+    const executeScript = vi.fn(async () => []);
+    vi.stubGlobal("chrome", {
+      ...actionBoundaryChromeApis(),
+      scripting: {
+        registerContentScripts,
+        unregisterContentScripts: vi.fn(async () => undefined),
+        executeScript,
+      },
+    });
+    const controller = new DocumentActionController(origins, "vendor");
+    const abort = new AbortController();
+    abort.abort();
+
+    await expect(controller.resolve(
+      "https://vendor.example/billing",
+      "a".repeat(32),
+      DISCOVERY_DOM_POLICY,
+      abort.signal,
+    )).rejects.toMatchObject({ name: "AbortError" });
+    expect(registerContentScripts).not.toHaveBeenCalled();
+    expect(executeScript).not.toHaveBeenCalled();
+  });
+
+  it("counts exactly one privacy-safe activation at the shared document-action boundary", async () => {
+    let currentUrl = "about:blank";
+    const onDocumentAction = vi.fn();
+    const executeScript = vi.fn(async (details: { func?: unknown }) => {
+      if (details.func === runSemanticDocumentOperationInPage) {
+        return [{ result: {
+          ok: true,
+          kind: "url",
+          url: "https://documents.example/invoices/one.pdf",
+        } }];
+      }
+      return [{ result: undefined }];
+    });
+    vi.stubGlobal("chrome", {
+      ...actionBoundaryChromeApis(),
+      tabs: {
+        create: vi.fn(async () => ({ id: 42, windowId: 7, url: "about:blank", status: "complete" })),
+        get: vi.fn(async (tabId: number) => ({
+          id: tabId,
+          windowId: 7,
+          url: currentUrl,
+          status: "complete",
+        })),
+        query: vi.fn(async () => [{ id: 11, windowId: 7, active: true, status: "complete" }]),
+        update: vi.fn(async (tabId: number, properties: chrome.tabs.UpdateProperties) => {
+          if (properties.url) currentUrl = properties.url;
+          return { id: tabId, windowId: 7, url: currentUrl, status: "complete" };
+        }),
+        remove: vi.fn(async () => undefined),
+        onUpdated: new TestChromeEvent<Record<string, unknown>>(),
+      },
+      scripting: semanticScripting(executeScript),
+    });
+    const controller = new DocumentActionController(origins, "vendor", onDocumentAction);
+
+    await expect(controller.resolve(
+      "https://vendor.example/billing",
+      "a".repeat(32),
+      DISCOVERY_DOM_POLICY,
+    )).resolves.toEqual({
+      kind: "url",
+      url: "https://documents.example/invoices/one.pdf",
+    });
+    expect(onDocumentAction).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an untrusted direct-document origin returned by page code", async () => {
+    vi.stubGlobal("chrome", {
+      ...actionBoundaryChromeApis(),
+      scripting: {
+        executeScript: vi.fn(async () => [{ result: {
+          ...emptySemanticEnumeration,
+          directDocuments: [{ url: "https://attacker.example/invoice.pdf", evidence: [] }],
+          observedItems: 1,
+          resolvedItems: 1,
+        } }]),
+      },
+    });
+    const controller = new DocumentActionController(origins, "vendor");
+
+    await expect(controller.enumerateOnTab(
+      7,
+      8,
+      DISCOVERY_DOM_POLICY,
+      Date.now() + 2_000,
+    )).rejects.toThrow(/result is invalid/);
   });
 
   it("enforces one retained inline-PDF budget across page passes", async () => {
@@ -555,16 +829,22 @@ describe("browser DOM boundary", () => {
   });
 
   it("allows only HTTPS navigation from supplier pagination controls", () => {
-    expect(driverSource).toContain('if (next.protocol !== "https:") return { kind: "failed" };');
-    expect(driverSource).not.toContain('startsWith("javascript:")');
+    expect(actionControllerSource).toContain('if (next.protocol !== "https:") return { kind: "failed" };');
+    expect(actionControllerSource).not.toContain('startsWith("javascript:")');
   });
 
   it("never clicks form-backed semantic controls", () => {
-    expect(driverSource).toMatch(/if \(form\) \{[\s\S]{0,400}?continue;\n\s+\}/);
+    expect(actionControllerSource).toContain('element.closest("form")');
+    expect(actionControllerSource).toContain('candidate.control.closest("form")');
   });
 
-  it("uses one run-scoped passive observer instead of per-control browser monkeypatches", () => {
-    expect(driverSource).toContain("snapshotDocuments");
+  it("uses one action-scoped controller instead of promoting passive browser observations", () => {
+    expect(driverSource).toContain("DocumentActionController");
+    expect(actionControllerSource).toContain("beginAction");
+    expect(actionControllerSource).toContain("snapshotNativeDownloadAttempted");
+    expect(actionControllerSource).toContain("updateSessionRules");
+    expect(actionControllerSource).not.toContain("chrome.downloads.cancel");
+    expect(actionControllerSource).not.toContain("snapshotDocuments()");
     expect(driverSource).not.toContain("navigator.sendBeacon =");
     expect(driverSource).not.toContain("HTMLFormElement.prototype.submit =");
     expect(driverSource).not.toContain("HTMLAnchorElement.prototype.click =");
@@ -573,8 +853,10 @@ describe("browser DOM boundary", () => {
     expect(observerSource).toContain("snapshotActionDocuments");
     expect(observerSource).toContain("beginDocumentAction");
     expect(observerSource).toContain("originalWindowOpen");
-    expect(driverSource).toContain("observer?.beginDocumentAction");
-    expect(driverSource).toContain("observer?.endDocumentAction");
+    expect(observerSource).toContain("captureActionNavigation");
+    expect(observerSource).toContain("event.preventDefault()");
+    expect(actionControllerSource).toContain("beginDocumentAction");
+    expect(actionControllerSource).toContain("endDocumentAction");
     expect(observerSource).toContain("originalCreateObjectURL");
   });
 
@@ -587,8 +869,8 @@ describe("browser DOM boundary", () => {
   });
 
   it("requires generic download controls to sit in invoice-shaped context", () => {
-    expect(driverSource).toContain("invoiceContext");
-    expect(driverSource).toContain("strongDocumentLabel");
+    expect(actionControllerSource).toContain("invoiceContext");
+    expect(actionControllerSource).toContain("strongDocumentLabel");
     expect(policySource).toContain("(?:delete|remove|cancel|pay|purchase|checkout|upgrade|downgrade|authorize|logout)");
   });
 
@@ -596,7 +878,7 @@ describe("browser DOM boundary", () => {
     expect(policySource).toContain('a:not([href])');
     expect(policySource).toContain('data-test');
     expect(policySource).toContain('data-testid');
-    for (const source of [discoverySource, driverSource]) {
+    for (const source of [discoverySource, actionControllerSource]) {
       expect(source).toContain("DISCOVERY_DOM_POLICY");
       expect(source).toContain('querySelector("svg,[icon],[name],[data-lucide]")');
       expect(source.indexOf('icon?.getAttribute("class")')).toBeLessThan(
@@ -615,23 +897,23 @@ describe("browser DOM boundary", () => {
   });
 
   it("reveals an invoice section before enumerating its per-row download controls", () => {
-    expect(driverSource).toContain("revealInvoiceSection");
-    expect(driverSource).toMatch(/sectionObserved = await revealInvoiceSection\(\)[\s\S]{0,240}?availableControls = downloadControls\(\)/);
+    expect(actionControllerSource).toContain("revealInvoiceSection");
+    expect(actionControllerSource).toMatch(/await revealInvoiceSection\(\)[\s\S]{0,240}?controls = downloadControls\(\)/);
   });
 
   it("waits for real download controls instead of treating an invoice section as ready", () => {
-    expect(driverSource).toContain("waitForDownloadControls");
-    expect(driverSource).toMatch(/await waitForDownloadControls\(\)[\s\S]{0,3500}?availableControls/);
-    expect(driverSource).toContain("stableControlCountSince");
+    expect(actionControllerSource).toContain("waitForControls");
+    expect(actionControllerSource).toMatch(/await waitForControls\(\)[\s\S]{0,3500}?candidates/);
+    expect(actionControllerSource).toContain("stableSince");
     expect(discoverySource).toContain("explicitDownloadAction");
     expect(discoverySource).toContain("semanticQuietTimer");
     expect(discoverySource).not.toMatch(/const semanticLabel = \/\(\?:download\|save\|pdf\|receipt\|invoice/);
   });
 
-  it("dispatches custom no-href anchor controls instead of swallowing their event", () => {
-    expect(driverSource).not.toContain("HTMLAnchorElement.prototype.click = function captureAnchorClick");
-    expect(driverSource).toMatch(/control instanceof HTMLAnchorElement && control\.href[\s\S]{0,700}?continue;/);
-    expect(driverSource).toContain("control.click()");
+  it("enumerates direct anchors without activating them and resolves no-href controls later", () => {
+    expect(actionControllerSource).not.toContain("HTMLAnchorElement.prototype.click = function captureAnchorClick");
+    expect(actionControllerSource).toContain("const directUrl");
+    expect(actionControllerSource).toContain("candidate.control.click()");
   });
 
   it("continues through lazy DOM content even when the first pass is empty", () => {
@@ -640,19 +922,33 @@ describe("browser DOM boundary", () => {
   });
 
   it("waits for asynchronous invoice generation instead of using a fixed click delay", () => {
-    expect(driverSource).not.toContain("setTimeout(resolve, 600)");
-    expect(driverSource).toContain("actionProducedDocument");
-    expect(driverSource).toContain("await snapshotActionDocuments(metadata)");
-    expect(driverSource).toContain("semanticCaptureDeadline");
+    expect(actionControllerSource).not.toContain("setTimeout(resolve, 600)");
+    expect(actionControllerSource).toContain("observer.snapshotActionDocuments()");
+    expect(actionControllerSource).toContain("actionDeadline");
     expect(observerSource).toMatch(
       /beginDocumentAction\(\): void \{[\s\S]{0,180}?actionDocuments\.length = 0;[\s\S]{0,120}?actionDocumentKeys\.clear\(\)/,
     );
   });
 
   it("applies the action cap after excluding view-only invoice controls", () => {
-    expect(driverSource).toMatch(/const downloadControls =[\s\S]{0,1600}?return explicit \|\| contextualIcon/);
-    expect(driverSource).toContain("controlFingerprint");
-    expect(driverSource).toMatch(/for \(let actionIndex[\s\S]{0,500}?downloadControls\(\)/);
+    expect(actionControllerSource).toMatch(/const downloadControls =[\s\S]{0,1600}?return explicit \|\| contextualIcon/);
+    expect(actionControllerSource).toContain("stableMaterial");
+    expect(actionControllerSource).toContain("operation.maximumActions");
+  });
+
+  it("never derives a cross-run action identity from presentation text or row position", () => {
+    const start = actionControllerSource.indexOf("const stableMaterial");
+    const end = actionControllerSource.indexOf("const digest", start);
+    const identityPolicy = actionControllerSource.slice(start, end);
+
+    expect(identityPolicy).toContain("explicitAttribute");
+    expect(identityPolicy).toContain("invoiceNumber");
+    expect(identityPolicy).toContain("datedAmount");
+    expect(identityPolicy).toContain("stableAttributes");
+    expect(identityPolicy).not.toContain("row.textContent");
+    expect(identityPolicy).not.toContain("labelOf(element)");
+    expect(identityPolicy).not.toContain("columnContextOf(element)");
+    expect(driverSource).toContain('throw new DocumentActionFailed("document_action_ambiguous"');
   });
 
   it("captures invoice-shaped blob XHRs even without a PDF content type", () => {
@@ -663,28 +959,28 @@ describe("browser DOM boundary", () => {
   });
 
   it("captures click-generated PDF blob anchors instead of discarding their URLs", () => {
-    expect(driverSource).toContain('target.protocol === "blob:"');
-    expect(driverSource).toMatch(/window\.fetch\(target\.toString\(\)\)[\s\S]{0,180}?capturePdfBlob/);
+    expect(actionControllerSource).toContain('target.protocol === "blob:"');
+    expect(actionControllerSource).toContain("capturePdfBlob");
     expect(observerSource).toContain("wrappedCreateObjectURL");
   });
 
   it("materializes a direct blob-backed anchor before treating it as a URL", () => {
-    expect(driverSource).toMatch(
-      /control instanceof HTMLAnchorElement && control\.href[\s\S]{0,400}?target\.protocol === "blob:"[\s\S]{0,300}?capturePdfBlob/,
+    expect(actionControllerSource).toMatch(
+      /candidate\.control instanceof HTMLAnchorElement[\s\S]{0,400}?target\.protocol === "blob:"[\s\S]{0,400}?capturePdfBlob/,
     );
   });
 
   it("marks a recognized continuation control that does not advance as failed", () => {
-    expect(driverSource).toMatch(
+    expect(actionControllerSource).toMatch(
       /control instanceof HTMLElement[\s\S]{0,220}?kind: "advanced"[\s\S]{0,100}?kind: "failed"/,
     );
   });
 
   it("allows a verified download handler to mint its document without faking request outcomes", () => {
-    expect(driverSource).not.toContain('if (method !== "GET") return new Response(null, { status: 204 })');
-    expect(driverSource).not.toContain('this.dispatchEvent(new ProgressEvent("load"))');
-    expect(driverSource).not.toContain('this.dispatchEvent(new ProgressEvent("loadend"))');
-    expect(driverSource).toContain("control.click()");
+    expect(actionControllerSource).not.toContain('if (method !== "GET") return new Response(null, { status: 204 })');
+    expect(actionControllerSource).not.toContain('this.dispatchEvent(new ProgressEvent("load"))');
+    expect(actionControllerSource).not.toContain('this.dispatchEvent(new ProgressEvent("loadend"))');
+    expect(actionControllerSource).toContain("candidate.control.click()");
   });
 
   it("waits for each revealed billing tier to mount instead of racing one mutation", async () => {
@@ -693,8 +989,8 @@ describe("browser DOM boundary", () => {
     // before the next tier exists.
     const page = stubSemanticPage();
     try {
-      const result = await runDomStepsInPage(
-        [{ action: "extractSemanticDownloads", as: "documents", maxActions: 8 }],
+      const result = await runSemanticDocumentOperationInPage(
+        { kind: "enumerate", maximumActions: 8 },
         ["https://vendor.example"],
         DISCOVERY_DOM_POLICY,
         Date.now() + 20_000,
@@ -702,7 +998,8 @@ describe("browser DOM boundary", () => {
 
       expect(result).toMatchObject({
         ok: true,
-        collected: { documents: ["https://vendor.example/invoices/one.pdf"] },
+        kind: "enumeration",
+        directDocuments: [{ url: "https://vendor.example/invoices/one.pdf" }],
       });
       expect(page.clicked).toEqual(["Open profile menu", "Settings", "Billing"]);
     } finally {
@@ -715,12 +1012,11 @@ describe("browser DOM boundary", () => {
     // requested surface mounted. Demanding the exact path back would strand
     // every such supplier on a navigation timeout.
     const executeScript = vi.fn(async () => [{ result: {
-      ok: true,
-      collected: { documents: [] },
-      retrieval: { observedItems: 0, resolvedItems: 0, unresolvedItems: 0 },
+      ...emptySemanticEnumeration,
     } }]);
     let committedUrl = "about:blank";
     vi.stubGlobal("chrome", {
+      ...actionBoundaryChromeApis(),
       tabs: {
         create: vi.fn(async () => ({ id: 42, windowId: 7, url: "about:blank", status: "complete" })),
         get: vi.fn(async () => ({ id: 42, windowId: 7, url: committedUrl, status: "complete" })),
@@ -733,7 +1029,7 @@ describe("browser DOM boundary", () => {
         remove: vi.fn(async () => undefined),
         onUpdated: new TestChromeEvent<Record<string, unknown>>(),
       },
-      scripting: { executeScript },
+      scripting: semanticScripting(executeScript),
     });
 
     await new BrowserDomDriver(domRecipe()).run(
@@ -741,7 +1037,7 @@ describe("browser DOM boundary", () => {
       [{ action: "extractSemanticDownloads", as: "documents", maxActions: 8 }],
     );
 
-    expect(executeScript).toHaveBeenCalledOnce();
+    expectSemanticOperationCalledOnce(executeScript);
   });
 });
 
@@ -850,6 +1146,71 @@ function stubDomRun(inlinePdf: string): void {
       } }]),
     },
   });
+}
+
+function actionBoundaryChromeApis(): {
+  webRequest: {
+    onBeforeRequest: TestChromeEvent<Record<string, unknown>>;
+    onHeadersReceived: TestChromeEvent<Record<string, unknown>>;
+    onBeforeRedirect: TestChromeEvent<Record<string, unknown>>;
+  };
+  downloads: {
+    onCreated: TestChromeEvent<Record<string, unknown>>;
+    cancel: ReturnType<typeof vi.fn>;
+    removeFile: ReturnType<typeof vi.fn>;
+    erase: ReturnType<typeof vi.fn>;
+  };
+  declarativeNetRequest: {
+    updateSessionRules: ReturnType<typeof vi.fn>;
+  };
+} {
+  return {
+    webRequest: {
+      onBeforeRequest: new TestChromeEvent<Record<string, unknown>>(),
+      onHeadersReceived: new TestChromeEvent<Record<string, unknown>>(),
+      onBeforeRedirect: new TestChromeEvent<Record<string, unknown>>(),
+    },
+    downloads: {
+      onCreated: new TestChromeEvent<Record<string, unknown>>(),
+      cancel: vi.fn(async () => undefined),
+      removeFile: vi.fn(async () => undefined),
+      erase: vi.fn(async () => []),
+    },
+    declarativeNetRequest: {
+      updateSessionRules: vi.fn(async (
+        _options: chrome.declarativeNetRequest.UpdateRuleOptions,
+      ) => undefined),
+    },
+  };
+}
+
+function nativeDownloadGuardRule(tabId: number): chrome.declarativeNetRequest.Rule {
+  return {
+    id: tabId,
+    priority: 1,
+    action: { type: "block" as chrome.declarativeNetRequest.RuleActionType },
+    condition: {
+      tabIds: [tabId],
+      urlFilter: "|https",
+      resourceTypes: [],
+      responseHeaders: [
+        { header: "content-disposition", values: ["*attachment*"] },
+      ],
+    },
+  } as unknown as chrome.declarativeNetRequest.Rule;
+}
+
+function semanticScripting(executeScript: ReturnType<typeof vi.fn>) {
+  return {
+    registerContentScripts: vi.fn(async () => undefined),
+    unregisterContentScripts: vi.fn(async () => undefined),
+    executeScript,
+  };
+}
+
+function expectSemanticOperationCalledOnce(executeScript: ReturnType<typeof vi.fn>): void {
+  expect(executeScript.mock.calls.filter(([details]) =>
+    details.func === runSemanticDocumentOperationInPage)).toHaveLength(1);
 }
 
 class TestChromeEvent<T> {

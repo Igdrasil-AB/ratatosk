@@ -47,11 +47,12 @@ alarm → service-worker → collector.runAllConnected()
   └─ per vendor: engine.streamVendor(recipe, ctx, strategies, emit)
         1. auth evidence     API predicate + final redirect, or exact DOM list
         2. resolveScopes     recipe.config → [{}] or one scope per workspace
-        3. strategy.list     enumerate bounded API/HTML/DOM pages → refs + traversal proof
+        3. strategy.list     observationally enumerate bounded pages → stable refs + traversal proof
         4. month boundary    for an explicit manual range, keep only refs with a trusted issue month
         5. preflight         reject incomplete discovered-candidate paths before delivery
-        6. dedup             idempotencyKey(company, source, invoiceId)
-        7. strategy.fetch    download PDF bytes in bounded ordered batches
+        6. reserve identity  claim every equivalent company/source/invoice key
+        7. strategy.fetch    resolve one unseen action or fetch PDF bytes
+        8. validate          enforce byte cap and PDF signature; claim content identity
   └─ sink.send(doc) through one exclusive commit lane
   └─ seen.add(key) + ledger receipt after the sink accepts
   └─ discovery admission callback only after durable dedup evidence
@@ -115,9 +116,21 @@ order. The current policy is:
 This is a speculate → elect → commit design. Route and candidate evidence may be
 gathered speculatively. Ranking elects a deterministic candidate. A full DOM
 canary and every destination write remain serialized because those paths can
-activate a download control or mutate extension state. Search stops after the
+resolve a document or mutate extension state. Search stops after the
 current two-route wave once enough strong candidates exist, so at most one
 already-running route is redundant.
+
+DOM document acquisition is a transaction, not part of listing. Listing may
+return a direct HTTPS URL or a run-scoped opaque action handle, but it cannot
+activate a document-producing control. The core derives and claims the stable
+supplier identity first. Only then may Collector's one Chrome-specific
+document-action controller re-locate exactly one unambiguous control in a
+disposable exact-origin tab. The controller returns bounded PDF bytes or an
+approved fetchable URL. A correlated Chrome-native download is cancelled,
+removed, erased, and reported as a closed unsupported/side-effect outcome; its
+URL is never promoted as delivery proof. Uncorrelated downloads are ignored and
+never inspected or modified. Claims are released on rejection or cancellation,
+and accepted identities are skipped before later runs reach the resolver.
 
 Candidate election is based on retrieval completeness, not a minimum invoice
 count. One resolved invoice is a valid result when the API reports no next page,

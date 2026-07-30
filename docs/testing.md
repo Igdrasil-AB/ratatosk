@@ -22,11 +22,10 @@ One iteration must change only the narrowest failed boundary:
    boundary or the complete live acceptance passes. Revert speculative changes
    that do neither.
 
-The release acceptance is two consecutive runs against the same known invoice
-set: the first delivers every expected unique document, and the second delivers
-zero new documents. Record the expected, delivered, and second-run counts. Only
-after this passes may the version/discovery-engine identity be bumped, the final
-build reloaded once more, and the distributable ZIP created.
+The release acceptance covers the first run, an immediate second run, and one
+real configured cadence. The first delivers every expected unique document;
+both later runs activate zero already-accepted controls and deliver zero new
+documents. All three must add zero page-owned Chrome downloads.
 
 Use a dedicated vendor test account with synthetic, non-sensitive invoices. Do
 not use a personal account, customer account, production token, or real financial
@@ -42,10 +41,12 @@ npm run build:collector
 Open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and
 select `dist/collector`.
 
-Confirm the loaded manifest has `activeTab`, observation-only `webRequest`, and
-optional (not install-time) `tabs` metadata access, but no `webRequestBlocking`,
-`debugger`, cookies, or `<all_urls>` permission. Its optional HTTPS host envelope must grant no site
-access until an exact origin is approved.
+Confirm the loaded manifest has `activeTab`, observation-only `webRequest`,
+response-header-only `declarativeNetRequest`, and optional (not install-time)
+`tabs` metadata access, but no `webRequestBlocking`, `debugger`, cookies, or
+`<all_urls>` permission. Its optional HTTPS host envelope must grant no site
+access until an exact origin is approved. Confirm Chrome 128 or later is used;
+the temporary response-header blocker depends on that minimum version.
 
 ## 2. Choose a destination
 
@@ -98,6 +99,34 @@ finish before the month choice appears, and **Connect & Collect** must retain th
 choice across the permission prompt. If the supplier API accepts a date query,
 also confirm its recipe uses the closed run variables; the post-list
 supplier-wide decision remains the acceptance check.
+
+For a semantic DOM supplier, copy the redacted diagnostic after each run and
+record `counts.documentActions`. Also record the count of page-owned downloads
+before and after each run without retaining paths, filenames, URLs, or History
+rows. A Chrome-native supplier download is never a Ratatosk success even if its
+URL was observed. The immediate second run and configured-cadence diagnostic
+must both report zero document actions.
+
+## Transactional semantic-DOM release matrix
+
+Before a Collector release, use the exact unpacked build and complete:
+
+- Supabase-class semantic supplier with the filesystem destination: first run,
+  immediate second run, and one real configured cadence.
+- One additional authorized semantic supplier with both filesystem and
+  Igdrasil destinations.
+- The synthetic local native-download archetype with both destinations. It
+  must close as `browser_download_unsupported`, accept nothing, leave no file,
+  and not touch an unrelated user download.
+- Permission denial, cancellation, invalid/oversized PDF, controlled URL, and
+  bounded blob cases.
+
+Copy `store/semantic-dom-acceptance.template.json` to the release receipt only
+after observing the results. Use only its closed fields. `npm run
+validate:collector-release` checks the exact package version, acquisition
+revision, freshness, required destination/site classes, first-run acceptance,
+zero second/cadence actions and additions, and zero page-owned download delta.
+The command deliberately fails when the receipt is absent.
 
 For an unsupported supplier, open its signed-in home or billing page and select
 **Search This App**. Confirm Chrome names only that exact site, the active tab is

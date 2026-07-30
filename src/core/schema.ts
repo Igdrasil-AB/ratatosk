@@ -246,7 +246,6 @@ const NetworkListSpec = z
 
 const DomStep = z.union([
   z.object({ action: z.literal("waitFor"), selector: z.string(), timeoutMs: z.number().int().optional() }).strict(),
-  z.object({ action: z.literal("click"), selector: z.string() }).strict(),
   z.object({ action: z.literal("extractAll"), selector: z.string(), attr: z.string(), as: z.string() }).strict(),
   z.object({
     action: z.literal("extractSemanticDownloads"),

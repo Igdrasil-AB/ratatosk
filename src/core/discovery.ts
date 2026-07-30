@@ -335,7 +335,9 @@ export function assertDiscoveredRecipePolicy(recipe: VendorRecipe, primaryOrigin
     if (safeEntryUrl(list.open) !== list.open) throw new Error("DOM discovery page cannot contain query, fragment, or credential-like path data");
     if (list.steps.length < 1 || list.steps.length > 4) throw new Error("DOM discovery has too many steps");
     for (const step of list.steps) {
-      if (step.action === "click") throw new Error("discovered recipes cannot click page controls automatically");
+      if ((step as { action: string }).action === "click") {
+        throw new Error("discovered recipes cannot click page controls automatically");
+      }
       if ("selector" in step && step.selector.length > 400) throw new Error("DOM selector is too large");
       if (step.action === "waitFor" && (step.timeoutMs ?? 0) > 10_000) throw new Error("DOM wait exceeds the discovery budget");
       if (step.action === "extractAll" && step.attr !== "href") throw new Error("DOM discovery may extract only document links");

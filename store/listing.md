@@ -119,6 +119,13 @@ user to approve that origin and retry. It does not read request headers, cookies
 or response bodies and cannot block or modify traffic; `webRequestBlocking` is
 not requested.
 
+**declarativeNetRequest** — Installs a temporary, tab-scoped blocking rule only
+while Ratatosk activates a reviewed invoice control in its disposable supplier
+tab. The rule matches attachment or binary response headers and stops that
+response before Chrome creates a browser download. It never applies to another
+tab, does not inspect response bodies or cookies, and is removed when the action
+ends. Ratatosk never cancels or deletes global downloads.
+
 **Optional host permissions** — Requested separately when the user connects a
 vendor or selects Find Invoices. The manifest declares an optional HTTPS
 envelope so previously unknown suppliers are eligible, but it grants no access at

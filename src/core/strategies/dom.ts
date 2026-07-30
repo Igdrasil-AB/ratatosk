@@ -32,18 +32,34 @@ export interface DomDocumentObservation {
   evidence: InvoiceMetadataEvidence[];
 }
 
+export interface DomDocumentAction {
+  /** Stable, supplier-scoped identity derived before the action executes. */
+  vendorInvoiceId: string;
+  /** Random, run-scoped capability. It is meaningful only to this driver instance. */
+  handle: string;
+  evidence?: InvoiceMetadataEvidence[];
+}
+
 export interface DomDriverRunResult {
   collected: Record<string, string[]>;
   documents?: DomDocumentObservation[];
+  actions?: DomDocumentAction[];
   retrieval: RetrievalProof;
 }
+
+export type DomResolvedDocument =
+  | { kind: "url"; url: string }
+  | { kind: "bytes"; bytes: ArrayBuffer; contentType: string };
 
 /** Implemented by the platform, backed by a real browser tab. */
 export interface DomDriver {
   /** Open `url`, run `steps`, and return the variables collected by `extractAll`. */
   run(url: string, steps: DomStep[], continuation?: DomContinuationSpec): Promise<DomDriverRunResult>;
+  /** Resolve one previously enumerated semantic action after the engine owns its identity claim. */
+  resolve?(handle: string, signal?: AbortSignal): Promise<DomResolvedDocument>;
   /** Fetch a URL as bytes using the live session (delegates to credentialed fetch). */
   download(url: string): Promise<{ bytes: ArrayBuffer; contentType: string }>;
+  dispose?(): Promise<void>;
 }
 
 const DEFAULT_FILENAME = "{vendorId}-{issuedAt}-{vendorInvoiceId}.pdf";
@@ -52,7 +68,7 @@ export function makeDomStrategy(driver: DomDriver): Strategy {
   return {
     async list(recipe, _vars, _ctx) {
       const spec = (recipe.invoices as DomInvoices).list;
-      const { collected, documents = [], retrieval } = await driver.run(spec.open, spec.steps, spec.continuation);
+      const { collected, documents = [], actions = [], retrieval } = await driver.run(spec.open, spec.steps, spec.continuation);
       const hrefs = collected[spec.hrefsFrom];
       if (!hrefs) throw new SelectorMiss(`DOM step never collected "${spec.hrefsFrom}"`, recipe.id);
       const evidenceByUrl = new Map<string, InvoiceMetadataEvidence[]>();
@@ -95,11 +111,22 @@ export function makeDomStrategy(driver: DomDriver): Strategy {
       for (const { legacyVendorInvoiceId } of refs.values()) {
         legacyCounts.set(legacyVendorInvoiceId, (legacyCounts.get(legacyVendorInvoiceId) ?? 0) + 1);
       }
-      const unique = [...refs.values()].map(({ ref, legacyVendorInvoiceId }) => (
+      const uniqueLinks = [...refs.values()].map(({ ref, legacyVendorInvoiceId }) => (
         legacyVendorInvoiceId === ref.vendorInvoiceId || legacyCounts.get(legacyVendorInvoiceId) !== 1
           ? ref
           : { ...ref, identityAliases: [legacyVendorInvoiceId] }
       ));
+      const actionRefs = actions.map((action): InvoiceRef => ({
+        vendorInvoiceId: action.vendorInvoiceId,
+        resolution: { kind: "semantic_action", handle: action.handle },
+        ...(action.evidence?.length ? { metadataEvidence: action.evidence } : {}),
+      }));
+      const identities = new Set<string>();
+      const unique = [...uniqueLinks, ...actionRefs].filter((ref) => {
+        if (identities.has(ref.vendorInvoiceId)) return false;
+        identities.add(ref.vendorInvoiceId);
+        return true;
+      });
       return createInvoiceListResult(unique, {
         ...retrieval,
         // The driver observes raw controls/links. Multiple presentation URLs
@@ -111,9 +138,19 @@ export function makeDomStrategy(driver: DomDriver): Strategy {
       });
     },
 
-    async fetchDocument(recipe, ref, _vars, _ctx): Promise<RawDocument> {
-      if (!ref.documentUrl) throw new DocumentNotFound(ref.vendorInvoiceId, recipe.id);
-      const { bytes, contentType } = await driver.download(ref.documentUrl);
+    async fetchDocument(recipe, ref, _vars, _ctx, signal): Promise<RawDocument> {
+      let materialized: { bytes: ArrayBuffer; contentType: string };
+      if (ref.resolution?.kind === "semantic_action") {
+        if (!driver.resolve) throw new DocumentNotFound(ref.vendorInvoiceId, recipe.id);
+        const resolved = await driver.resolve(ref.resolution.handle, signal);
+        materialized = resolved.kind === "bytes"
+          ? { bytes: resolved.bytes, contentType: resolved.contentType }
+          : await driver.download(resolved.url);
+      } else {
+        if (!ref.documentUrl) throw new DocumentNotFound(ref.vendorInvoiceId, recipe.id);
+        materialized = await driver.download(ref.documentUrl);
+      }
+      const { bytes, contentType } = materialized;
       if (bytes.byteLength > MAX_DOCUMENT_BYTES) throw new DocumentTooLarge(MAX_DOCUMENT_BYTES, recipe.id);
       if (bytes.byteLength === 0) throw new UnexpectedResponse(200, "empty document", recipe.id);
       const head = new Uint8Array(bytes.slice(0, 4));
@@ -132,6 +169,10 @@ export function makeDomStrategy(driver: DomDriver): Strategy {
       });
       const filename = metadata.filename ?? inferredFilename;
       return { bytes, contentType: "application/pdf", filename };
+    },
+
+    async dispose(): Promise<void> {
+      await driver.dispose?.();
     },
   };
 }

@@ -19,9 +19,11 @@ it to. It uses the browser session you already have, so it never asks for or
 stores a vendor password or two-factor code.
 
 **It is not a list of supported vendors.** Open a supplier's billing page,
-select **Find Invoices**, and a generic discovery engine works out where that
-portal keeps its invoices — for any portal, not a hard-coded set. Everything
-about that inference runs locally inside the packaged extension.
+select **Find Invoices**, and a bounded generic discovery engine tries the
+packaged acquisition channels instead of relying on a hard-coded vendor list.
+Compatible portals expose stable invoice identities and documents through those
+safe channels; unsupported or ambiguous actions fail closed. Everything about
+that inference runs locally inside the packaged extension.
 
 ## How it works
 
@@ -92,8 +94,11 @@ enters the extension.
 - **Bounded permissions.** Host access is requested per supplier, for the exact
   origins your own candidates need. No wildcards, no private hosts.
 - **Read-only until you say otherwise.** Search never clicks. Semantic controls
-  are activated only after Connect & Collect, only when visible and enabled, and
-  never when labelled as a payment, purchase, cancellation, or deletion.
+  are activated only after Connect & Collect and after the engine has reserved
+  a stable invoice identity. One shared controller re-locates an unambiguous,
+  visible, enabled control in a disposable tab; payment, purchase,
+  cancellation, deletion, and form actions are excluded. Chrome-native
+  supplier downloads are contained and rejected, never counted as collection.
 - **Diagnostics carry no data.** When discovery fails, the copyable diagnostic
   holds the failed stage, a finite cause code, an optional HTTP status family,
   bounded counts, and `:id`-templated route shapes. Never URLs, selectors,
@@ -179,7 +184,9 @@ npm run release:collector
 Runs the full test and security gate, then writes a deterministic ZIP and
 SHA-256 checksum under `artifacts/` with the Collector manifest at the root.
 Packaging refuses to ship a bundle containing a `debugger`-backed recorder or a
-fingerprint delivery marker.
+fingerprint delivery marker. Release validation also requires a fresh,
+version-matched sanitized semantic-DOM acceptance receipt and reruns the
+native-download regression.
 
 Publishing stays an explicit operator action. Pushing a `v<package-version>` tag
 runs `.github/workflows/release-collector.yml`, which rebuilds from that exact

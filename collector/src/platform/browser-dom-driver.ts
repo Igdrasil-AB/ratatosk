@@ -6,12 +6,14 @@ import type {
 } from "../../../src/core/types";
 import type {
   DomDocumentObservation,
+  DomDocumentAction,
   DomDriver,
   DomDriverRunResult,
 } from "../../../src/core/strategies/dom";
 import {
   AuthExpired,
   AuthFailure,
+  DocumentActionFailed,
   DocumentPermissionRequired,
   DomActionFailed,
   SelectorMiss,
@@ -31,8 +33,11 @@ import {
   isSafeSemanticInvoiceSection,
 } from "./discovery-dom-policy";
 import { acquireForegroundTabVisibility, type ReleaseForegroundTab } from "./tab-visibility";
-import discoveryPageObserverScript from "./discovery-page-observer?script&iife";
-import { SemanticActionObserver } from "./semantic-action-observer";
+import {
+  DocumentActionController,
+  type SemanticDocumentActionReference,
+} from "./document-action-controller";
+export { parseDomAdvanceResult } from "./document-action-controller";
 
 type DomRunErrorCode = "auth_expired" | "blocked_or_challenged" | "selector_miss" | "action_failed";
 type DomPageRetrievalEvidence = { observedItems: number; resolvedItems: number; unresolvedItems: number };
@@ -41,16 +46,12 @@ type PageDomRunResult =
       ok: true;
       collected: Record<string, string[]>;
       documents?: DomDocumentObservation[];
+      actions?: SemanticDocumentActionReference[];
       retrieval: DomPageRetrievalEvidence;
       timedOut?: boolean;
+      actionCapReached?: boolean;
     }
   | { ok: false; code: DomRunErrorCode; error: string };
-type DomAdvanceResult =
-  | { kind: "navigate"; url: string }
-  | { kind: "advanced" }
-  | { kind: "failed" }
-  | { kind: "exhausted" };
-
 const INLINE_PDF_PREFIX = "data:application/pdf;base64,";
 const MAX_INLINE_PDF_BYTES = 8 * 1024 * 1024;
 const MAX_INLINE_PDF_TOTAL_BYTES = 24 * 1024 * 1024;
@@ -62,12 +63,20 @@ export function isSafeInvoiceSectionLabel(value: string): boolean {
 /**
  * Execute the closed DOM-step vocabulary in a real supplier tab.
  *
- * Discovered recipes are separately constrained to waitFor + href extraction;
- * reviewed packaged recipes may also use click. Returned values are untrusted,
- * bounded, and converted to absolute HTTPS URLs before crossing the boundary.
+ * Discovered recipes and packaged recipes use the same action-free listing
+ * vocabulary. Returned values are untrusted, bounded, and converted to
+ * absolute HTTPS URLs before crossing the boundary.
  */
 export class BrowserDomDriver implements DomDriver {
   private readonly allowedOrigins: ReadonlySet<string>;
+  private readonly actionController: DocumentActionController;
+  private readonly semanticActions = new Map<string, {
+    pageUrl: string;
+    actionId: string;
+    continuationActions: number;
+    documentSelector: string;
+    allowScroll: boolean;
+  }>();
   /** Run-namespaced owners keep earlier scope results available until each URL
    * is consumed, without sharing one run's byte/document budget with another. */
   private readonly inlineDocumentOwners = new Map<string, InlineDocumentStore>();
@@ -75,8 +84,14 @@ export class BrowserDomDriver implements DomDriver {
   constructor(
     private readonly recipe: VendorRecipe,
     private readonly createInlineDocumentStore: () => InlineDocumentStore = () => new InlineDocumentStore(),
+    onSemanticDocumentAction: () => void = () => undefined,
   ) {
     this.allowedOrigins = new Set(recipe.hosts.map((host) => new URL(host.slice(0, -2)).origin));
+    this.actionController = new DocumentActionController(
+      this.allowedOrigins,
+      recipe.id,
+      onSemanticDocumentAction,
+    );
   }
 
   async run(url: string, steps: DomStep[], continuation?: DomContinuationSpec): Promise<DomDriverRunResult> {
@@ -84,8 +99,9 @@ export class BrowserDomDriver implements DomDriver {
     const page = new URL(url);
     const usesSemanticActions = steps.some((step) => step.action === "extractSemanticDownloads");
     const policy = continuation ? normalizeDomContinuation(continuation) : undefined;
-    const pageObserver = usesSemanticActions ? new SemanticPageObserverRegistration(page.origin) : undefined;
-    await pageObserver?.start();
+    const pageObserver = usesSemanticActions
+      ? await this.actionController.registerPageObserver(page.origin)
+      : undefined;
     let exactTab: { tabId: number; created: boolean } | undefined;
     let releaseForegroundTab: ReleaseForegroundTab = async () => undefined;
     try {
@@ -135,10 +151,9 @@ export class BrowserDomDriver implements DomDriver {
     }
     if (!exactTab) throw new Error("could not open the supplier billing page");
     const { tabId, created } = exactTab;
-    const actionObserver = usesSemanticActions ? new SemanticActionObserver(this.allowedOrigins) : undefined;
-    actionObserver?.start(tabId);
     const aggregate: Record<string, Set<string>> = {};
     const documentEvidence = new Map<string, InvoiceMetadataEvidence[]>();
+    const semanticActions = new Map<string, DomDocumentAction>();
     const documentStep = steps.find((step) =>
       (step.action === "extractAll" && step.attr === "href") || step.action === "extractSemanticDownloads");
     const documentKey = documentStep?.action === "extractAll" || documentStep?.action === "extractSemanticDownloads"
@@ -171,35 +186,45 @@ export class BrowserDomDriver implements DomDriver {
           // Let the injected page return its completed structural proof before
           // the service-worker watchdog rejects the executeScript promise.
           const pageRunDeadline = runDeadline === null ? null : Math.max(Date.now(), runDeadline - 750);
-          [injection] = await withinRunDeadline(chrome.scripting.executeScript({
-            target: { tabId },
-            world: usesSemanticActions ? "MAIN" : "ISOLATED",
-            func: runDomStepsInPage,
-            args: [steps, [...this.allowedOrigins], DISCOVERY_DOM_POLICY, pageRunDeadline],
-          }), runDeadline);
-          result = parseDomRunResult(injection?.result, this.allowedOrigins, usesSemanticActions);
+          if (usesSemanticActions) {
+            const semanticStep = steps.find((step) => step.action === "extractSemanticDownloads");
+            if (!semanticStep || steps.some((step) => step.action !== "extractSemanticDownloads")) {
+              throw new DomActionFailed("semantic enumeration cannot mix DOM step kinds", this.recipe.id);
+            }
+            const semantic = await this.actionController.enumerateOnTab(
+              tabId,
+              semanticStep.maxActions ?? 8,
+              DISCOVERY_DOM_POLICY,
+              pageRunDeadline,
+            );
+            result = {
+              ok: true,
+              collected: { [semanticStep.as]: semantic.directDocuments.map((document) => document.url) },
+              documents: semantic.directDocuments,
+              actions: semantic.actions,
+              retrieval: {
+                observedItems: semantic.observedItems,
+                resolvedItems: semantic.resolvedItems,
+                unresolvedItems: semantic.unresolvedItems,
+              },
+              ...(semantic.truncated ? { actionCapReached: true } : {}),
+            };
+          } else {
+            [injection] = await withinRunDeadline(chrome.scripting.executeScript({
+              target: { tabId },
+              world: "ISOLATED",
+              func: runDomStepsInPage,
+              args: [steps, [...this.allowedOrigins], DISCOVERY_DOM_POLICY, pageRunDeadline],
+            }), runDeadline);
+            result = parseDomRunResult(injection?.result, this.allowedOrigins);
+          }
         } catch (error) {
           if (error instanceof DomRunDeadlineExceeded) {
             termination = "time_cap";
             break;
           }
           if (error instanceof DocumentPermissionRequired) throw error;
-          const observed = actionObserver?.snapshotDocuments() ?? [];
-          if (!documentKey || observed.length === 0) throw error;
-          // A real browser download or top-level navigation can destroy the
-          // injected execution context after the click. Browser-owned evidence
-          // is sufficient to recover the bounded result without misclassifying
-          // the control as a selector failure.
-          result = {
-            ok: true,
-            collected: { [documentKey]: observed },
-            documents: actionObserver?.snapshotDocumentObservations(),
-            retrieval: {
-              observedItems: observed.length,
-              resolvedItems: observed.length,
-              unresolvedItems: 0,
-            },
-          };
+          throw error;
         }
         if (!result.ok) throwDomRunError(result.code, this.recipe.id);
         observedItems += result.retrieval.observedItems;
@@ -211,18 +236,37 @@ export class BrowserDomDriver implements DomDriver {
         unresolvedItems += materialized.rejected;
         mergeCollected(aggregate, materialized.collected, maximumDocuments);
         mergeDocumentObservations(documentEvidence, result.documents ?? [], maximumDocuments);
-        if (documentKey && actionObserver) {
-          const key = documentKey;
-          const before = aggregate[key]?.size ?? 0;
-          mergeCollected(aggregate, { [key]: actionObserver.snapshotDocuments() }, maximumDocuments);
-          mergeDocumentObservations(documentEvidence, actionObserver.snapshotDocumentObservations(), maximumDocuments);
-          const gained = Math.max(0, (aggregate[key]?.size ?? 0) - before);
-          const resolvedFromObserver = Math.min(gained, unresolvedItems);
-          resolvedItems += resolvedFromObserver;
-          unresolvedItems -= resolvedFromObserver;
+        if (usesSemanticActions && result.actions?.length) {
+          const tab = await chrome.tabs.get(tabId);
+          const actionPage = tab.url ? new URL(tab.url) : page;
+          if (actionPage.origin !== page.origin) {
+            throw new DomActionFailed("semantic action page left the approved origin", this.recipe.id);
+          }
+          for (const actionRef of result.actions) {
+            if (semanticActions.has(actionRef.vendorInvoiceId)) {
+              throw new DocumentActionFailed("document_action_ambiguous", this.recipe.id);
+            }
+            const handle = crypto.randomUUID();
+            this.semanticActions.set(handle, {
+              pageUrl: page.toString(),
+              actionId: actionRef.actionId,
+              continuationActions: action,
+              documentSelector,
+              allowScroll: policy?.allowScroll ?? false,
+            });
+            semanticActions.set(actionRef.vendorInvoiceId, {
+              vendorInvoiceId: actionRef.vendorInvoiceId,
+              handle,
+              evidence: actionRef.evidence,
+            });
+          }
         }
         if (result.timedOut) {
           termination = "time_cap";
+          break;
+        }
+        if (result.actionCapReached) {
+          termination = "action_cap";
           break;
         }
 
@@ -240,51 +284,42 @@ export class BrowserDomDriver implements DomDriver {
           break;
         }
 
-        let advanceInjection: chrome.scripting.InjectionResult<DomAdvanceResult> | undefined;
         try {
-          [advanceInjection] = await withinRunDeadline(chrome.scripting.executeScript({
-            target: { tabId },
-            func: advanceDomPageInPage,
-            args: [
-              documentSelector,
-              policy.allowScroll,
-              DOM_CONTINUATION_LABEL_PATTERN,
-              Math.max(0, Math.min(5_000, remainingRunMs(runDeadline))),
-            ],
-          }), runDeadline);
+          const advance = await this.actionController.advanceOnTab(
+            tabId,
+            documentSelector,
+            policy.allowScroll,
+            DOM_CONTINUATION_LABEL_PATTERN,
+            Math.max(0, Math.min(5_000, remainingRunMs(runDeadline))),
+            runDeadline,
+          );
+          if (advance.kind === "exhausted") break;
+          if (advance.kind === "failed") {
+            termination = "continuation_failed";
+            break;
+          }
+          if (advance.kind === "navigate") {
+            const next = safeContinuationUrl(advance.url, page.origin);
+            if (!next || visited.has(next)) {
+              termination = "repeated_state";
+              break;
+            }
+            visited.add(next);
+            const updated = await withinRunDeadline(chrome.tabs.update(tabId, { url: next, active: true }), runDeadline);
+            if (updated.status !== "complete") {
+              await waitForTabComplete(tabId, Math.min(8_000, remainingRunMs(runDeadline)));
+            }
+          }
         } catch (error) {
           if (!(error instanceof DomRunDeadlineExceeded)) throw error;
           termination = "time_cap";
           break;
         }
-        const advance = parseDomAdvanceResult(advanceInjection?.result);
-        if (advance.kind === "exhausted") break;
-        if (advance.kind === "failed") {
-          termination = "continuation_failed";
-          break;
-        }
-        if (advance.kind === "navigate") {
-          const next = safeContinuationUrl(advance.url, page.origin);
-          if (!next || visited.has(next)) {
-            termination = "repeated_state";
-            break;
-          }
-          visited.add(next);
-          try {
-            const updated = await withinRunDeadline(chrome.tabs.update(tabId, { url: next, active: true }), runDeadline);
-            if (updated.status !== "complete") {
-              await waitForTabComplete(tabId, Math.min(8_000, remainingRunMs(runDeadline)));
-            }
-          } catch (error) {
-            if (!(error instanceof DomRunDeadlineExceeded)) throw error;
-            termination = "time_cap";
-            break;
-          }
-        }
       }
       return {
         collected: Object.fromEntries(Object.entries(aggregate).map(([key, values]) => [key, [...values]])),
         documents: [...documentEvidence].map(([url, evidence]) => ({ url, evidence })),
+        actions: [...semanticActions.values()],
         retrieval: createRetrievalProof({
           termination,
           pagesVisited,
@@ -294,11 +329,37 @@ export class BrowserDomDriver implements DomDriver {
         }),
       };
     } finally {
-      actionObserver?.stop();
       await releaseForegroundTab();
       await pageObserver?.dispose(tabId);
       if (created) await chrome.tabs.remove(tabId).catch(() => undefined);
     }
+  }
+
+  async resolve(handle: string, signal?: AbortSignal): Promise<{ kind: "url"; url: string } | { kind: "bytes"; bytes: ArrayBuffer; contentType: string }> {
+    const action = this.semanticActions.get(handle);
+    if (!action) throw new DomActionFailed("semantic document action is no longer available", this.recipe.id);
+    this.semanticActions.delete(handle);
+    const resolved = await this.actionController.resolve(
+      action.pageUrl,
+      action.actionId,
+      DISCOVERY_DOM_POLICY,
+      signal,
+      {
+        continuationActions: action.continuationActions,
+        documentSelector: action.documentSelector,
+        allowScroll: action.allowScroll,
+        labelPattern: DOM_CONTINUATION_LABEL_PATTERN,
+      },
+    );
+    if (resolved.kind === "url") return resolved;
+    const materialized = await materializeInlinePdfDataUrl(resolved.dataUrl);
+    if (!materialized) throw new DomActionFailed("semantic action returned an invalid document", this.recipe.id);
+    return { kind: "bytes", bytes: materialized.bytes, contentType: "application/pdf" };
+  }
+
+  async dispose(): Promise<void> {
+    this.semanticActions.clear();
+    this.inlineDocumentOwners.clear();
   }
 
   async download(url: string): Promise<{ bytes: ArrayBuffer; contentType: string }> {
@@ -355,7 +416,7 @@ export class BrowserDomDriver implements DomDriver {
 
 export function requiresDisposableDomTab(steps: readonly DomStep[], continuation: DomContinuationSpec | undefined): boolean {
   return continuation !== undefined || steps.some((step) => (
-    step.action === "click" || step.action === "extractSemanticDownloads"
+    step.action === "extractSemanticDownloads"
   ));
 }
 
@@ -561,19 +622,6 @@ export async function materializeInlinePdfDataUrl(
   const prefix = namespace ? `${encodeURIComponent(namespace)}/` : "";
   return { url: `${INLINE_DOCUMENT_ORIGIN}/${prefix}${id}.pdf`, bytes };
 }
-
-export function parseDomAdvanceResult(value: unknown): DomAdvanceResult {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("supplier continuation result is invalid");
-  const raw = value as Record<string, unknown>;
-  if (raw.kind === "advanced" || raw.kind === "failed" || raw.kind === "exhausted") return { kind: raw.kind };
-  if (raw.kind === "navigate" && typeof raw.url === "string" && raw.url.length <= 1_200) {
-    let url: URL;
-    try { url = new URL(raw.url); } catch { throw new Error("supplier continuation result is invalid"); }
-    if (url.protocol === "https:" && !url.username && !url.password) return { kind: "navigate", url: url.toString() };
-  }
-  throw new Error("supplier continuation result is invalid");
-}
-
 /** Self-contained function serialized into the supplier tab. */
 export async function runDomStepsInPage(
   steps: DomStep[],
@@ -614,10 +662,6 @@ export async function runDomStepsInPage(
           if (looksChallenged()) return { ok: false, code: "blocked_or_challenged", error: "supplier challenge blocked the invoice list" };
           return { ok: false, code: "selector_miss", error: "invoice elements did not appear" };
         }
-      } else if (step.action === "click") {
-        const element = document.querySelector(step.selector);
-        if (!(element instanceof HTMLElement)) return { ok: false, code: "selector_miss", error: "invoice control was unavailable" };
-        element.click();
       } else if (step.action === "extractAll") {
         const values = new Set<string>();
         const observed = new Set<string>();
@@ -646,14 +690,7 @@ export async function runDomStepsInPage(
         unresolvedItems += Math.max(0, observed.size - values.size);
         collected[step.as] = [...new Set([...(collected[step.as] ?? []), ...values])];
       } else {
-        if (looksLoggedOut()) return { ok: false, code: "auth_expired", error: "supplier session is logged out" };
-        if (looksChallenged()) return { ok: false, code: "blocked_or_challenged", error: "supplier challenge blocked invoice downloads" };
-        const semantic = await extractSemanticDownloads(step.maxActions ?? 8);
-        observedItems += semantic.observedItems;
-        resolvedItems += semantic.resolvedItems;
-        unresolvedItems += semantic.unresolvedItems;
-        collected[step.as] = [...new Set([...(collected[step.as] ?? []), ...semantic.values])];
-        documents.push(...semantic.documents);
+        return { ok: false, code: "action_failed", error: "semantic document actions must be resolved transactionally" };
       }
     }
     return result(runDeadline !== null && Date.now() >= runDeadline);
@@ -813,603 +850,8 @@ export async function runDomStepsInPage(
     return { total: numeric, ...(currency ? { currency } : {}) };
   }
 
-  async function extractSemanticDownloads(maxActions: number): Promise<{
-    values: string[];
-    documents: DomDocumentObservation[];
-    observedItems: number;
-    resolvedItems: number;
-    unresolvedItems: number;
-  }> {
-    const MAX_INLINE_PDF_BYTES = 8 * 1024 * 1024;
-    const explicitAction = new RegExp(semanticPolicy.explicitActionPattern, "i");
-    const strongDocumentLabel = new RegExp(semanticPolicy.strongDocumentPattern, "i");
-    const documentIcon = new RegExp(semanticPolicy.documentIconPattern, "i");
-    const invoiceContext = new RegExp(semanticPolicy.invoiceContextPattern, "i");
-    const invoiceRow = new RegExp(semanticPolicy.invoiceRowPattern, "i");
-    const actionColumn = new RegExp(semanticPolicy.actionColumnPattern, "i");
-    const unsafe = new RegExp(semanticPolicy.unsafeLabelPattern, "i");
-    const unsafePath = new RegExp(semanticPolicy.unsafePathPattern, "i");
-    const invoiceSectionLabel = new RegExp(semanticPolicy.invoiceSectionPattern, "i");
-    const semanticNavigation = new RegExp(semanticPolicy.semanticNavigationPattern, "i");
-    const allowed = new Set(allowedOrigins.slice(0, 9));
-    const values = new Set<string>();
-    const semanticDocuments: DomDocumentObservation[] = [];
-    const semanticCaptureDeadline = Math.min(Date.now() + 30_000, runDeadline ?? Number.POSITIVE_INFINITY);
-    const add = (
-      raw: string | URL | null | undefined,
-      allowActionOrigin = false,
-      evidence: InvoiceMetadataEvidence[] = [],
-    ): boolean => {
-      if (!raw) return false;
-      if (typeof raw === "string" && raw.startsWith("data:application/pdf;base64,")) {
-        if (values.has(raw)) return false;
-        values.add(raw);
-        return true;
-      }
-      try {
-        const url = new URL(String(raw), location.href);
-        if (
-          url.protocol === "https:" && !url.username && !url.password &&
-          (allowed.has(url.origin) || allowActionOrigin)
-        ) {
-          const value = url.toString();
-          if (values.has(value)) return false;
-          values.add(value);
-          if (evidence.length) semanticDocuments.push({ url: value, evidence });
-          return true;
-        }
-      } catch {
-        // Ignore malformed or cross-origin action output.
-      }
-      return false;
-    };
-    const capturePdfBlob = (blob: Blob): Promise<boolean> => new Promise((resolve) => {
-      if (blob.size === 0 || blob.size > MAX_INLINE_PDF_BYTES) {
-        resolve(false);
-        return;
-      }
-      const reader = new FileReader();
-      reader.onerror = () => resolve(false);
-      reader.onloadend = () => {
-        const result = reader.result;
-        if (typeof result === "string" && result.startsWith("data:application/pdf;base64,JVBER")) {
-          values.add(result);
-          resolve(true);
-          return;
-        }
-        resolve(false);
-      };
-      reader.readAsDataURL(blob.type === "application/pdf" ? blob : new Blob([blob], { type: "application/pdf" }));
-    });
-    const actionPageObserver = (): {
-      snapshotActionDocuments?: () => Promise<string[]>;
-      beginDocumentAction?: () => void;
-      endDocumentAction?: () => void;
-    } | undefined => (window as Window & {
-      __ratatoskDiscoveryObserverV1?: {
-        snapshotActionDocuments?: () => Promise<string[]>;
-        beginDocumentAction?: () => void;
-        endDocumentAction?: () => void;
-      };
-    }).__ratatoskDiscoveryObserverV1;
-    const snapshotActionDocuments = async (evidence: InvoiceMetadataEvidence[] = []): Promise<number> => {
-      try {
-        const observer = actionPageObserver();
-        if (typeof observer?.snapshotActionDocuments !== "function") return 0;
-        const observed = await Promise.race([
-          Promise.resolve(observer.snapshotActionDocuments()),
-          new Promise<string[]>((resolve) => setTimeout(() => resolve([]), 800)),
-        ]);
-        if (!Array.isArray(observed)) return 0;
-        let accepted = 0;
-        for (const candidate of observed.slice(0, 100)) {
-          if (typeof candidate === "string" && add(candidate, true, evidence)) accepted += 1;
-        }
-        return accepted;
-      } catch {
-        // The browser-owned observer remains a fallback for allowed origins.
-        return 0;
-      }
-    };
-    const labelOf = (element: Element): string => {
-      const icon = element.querySelector("svg,[icon],[name],[data-lucide]");
-      const labelledBy = (element.getAttribute("aria-labelledby") || "")
-        .split(/\s+/)
-        .slice(0, 4)
-        .map((id) => document.getElementById(id)?.textContent)
-        .filter(Boolean)
-        .join(" ");
-      return [
-        element.getAttribute("aria-label"),
-        labelledBy,
-        element.getAttribute("title"),
-        element.getAttribute("value"),
-        element.getAttribute("data-test"),
-        element.getAttribute("data-testid"),
-        element.getAttribute("data-lucide"),
-        icon?.getAttribute("class"),
-        icon?.getAttribute("data-lucide"),
-        icon?.getAttribute("icon"),
-        icon?.getAttribute("name"),
-        icon?.getAttribute("aria-label"),
-        icon?.getAttribute("title"),
-        element.getAttribute("class"),
-        element.textContent,
-      ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim().slice(0, 320);
-    };
-    const visible = (element: HTMLElement): boolean => {
-      const style = getComputedStyle(element);
-      const rect = element.getBoundingClientRect();
-      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0 &&
-        !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true";
-    };
-    const rowContextOf = (element: Element): string => (
-      element.closest(semanticPolicy.contextSelector)?.textContent || ""
-    ).replace(/\s+/g, " ").trim().slice(0, 500);
-    const columnContextOf = (element: Element): string => {
-      const cell = element.closest('td,th,[role="cell"],[role="gridcell"],[role="columnheader"]');
-      const row = cell?.closest('tr,[role="row"]');
-      const table = row?.closest(semanticPolicy.tableSelector);
-      if (!cell || !row || !table) return "";
-      const cells = Array.from(row.querySelectorAll(':scope > td,:scope > th,:scope > [role="cell"],:scope > [role="gridcell"],:scope > [role="columnheader"]'));
-      const index = cells.indexOf(cell);
-      if (index < 0) return "";
-      for (const headerRow of Array.from(table.querySelectorAll('thead tr,[role="row"]')).slice(0, 5)) {
-        const headers = Array.from(headerRow.querySelectorAll(':scope > th,:scope > [role="columnheader"]'));
-        const text = headers[index]?.textContent?.replace(/\s+/g, " ").trim().slice(0, 120);
-        if (text) return text;
-      }
-      return "";
-    };
-    const tableContextOf = (element: Element): string => (
-      Array.from(element.closest(semanticPolicy.tableSelector)?.querySelectorAll(
-        'thead th,[role="columnheader"]',
-      ) || [])
-        .slice(0, 20)
-        .map((header) => header.textContent)
-        .join(" ")
-    ).replace(/\s+/g, " ").trim().slice(0, 500);
-    // A guessed route cannot turn a site-wide "Download" action into invoice
-    // evidence. Only independently rendered title/heading state participates.
-    const pageContext = (): string => `${document.title} ${
-      Array.from(document.querySelectorAll("h1,h2,h3,caption"))
-        .slice(0, 12)
-        .map((element) => element.textContent)
-        .join(" ")
-    }`.replace(/\s+/g, " ").trim().slice(0, 240);
-    const roleOf = (element: Element): string => {
-      const explicit = element.getAttribute("role");
-      if (explicit) return explicit.toLowerCase().slice(0, 40);
-      if (element instanceof HTMLButtonElement) return "button";
-      if (element instanceof HTMLAnchorElement) return "link";
-      if (element instanceof HTMLInputElement && /^(?:button|submit|image)$/i.test(element.type)) return "button";
-      return element.tagName.toLowerCase().slice(0, 40);
-    };
-    const controlFingerprint = (element: Element): string => [
-      roleOf(element),
-      labelOf(element),
-      element.getAttribute("href") || element.getAttribute("data-href") || element.getAttribute("data-url") || "",
-      rowContextOf(element),
-      columnContextOf(element),
-    ].map((value) => value.replace(/\s+/g, " ").trim().slice(0, 500)).join("\u0001");
-    const controlGroupFingerprint = (element: Element): string => {
-      const root = element.closest(semanticPolicy.contextSelector);
-      if (!root) return controlFingerprint(element);
-      const parent = root.parentElement;
-      const siblingIndex = parent ? Array.from(parent.children).indexOf(root) : -1;
-      return [
-        root.tagName.toLowerCase(),
-        siblingIndex.toString(),
-        (root.textContent || "").replace(/\s+/g, " ").trim().slice(0, 500),
-      ].join("\u0001");
-    };
-    const downloadControls = (): HTMLElement[] => Array.from(document.querySelectorAll<HTMLElement>(
-      semanticPolicy.controlSelector,
-    )).filter((element) => {
-      const label = labelOf(element);
-      if (!label || unsafe.test(label) || element.closest("form") || !visible(element)) return false;
-      const row = rowContextOf(element);
-      const table = tableContextOf(element);
-      const page = pageContext();
-      const explicit = explicitAction.test(label) &&
-        (strongDocumentLabel.test(label) || invoiceContext.test(`${row} ${table} ${page}`));
-      const contextualIcon = documentIcon.test(label) &&
-        actionColumn.test(columnContextOf(element)) &&
-        (invoiceRow.test(row) || invoiceContext.test(table)) &&
-        invoiceContext.test(`${table} ${page}`);
-      return explicit || contextualIcon;
-    });
-    // The navigation pattern is anchored, so each label source is matched on
-    // its own. Joining them turns an accessible name plus its visible text
-    // into one string that no anchored pattern can ever match.
-    const navigationLabelsOf = (element: Element): string[] => [
-      element.getAttribute("aria-label"),
-      element.getAttribute("title"),
-      element.textContent,
-    ].map((value) => (value || "").replace(/\s+/g, " ").trim().slice(0, 120)).filter(Boolean);
-    const navigationControl = (tier: RegExp): HTMLElement | undefined => Array.from(
-      document.querySelectorAll<HTMLElement>('button,[role="button"],[role="menuitem"],[role="tab"],a:not([href])'),
-    ).find((element) => {
-      const labels = navigationLabelsOf(element);
-      return Boolean(
-        labels.length && !labels.some((label) => unsafe.test(label)) &&
-        labels.some((label) => semanticNavigation.test(label) && tier.test(label)) &&
-        !element.closest("form") && visible(element) &&
-        !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true"
-      );
-    });
-    const revealBillingSurface = async (): Promise<number> => {
-      if (downloadControls().length > 0) return 0;
-      let steps = 0;
-      const tiers = [
-        /(?:open\s+)?profile\s+menu$|account\s+menu$/i,
-        /^(?:settings|preferences)$/i,
-        /^(?:account|billing|subscriptions?|invoice\s+history|receipt\s+history|billing\s+history|past\s+invoices?)$/i,
-      ];
-      // A tier is worth waiting for only while something can still mount it:
-      // the application's own startup for the first tier, or the previous
-      // click. A single mutation fires on the first unrelated attribute
-      // change, long before the revealed menu exists, so poll for the control
-      // itself. Tiers that nothing is mounting are checked once.
-      let mounting = true;
-      for (const tier of tiers) {
-        if (Date.now() >= semanticCaptureDeadline || steps >= 3) break;
-        const tierDeadline = mounting ? Math.min(semanticCaptureDeadline, Date.now() + 3_000) : 0;
-        let control = navigationControl(tier);
-        while (!control && Date.now() < tierDeadline) {
-          if (downloadControls().length > 0) return steps;
-          await new Promise((resolve) => setTimeout(resolve, 100));
-          control = navigationControl(tier);
-        }
-        mounting = Boolean(control);
-        if (!control) continue;
-        control.click();
-        steps += 1;
-        if (downloadControls().length > 0) break;
-      }
-      return steps;
-    };
-    const sectionLabelOf = (element: Element): string => [
-      element.getAttribute("aria-label"),
-      element.getAttribute("title"),
-      element.textContent,
-    ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim().slice(0, 120);
-    const revealInvoiceSection = async (): Promise<boolean> => {
-      if (downloadControls().length > 0) return false;
-      const section = Array.from(document.querySelectorAll<HTMLElement>(
-        semanticPolicy.sectionSelector,
-      )).find((element) => {
-        const label = sectionLabelOf(element);
-        if (!label || !invoiceSectionLabel.test(label) || unsafe.test(label) || element.closest("form") || !visible(element)) return false;
-        if (element instanceof HTMLAnchorElement && element.href) {
-          try {
-            const target = new URL(element.href, location.href);
-            if (target.origin !== location.origin || unsafePath.test(target.pathname)) return false;
-          } catch {
-            return false;
-          }
-        }
-        return true;
-      });
-      if (!section) return false;
-      if (section.getAttribute("aria-selected") !== "true") section.click();
-      const deadline = Math.min(Date.now() + 4_000, semanticCaptureDeadline);
-      while (downloadControls().length === 0 && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-      return true;
-    };
-
-    const waitForDownloadControls = async (): Promise<{
-      availableControls: HTMLElement[];
-      sectionObserved: boolean;
-      navigationSteps: number;
-    }> => {
-      const navigationSteps = await revealBillingSurface();
-      let sectionObserved = await revealInvoiceSection();
-      let availableControls = downloadControls();
-      const deadline = Math.min(semanticCaptureDeadline, Date.now() + 8_000);
-      let stableControlCount = -1;
-      let stableControlCountSince = 0;
-      while (Date.now() < deadline) {
-        if (availableControls.length > 0) {
-          if (availableControls.length !== stableControlCount) {
-            stableControlCount = availableControls.length;
-            stableControlCountSince = Date.now();
-          } else if (Date.now() - stableControlCountSince >= semanticPolicy.stableMs) {
-            break;
-          }
-        }
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        // Some SPAs mount the invoice tab after document.readyState becomes
-        // complete. Reveal it once it exists, then keep waiting for its rows.
-        if (!sectionObserved) sectionObserved = await revealInvoiceSection();
-        availableControls = downloadControls();
-      }
-      return { availableControls, sectionObserved, navigationSteps };
-    };
-
-    const { availableControls, sectionObserved, navigationSteps } = await waitForDownloadControls();
-    const rawSemanticControls = Array.from(document.querySelectorAll<HTMLElement>(
-      semanticPolicy.controlSelector,
-    )).slice(0, 1_000);
-    const eligibleSemanticControls = new Set(availableControls);
-    const semanticRejections = {
-      unlabelled: 0,
-      unsafeOrFormBacked: 0,
-      hiddenOrDisabled: 0,
-      iconMismatch: 0,
-      actionColumnMismatch: 0,
-      invoiceShapeMismatch: 0,
-      pageContextMismatch: 0,
-    };
-    for (const element of rawSemanticControls) {
-      if (eligibleSemanticControls.has(element)) continue;
-      const label = labelOf(element);
-      if (!label) {
-        semanticRejections.unlabelled += 1;
-        continue;
-      }
-      if (unsafe.test(label) || element.closest("form")) {
-        semanticRejections.unsafeOrFormBacked += 1;
-        continue;
-      }
-      if (!visible(element)) {
-        semanticRejections.hiddenOrDisabled += 1;
-        continue;
-      }
-      if (!documentIcon.test(label)) {
-        semanticRejections.iconMismatch += 1;
-        continue;
-      }
-      if (!actionColumn.test(columnContextOf(element))) {
-        semanticRejections.actionColumnMismatch += 1;
-        continue;
-      }
-      if (!(invoiceRow.test(rowContextOf(element)) || invoiceContext.test(tableContextOf(element)))) {
-        semanticRejections.invoiceShapeMismatch += 1;
-        continue;
-      }
-      if (!invoiceContext.test(pageContext())) semanticRejections.pageContextMismatch += 1;
-    }
-    console.info(`[ratatosk] semantic control evaluation ${JSON.stringify({
-      readyState: document.readyState,
-      visibilityState: document.visibilityState,
-      rawControls: rawSemanticControls.length,
-      eligibleControls: Math.min(500, availableControls.length),
-      sectionObserved,
-      navigationSteps,
-      rejections: semanticRejections,
-    })}`);
-    const actionLimit = Math.max(1, Math.min(12, maxActions, availableControls.length || 1));
-    const attemptedControls = new Set<string>();
-    const resolvedControlGroups = new Set<string>();
-    const observedControlGroups = new Set(availableControls.map(controlGroupFingerprint));
-
-    for (let actionIndex = 0; actionIndex < actionLimit; actionIndex += 1) {
-      // Resolve from the current DOM before every action. React/Vue tables
-      // commonly replace every row after one invoice is requested.
-      const control = downloadControls().find((candidate) => {
-        const fingerprint = controlFingerprint(candidate);
-        return !attemptedControls.has(fingerprint) &&
-          !resolvedControlGroups.has(controlGroupFingerprint(candidate));
-      });
-      if (!control) break;
-      attemptedControls.add(controlFingerprint(control));
-      const controlGroup = controlGroupFingerprint(control);
-      const metadata = metadataForElement(control);
-      const direct = control.getAttribute("data-href") || control.getAttribute("data-url");
-      if (direct) {
-        if (add(direct, false, metadata)) resolvedControlGroups.add(controlGroup);
-        continue;
-      }
-      if (control instanceof HTMLAnchorElement && control.href) {
-        const target = new URL(control.href, location.href);
-        if (target.protocol === "blob:" && target.origin === location.origin) {
-          const captured = await window.fetch(target.toString())
-            .then((response) => response.blob())
-            .then((blob) => capturePdfBlob(blob))
-            .catch(() => false);
-          if (captured) resolvedControlGroups.add(controlGroup);
-        } else if (add(target, false, metadata)) {
-          resolvedControlGroups.add(controlGroup);
-        }
-        continue;
-      }
-      const form = control.closest("form");
-      if (form) {
-        if ((form.getAttribute("method") || "GET").toUpperCase() === "GET") {
-          if (add(form.getAttribute("action") || location.href, false, metadata)) resolvedControlGroups.add(controlGroup);
-        }
-        continue;
-      }
-      const observer = actionPageObserver();
-      observer?.beginDocumentAction?.();
-      let actionProducedDocument = false;
-      try {
-        control.click();
-        const actionDeadline = Math.min(semanticCaptureDeadline, Date.now() + 2_500);
-        while (!actionProducedDocument && Date.now() < actionDeadline) {
-          actionProducedDocument = (await snapshotActionDocuments(metadata)) > 0;
-          if (actionProducedDocument) break;
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-        actionProducedDocument = (await snapshotActionDocuments(metadata)) > 0 || actionProducedDocument;
-      } finally {
-        observer?.endDocumentAction?.();
-      }
-      console.info(`[ratatosk] semantic action evaluation ${JSON.stringify({
-        action: actionIndex + 1,
-        observerAvailable: typeof observer?.snapshotActionDocuments === "function",
-        captured: actionProducedDocument,
-      })}`);
-      if (actionProducedDocument) resolvedControlGroups.add(controlGroup);
-      if (Date.now() >= semanticCaptureDeadline) break;
-    }
-    const observedControls = observedControlGroups.size || (sectionObserved ? 1 : 0);
-    const resolvedControls = Math.min(observedControls, resolvedControlGroups.size);
-    return {
-      values: [...values].slice(0, 100),
-      documents: semanticDocuments.slice(0, 100),
-      observedItems: observedControls,
-      resolvedItems: resolvedControls,
-      unresolvedItems: Math.max(0, observedControls - resolvedControls),
-    };
-  }
 }
 
-/** Self-contained continuation action serialized into the supplier tab. */
-async function advanceDomPageInPage(
-  documentSelector: string,
-  allowScroll: boolean,
-  labelPattern: string,
-  changeTimeoutMs: number,
-): Promise<DomAdvanceResult> {
-  const label = new RegExp(labelPattern, "i");
-  const documentElements = Array.from(document.querySelectorAll(documentSelector)).slice(0, 500);
-  const fingerprint = (): string => {
-    const elements = Array.from(document.querySelectorAll(documentSelector)).slice(0, 500);
-    const roots = [...new Set(elements.map((element) =>
-      element.closest('tr,[role="row"],li,[role="listitem"],article') ?? element))];
-    return [
-      `${location.pathname}${location.search}`,
-      ...roots.map((root) => {
-        const controls = Array.from(root.querySelectorAll(
-          'a,button,[role="button"],[data-href],[data-url],svg,[data-lucide]',
-        )).slice(0, 20);
-        return [
-          (root.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 320),
-          ...controls.map((element) => [
-            element.getAttribute("href") ?? "",
-            element.getAttribute("data-href") ?? "",
-            element.getAttribute("data-url") ?? "",
-            element.getAttribute("aria-label") ?? "",
-            element.getAttribute("class") ?? "",
-            element.getAttribute("data-lucide") ?? "",
-          ].join("\u0000")),
-        ].join("\u0001");
-      }).sort(),
-    ].join("\n");
-  };
-  const before = fingerprint();
-  const documentNext = document.querySelector<HTMLLinkElement>('link[rel~="next"][href]');
-  if (documentNext?.href) return { kind: "navigate", url: documentNext.href };
-  const visible = (element: Element): element is HTMLElement => {
-    if (!(element instanceof HTMLElement) || element.closest("form")) return false;
-    const style = getComputedStyle(element);
-    const rect = element.getBoundingClientRect();
-    return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
-  };
-  const regions = [...new Set(documentElements.map((element) =>
-    element.closest('table,[role="table"],[role="list"],section,main')).filter((element): element is Element => Boolean(element)))];
-  const controlsIn = (root: ParentNode): Element[] =>
-    Array.from(root.querySelectorAll('a[rel~="next"],a,button,[role="button"]'));
-  const scopedControls = regions.flatMap(controlsIn);
-  const controls = scopedControls.length > 0 ? [...new Set(scopedControls)] : controlsIn(document);
-  const control = controls.find((element) => {
-    if (!visible(element) || element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true") return false;
-    const text = (element.getAttribute("aria-label") || element.textContent || "").replace(/\s+/g, " ").trim();
-    return element.getAttribute("rel")?.split(/\s+/).includes("next") || label.test(text);
-  });
-
-  if (control instanceof HTMLAnchorElement) {
-    const raw = control.getAttribute("href");
-    if (raw && raw !== "#") {
-      try {
-        const next = new URL(raw, location.href);
-        if (next.protocol !== "https:") return { kind: "failed" };
-        return { kind: "navigate", url: next.toString() };
-      } catch {
-        return { kind: "failed" };
-      }
-    }
-  }
-
-  if (control instanceof HTMLElement) {
-    control.click();
-    return (await waitForDocumentChange(before)) ? { kind: "advanced" } : { kind: "failed" };
-  }
-
-  if (!allowScroll || document.documentElement.scrollHeight <= window.innerHeight + 20) return { kind: "exhausted" };
-  window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "auto" });
-  return (await waitForDocumentChange(before)) ? { kind: "advanced" } : { kind: "exhausted" };
-
-  function waitForDocumentChange(previous: string): Promise<boolean> {
-    return new Promise((resolve) => {
-      let settled = false;
-      let quietTimer: ReturnType<typeof setTimeout> | undefined;
-      const finish = (changed: boolean) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (quietTimer) clearTimeout(quietTimer);
-        observer.disconnect();
-        resolve(changed);
-      };
-      const observer = new MutationObserver(() => {
-        if (fingerprint() === previous) return;
-        if (quietTimer) clearTimeout(quietTimer);
-        quietTimer = setTimeout(() => finish(fingerprint() !== previous), 200);
-      });
-      observer.observe(document.documentElement, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        characterData: true,
-        attributeFilter: ["href", "data-href", "data-url", "aria-busy"],
-      });
-      const timer = setTimeout(
-        () => finish(fingerprint() !== previous),
-        Math.max(250, Math.min(5_000, changeTimeoutMs)),
-      );
-    });
-  }
-}
-
-class SemanticPageObserverRegistration {
-  private readonly id = `ratatosk_semantic_${crypto.randomUUID().replaceAll("-", "")}`;
-  private registered = false;
-
-  constructor(private readonly origin: string) {}
-
-  async start(): Promise<boolean> {
-    try {
-      await chrome.scripting.registerContentScripts([{
-        id: this.id,
-        matches: [`${this.origin}/*`],
-        js: [discoveryPageObserverScript],
-        runAt: "document_start",
-        world: "MAIN",
-        allFrames: false,
-        persistAcrossSessions: false,
-      }]);
-      this.registered = true;
-      return true;
-    } catch {
-      // A direct anchor or browser-level observation can still verify the
-      // supplier when early MAIN-world observation is unavailable.
-      return false;
-    }
-  }
-
-  async dispose(tabId?: number): Promise<void> {
-    if (!this.registered) return;
-    this.registered = false;
-    if (tabId !== undefined) {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        world: "MAIN",
-        func: () => {
-          const observer = (window as Window & {
-            __ratatoskDiscoveryObserverV1?: { stop?: () => void };
-          }).__ratatoskDiscoveryObserverV1;
-          if (typeof observer?.stop === "function") observer.stop();
-        },
-      }).catch(() => undefined);
-    }
-    await chrome.scripting.unregisterContentScripts({ ids: [this.id] }).catch(() => undefined);
-  }
-}
 
 function mergeCollected(target: Record<string, Set<string>>, source: Record<string, string[]>, maximum: number): void {
   for (const [key, values] of Object.entries(source)) {

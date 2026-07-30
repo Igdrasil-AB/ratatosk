@@ -65,6 +65,9 @@ export interface Strategy {
     ctx: RunContext,
     signal?: AbortSignal,
   ): Promise<RawDocument>;
+  /** Release run-scoped capabilities even when every listed identity was
+   * already accepted and therefore never resolved. */
+  dispose?(): Promise<void>;
 }
 
 export type StrategyMap = Record<"network" | "dom" | "html", Strategy>;
@@ -104,9 +107,9 @@ export async function runVendor(
   strategies: StrategyMap,
 ): Promise<RunResult> {
   const documents: FetchedDocument[] = [];
-  const result = await executeVendor(recipe, ctx, strategies, async (document) => {
-    documents.push(document);
-  });
+  const result = await executeVendorWithCleanup(recipe, ctx, strategies, async (document) => {
+      documents.push(document);
+    });
   return {
     vendorId: result.vendorId,
     documents,
@@ -131,7 +134,22 @@ export function streamVendor(
   emit: (document: FetchedDocument) => Promise<void>,
   options: StreamVendorOptions = {},
 ): Promise<StreamRunResult> {
-  return executeVendor(recipe, ctx, strategies, emit, options);
+  return executeVendorWithCleanup(recipe, ctx, strategies, emit, options);
+}
+
+async function executeVendorWithCleanup(
+  recipe: VendorRecipe,
+  ctx: RunContext,
+  strategies: StrategyMap,
+  emit: (document: FetchedDocument) => Promise<void>,
+  options: StreamVendorOptions = {},
+): Promise<StreamRunResult> {
+  const strategy = strategies[recipe.invoices.strategy];
+  try {
+    return await executeVendor(recipe, ctx, strategies, emit, options);
+  } finally {
+    await strategy.dispose?.();
+  }
 }
 
 async function executeVendor(
@@ -289,8 +307,7 @@ async function executeVendor(
       const batch = pending.slice(offset, offset + DOCUMENT_FETCH_CONCURRENCY);
       const outcomes = await mapConcurrentOrdered(batch, {
         limit: DOCUMENT_FETCH_CONCURRENCY,
-        stopOnError: (error) =>
-          error instanceof AuthExpired || error instanceof RateLimited || error instanceof DocumentPermissionRequired,
+        stopOnError: isFatalDocumentError,
       }, async ({ ref, vars: documentVars, key }, _index, signal) => {
         const raw = await strategy.fetchDocument(recipe, ref, documentVars, ctx, signal);
         const contentKey = await contentIdempotencyKey(ctx.companyId, source, raw.bytes);
@@ -314,6 +331,17 @@ async function executeVendor(
         } satisfies FetchedDocument;
       });
 
+      // A vendor-wide failure invalidates the whole bounded batch. Inspect the
+      // closed outcome set before any fulfilled sibling can enter the sink;
+      // otherwise source ordering could emit an earlier result and only then
+      // encounter the fatal rejection.
+      const fatalOutcome = outcomes.find((outcome) =>
+        outcome.status === "rejected" && isFatalDocumentError(outcome.error));
+      if (fatalOutcome?.status === "rejected") {
+        options.onFailure?.(collectionFailureEvidence(fatalOutcome.error, "document_fetch", list.retrieval));
+        throw fatalOutcome.error;
+      }
+
       for (const [outcomeIndex, outcome] of outcomes.entries()) {
         const { identityClaims } = batch[outcomeIndex];
         if (outcome.status === "cancelled") {
@@ -323,10 +351,6 @@ async function executeVendor(
         if (outcome.status === "rejected") {
           await releaseClaims(ctx, identityClaims);
           options.onFailure?.(collectionFailureEvidence(outcome.error, "document_fetch", list.retrieval));
-          if (
-            outcome.error instanceof AuthExpired || outcome.error instanceof RateLimited ||
-            outcome.error instanceof DocumentPermissionRequired
-          ) throw outcome.error;
           firstScopeError ??= outcome.error;
           continue;
         }
@@ -407,6 +431,12 @@ async function executeVendor(
       failureCodes: [...new Set(scopeErrors.map(operationalCodeForError))],
     },
   };
+}
+
+function isFatalDocumentError(error: unknown): boolean {
+  return error instanceof AuthExpired ||
+    error instanceof RateLimited ||
+    error instanceof DocumentPermissionRequired;
 }
 
 function configIdentityScope(recipe: VendorRecipe, scopeVars: Record<string, unknown>): string | undefined {

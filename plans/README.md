@@ -7,6 +7,10 @@ was added on 2026-07-21 against Ratatosk commit `3d33b9f` after Supabase and
 ClickUp exposed two distinct generic discovery false negatives. Plan 012 was
 added the same day after codebase and primary-source research into a safe,
 scalable self-healing architecture for unknown suppliers.
+Plan 013 was added on 2026-07-27 against Ratatosk commit `b7082c8` after live
+Supabase acceptance proved that semantic list actions could create page-owned
+Chrome downloads before identity reservation, validation, sink acceptance, or
+deduplication.
 
 Read each plan fully before editing. Use clean feature worktrees, run every gate,
 honor STOP conditions, and update the status here after review. Do not place real
@@ -28,7 +32,8 @@ public repository.
 | [009](009-launch-guided-capture-missions.md) | Authorized contributors receive bounded capture missions and receipts | P2 | L | 007, 008 | REJECTED — removed in favor of Collector linking to the public GitHub contribution path |
 | [010](010-orchestrate-vendor-health-with-temporal.md) | Temporal TypeScript schedules supplier-health evaluation and follow-up | P1 | L | 004, 005, 008 | BLOCKED — the app, schema, and worker manifest are deployed, but production has no operational EKS/Temporal platform; the schedule remains unregistered and paused under the plan's STOP condition |
 | [011](011-cold-replay-and-semantic-download-parity.md) | Unknown SPA invoice routes are captured through exact-entry cold replay and semantic candidates reproduce during verification | P1 | L | — | IN PROGRESS — automated implementation and gates complete; live Supabase structure recognizes 8 invoice actions; end-to-end Supabase/ClickUp delivery and duplicate acceptance remains |
-| [012](012-build-adaptive-supplier-acquisition-fabric.md) | Proven supplier paths repair locally through a packaged capability grammar, diverse fallbacks, shadow proof, atomic promotion, and rollback | P1 | L | 011 | TODO |
+| [012](012-build-adaptive-supplier-acquisition-fabric.md) | Proven supplier paths repair locally through a packaged capability grammar, diverse fallbacks, shadow proof, atomic promotion, and rollback | P1 | L | 011, 013 | TODO |
+| [013](013-enforce-transactional-dom-acquisition.md) | Every click-capable DOM document path runs after stable identity reservation and cannot leave a page-owned browser download | P0 | L | — | IN PROGRESS — shared transaction/controller, synthetic gates, CI, audit, build, package, and artifact verification pass; exact-build Chrome load and first/second/cadence live acceptance remain |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or
 `REJECTED — <reason>`.
@@ -59,6 +64,17 @@ Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or
   alternate orchestration stack was substituted, and no schedule was activated.
   Provisioning the reviewed platform is the next external prerequisite before a
   paused manual trigger and shadow comparison can produce cutover evidence.
+- Plan 013: the unpublished `0.8.48` acquisition-revision-2 exact-build candidate separates observational DOM
+  enumeration from resolution, reserves stable identities before semantic
+  actions, and routes all production page activation through reviewed
+  action-scoped owners. The full 667-test suite, boundary check, vendor
+  validation, high-severity audit, Collector build, deterministic package, and
+  artifact verification pass. Native attachment responses are blocked before
+  global download creation, and same-URL user downloads are never observed or
+  mutated. The synthetic release regression passes and the release validator
+  verifies the ZIP before failing closed because the checksum-bound live
+  acceptance receipt is intentionally absent. Candidate ZIP SHA-256:
+  `77405c4565d03ba7bd4568ea00b52414c30cbd196ebafd02a0ca4df894ae37ca`.
 
 ## Dependency graph
 
@@ -74,19 +90,21 @@ Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or
 
 009 guided capture missions: REJECTED, historical only, no downstream dependency
 
-011 exact-entry cold replay + semantic parity
-               |
-               v
-012 adaptive acquisition fabric: staged P1 multi-PR program
+011 automated semantic slice ──> 013 transactional DOM acquisition
+                                      |
+                                      ├─> 011 live acceptance
+                                      └─> 012 adaptive acquisition fabric
 ```
 
 Plans 001–003 may run in parallel. Plan 006 is deliberately gated on the local
 correctness work. Plans 007–008 span Ratatosk and Svala and must use separate
 clean worktrees and PRs per repository. Plan 009 is retained only as rejected
 historical context and must not be implemented or consumed. Plan 010 extends Svala's existing
-Temporal TypeScript foundation; it must not create another SDK stack. Plan 012
-depends on Plan 011 because repair cannot be trusted until cold observation and
-semantic search/verification are reproducible.
+Temporal TypeScript foundation; it must not create another SDK stack. Plan 013
+is the P0 corrective prerequisite for Plan 011's remaining live duplicate
+acceptance. Plan 012 depends on both Plans 011 and 013 because repair cannot be
+trusted until cold observation, semantic search/verification, and document
+actions are reproducible and idempotent.
 
 ## Program invariants
 
@@ -103,6 +121,9 @@ semantic search/verification are reproducible.
 - Unsupported-supplier discovery may observe only the user's exact approved
   origin, keeps response evidence bounded and ephemeral, and admits a local
   integration only after a real PDF is accepted by the selected destination.
+- Document listing is observational. A page action that can produce a document
+  runs only after stable identity reservation through one shared, action-scoped
+  controller; a browser-owned download is never delivery proof.
 
 ## Verification baselines
 

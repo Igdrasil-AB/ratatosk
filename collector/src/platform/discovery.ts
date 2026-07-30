@@ -59,6 +59,7 @@ import discoveryPageObserverScript from "./discovery-page-observer?script&iife";
 import { getDiscoveredSuppliers } from "./discovered-suppliers";
 import { DISCOVERY_DOM_POLICY } from "./discovery-dom-policy";
 import { withForegroundTabVisibility } from "./tab-visibility";
+import { DocumentActionController } from "./document-action-controller";
 
 /**
  * Every provider host that admission can accept as a document link.
@@ -509,13 +510,17 @@ export async function previewCandidate(recipe: VendorRecipe): Promise<number> {
     const previewRecipe = recipeForPreview(recipe);
     const strategy = buildStrategies(previewRecipe)[previewRecipe.invoices.strategy];
     const refs: InvoiceRef[] = [];
-    for (const scope of scopes.slice(0, 20)) {
-      try {
-        refs.push(...(await strategy.list(previewRecipe, { ...ctx.vars, ...scope }, ctx)).refs);
-      } catch {
-        throw new CandidatePreviewError("list_failed");
+    try {
+      for (const scope of scopes.slice(0, 20)) {
+        try {
+          refs.push(...(await strategy.list(previewRecipe, { ...ctx.vars, ...scope }, ctx)).refs);
+        } catch {
+          throw new CandidatePreviewError("list_failed");
+        }
+        if (refs.length > 500) throw new CandidatePreviewError("too_many_documents");
       }
-      if (refs.length > 500) throw new CandidatePreviewError("too_many_documents");
+    } finally {
+      await strategy.dispose?.();
     }
     const allowedOrigins = new Set(recipe.hosts.map((host) => new URL(host.slice(0, -2)).origin));
     const ids = new Set<string>();
@@ -525,7 +530,10 @@ export async function previewCandidate(recipe: VendorRecipe): Promise<number> {
       }
       if (ids.has(ref.vendorInvoiceId)) continue;
       ids.add(ref.vendorInvoiceId);
-      if (!ref.documentUrl && !recipe.invoices.document.request) throw new CandidatePreviewError("invalid_document_path");
+      if (
+        !ref.documentUrl && !recipe.invoices.document.request &&
+        ref.resolution?.kind !== "semantic_action"
+      ) throw new CandidatePreviewError("invalid_document_path");
       if (ref.documentUrl) {
         let document: URL;
         try { document = new URL(ref.documentUrl); } catch { throw new CandidatePreviewError("invalid_document_path"); }
@@ -662,12 +670,14 @@ export async function probeSupplierTab(
   if (!currentUrl || currentUrl.protocol !== "https:" || currentUrl.origin !== expectedOrigin) {
     throw new Error("the supplier tab changed before discovery started");
   }
-  const [injection] = await chrome.scripting.executeScript({
-    target: { tabId },
-    world: "MAIN",
-    func: collectPageEvidenceInPage,
-    args: [options, { ...EXPLORATION_ROUTE_POLICY, documentSelector: DOM_LINK_SELECTOR }, DISCOVERY_DOM_POLICY],
-  });
+  const controller = new DocumentActionController(new Set([expectedOrigin]), "discovery");
+  const [injection] = await controller.runDiscoveryProbe(tabId, () =>
+    chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: collectPageEvidenceInPage,
+      args: [options, { ...EXPLORATION_ROUTE_POLICY, documentSelector: DOM_LINK_SELECTOR }, DISCOVERY_DOM_POLICY],
+    }));
   return parsePageEvidence(injection?.result, expectedOrigin, options);
 }
 

@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import pkg from "../package.json";
+import {
+  DOCUMENT_ACQUISITION_REVISION,
+  DOCUMENT_ACQUISITION_RUNTIME_MARKER,
+} from "../collector/src/platform/acquisition-revision";
 import { zipDeterministically } from "./deterministic-zip";
 import { assertPackageFileSafe, collectPackageFiles } from "./package-files";
 import { validateCollectorManifest } from "./manifest-validation";
@@ -16,6 +20,7 @@ const manifestPath = join(root, "manifest.json");
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
   version?: string;
   manifest_version?: number;
+  minimum_chrome_version?: string;
   name?: string;
   permissions?: string[];
   host_permissions?: string[];
@@ -68,5 +73,12 @@ function assertCollectorBundle(files: Record<string, Uint8Array>): void {
     if (javascript.includes(authoringMarker)) {
       throw new Error(`Collector bundle contains an authoring marker: ${authoringMarker}`);
     }
+  }
+  const acquisitionMarker = `document-acquisition=${DOCUMENT_ACQUISITION_REVISION}`;
+  if (DOCUMENT_ACQUISITION_RUNTIME_MARKER !== acquisitionMarker) {
+    throw new Error(`Collector runtime acquisition marker does not match revision ${DOCUMENT_ACQUISITION_REVISION}`);
+  }
+  if (!javascript.includes(acquisitionMarker)) {
+    throw new Error(`Collector bundle is missing runtime identity ${acquisitionMarker}`);
   }
 }

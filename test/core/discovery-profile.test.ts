@@ -303,7 +303,8 @@ describe("discovered supplier profiles", () => {
 
     const clicking = domRecipe();
     if (clicking.invoices.strategy === "dom") {
-      clicking.invoices.list.steps.unshift({ action: "click", selector: "button" });
+      (clicking.invoices.list.steps as Array<{ action: string; selector?: string }>)
+        .unshift({ action: "click", selector: "button" });
     }
     expect(() => assertDiscoveredRecipePolicy(clicking, origin, entryUrl)).toThrow(/cannot click/);
 

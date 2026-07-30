@@ -53,25 +53,25 @@ describe("semantic action observer boundary", () => {
     }, allowed)).toBe("https://documents.example/signed/opaque-value");
   });
 
-  it("correlates only the active tab and removes every listener at the end of the run", () => {
+  it("correlates only the active tab and detects native responses without observing global downloads", () => {
     const beforeRequest = new FakeEvent<Record<string, unknown>>();
     const headersReceived = new FakeEvent<Record<string, unknown>>();
     const beforeRedirect = new FakeEvent<Record<string, unknown>>();
-    const downloadCreated = new FakeEvent<Record<string, unknown>>();
     const platform = {
       beforeRequest,
       headersReceived,
       beforeRedirect,
-      downloadCreated,
     } as unknown as SemanticActionObserverPlatform;
     const observer = new SemanticActionObserver(allowed, platform);
 
     expect(observer.start(7)).toBe(true);
-    beforeRequest.emit({ tabId: 8, url: "https://vendor.example/invoices/wrong/download", method: "GET" });
-    beforeRequest.emit({ tabId: 7, url: "https://vendor.example/invoices/123/download", method: "GET" });
+    observer.beginAction();
+    beforeRequest.emit({ requestId: "wrong-tab", tabId: 8, url: "https://vendor.example/invoices/wrong/download", method: "GET" });
+    beforeRequest.emit({ requestId: "request-1", tabId: 7, url: "https://vendor.example/invoices/123/download", method: "GET" });
     headersReceived.emit({
+      requestId: "request-1",
       tabId: 7,
-      url: "https://documents.example/signed/opaque",
+      url: "https://vendor.example/invoices/123/download",
       method: "GET",
       responseHeaders: [
         { name: "Content-Type", value: "application/pdf" },
@@ -79,39 +79,37 @@ describe("semantic action observer boundary", () => {
       ],
     });
     beforeRedirect.emit({
+      requestId: "request-1",
       tabId: 7,
       url: "https://vendor.example/invoices/123/download",
       redirectUrl: "https://documents.example/signed/redirected",
       method: "GET",
     });
-    downloadCreated.emit({
-      id: 1,
-      url: "https://documents.example/unrelated/same-origin",
-      finalUrl: "https://documents.example/unrelated/same-origin",
-      mime: "application/pdf",
-      filename: "/Downloads/unrelated.pdf",
-    });
     beforeRequest.emit({
+      requestId: "request-2",
       tabId: 7,
       url: "https://documents.example/signed/opaque-item",
       method: "GET",
     });
-    downloadCreated.emit({
-      id: 2,
+    headersReceived.emit({
+      requestId: "request-2",
+      tabId: 7,
       url: "https://documents.example/signed/opaque-item",
-      finalUrl: "https://documents.example/signed/opaque-item",
-      mime: "application/octet-stream",
-      filename: "/Downloads/invoice.pdf",
+      method: "GET",
+      responseHeaders: [
+        { name: "Content-Type", value: "application/octet-stream" },
+        { name: "Content-Disposition", value: 'attachment; filename="invoice.pdf"' },
+      ],
     });
 
     expect(observer.snapshotDocuments()).toEqual([
-      "https://documents.example/signed/opaque",
+      "https://vendor.example/invoices/123/download",
       "https://documents.example/signed/redirected",
       "https://documents.example/signed/opaque-item",
     ]);
     expect(observer.snapshotDocumentObservations()).toEqual([
       {
-        url: "https://documents.example/signed/opaque",
+        url: "https://vendor.example/invoices/123/download",
         evidence: [{
           source: "content-disposition",
           confidence: "medium",
@@ -121,18 +119,19 @@ describe("semantic action observer boundary", () => {
       {
         url: "https://documents.example/signed/opaque-item",
         evidence: [{
-          source: "download-filename",
+          source: "content-disposition",
           confidence: "medium",
           filename: "invoice.pdf",
         }],
       },
     ]);
+    expect(observer.snapshotNativeDownloadAttempted()).toBe(true);
 
+    observer.endAction();
     observer.stop();
     expect(beforeRequest.listenerCount).toBe(0);
     expect(headersReceived.listenerCount).toBe(0);
     expect(beforeRedirect.listenerCount).toBe(0);
-    expect(downloadCreated.listenerCount).toBe(0);
   });
 });
 
