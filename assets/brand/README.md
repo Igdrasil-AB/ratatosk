@@ -10,6 +10,8 @@ sources are not included in the Collector package.
 - `root-reconciliation-ledger-roots.png` — copied from
   `Igdrasil-AB/igdrasil-landingpage/landing-page-rustic/public/brand/root-reconciliation-ledger-roots.png`
   on `main` (Git blob `504a6f78554b6fa50f26bc954ab86e1deeea2688`).
+- `ratatosk-small-promo-beige-source.png` — the approved 440×280 Chrome Web
+  Store tile with the squirrel beside a compact Collector product preview.
 
 Run `npm run gen:icons` to regenerate the four extension icons, the Collector's
 rustic roots header, and the required 440×280 Chrome Web Store promotional tile.
