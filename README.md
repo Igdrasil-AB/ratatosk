@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="store/assets/ratatosk-small-promo-440x280.png" alt="Ratatosk squirrel among rustic ledger roots" width="440">
+  <img src="store/assets/ratatosk-small-promo-440x280.png" alt="Ratatosk squirrel beside the Invoice Collector product preview" width="440">
 </p>
 
 <h1 align="center">Ratatosk</h1>

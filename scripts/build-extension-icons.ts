@@ -9,6 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 const sizes = [16, 32, 48, 128];
 const sourcePath = "assets/brand/invoice-squirrel.png";
 const rusticBackgroundPath = "assets/brand/root-reconciliation-ledger-roots.png";
+const smallPromoPath = "assets/brand/ratatosk-small-promo-beige-source.png";
 const source = decodeRgbaPng(readFileSync(sourcePath));
 const bounds = opaqueBounds(source);
 
@@ -24,14 +25,20 @@ for (const size of sizes) {
 
 mkdirSync("store/assets", { recursive: true });
 const rusticBackground = decodeRgbaPng(readFileSync(rusticBackgroundPath));
-const promo = buildSmallPromo(rusticBackground, source, bounds);
-writeFileSync("store/assets/ratatosk-small-promo-440x280.png", encodeRgbaPng(promo));
+const smallPromoBytes = readFileSync(smallPromoPath);
+const smallPromo = decodeRgbaPng(smallPromoBytes);
+if (smallPromo.width !== 440 || smallPromo.height !== 280) {
+  throw new Error(`${smallPromoPath} must be exactly 440×280 px`);
+}
+// Preserve the approved source bytes exactly. Re-encoding the Store artwork is
+// unnecessary and can discard its color metadata even when the pixels match.
+writeFileSync("store/assets/ratatosk-small-promo-440x280.png", smallPromoBytes);
 mkdirSync("public/brand", { recursive: true });
 const popupHeader = buildRootsHeader(rusticBackground);
 writeFileSync("public/brand/roots-header.png", encodeRgbaPng(popupHeader));
 
 console.log(`✓ Ratatosk squirrel icons generated from ${sourcePath} (${sizes.join(", ")} px)`);
-console.log(`✓ Chrome Web Store small promo generated from ${rusticBackgroundPath} (440×280 px)`);
+console.log(`✓ Chrome Web Store small promo generated from ${smallPromoPath} (440×280 px)`);
 console.log(`✓ Collector rustic roots header generated from ${rusticBackgroundPath} (720×144 px)`);
 
 interface RgbaImage {
@@ -109,39 +116,6 @@ function decodeRgbaPng(bytes: Uint8Array): RgbaImage {
     pixels[output + 2] = decoded[input + 2];
     pixels[output + 3] = 255;
   }
-  return { width, height, pixels };
-}
-
-function buildSmallPromo(background: RgbaImage, mascot: RgbaImage, mascotBounds: Bounds): RgbaImage {
-  const width = 440;
-  const height = 280;
-  const pixels = new Uint8Array(width * height * 4);
-  const sourceAspect = background.width / background.height;
-  const targetAspect = width / height;
-  const cropWidth = sourceAspect > targetAspect ? Math.round(background.height * targetAspect) : background.width;
-  const cropHeight = sourceAspect > targetAspect ? background.height : Math.round(background.width / targetAspect);
-  // Bias the crop to the right so the reconciliation roots remain visible.
-  const cropLeft = Math.max(0, Math.round((background.width - cropWidth) * 0.72));
-  const cropTop = Math.max(0, Math.round((background.height - cropHeight) * 0.52));
-
-  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-    const sourceX = cropLeft + Math.min(cropWidth - 1, Math.floor((x / width) * cropWidth));
-    const sourceY = cropTop + Math.min(cropHeight - 1, Math.floor((y / height) * cropHeight));
-    const sourceOffset = (sourceY * background.width + sourceX) * 4;
-    const targetOffset = (y * width + x) * 4;
-    const luminance = (background.pixels[sourceOffset] * 0.24)
-      + (background.pixels[sourceOffset + 1] * 0.68)
-      + (background.pixels[sourceOffset + 2] * 0.08);
-    const ink = 1 - (luminance / 255);
-    // Retain the paper/ledger texture while tinting it into Igdrasil's deep
-    // green palette. The right-side roots stay legible at thumbnail size.
-    pixels[targetOffset] = Math.round(24 - ink * 12);
-    pixels[targetOffset + 1] = Math.round(92 - ink * 42);
-    pixels[targetOffset + 2] = Math.round(69 - ink * 32);
-    pixels[targetOffset + 3] = 255;
-  }
-
-  compositeNearestNeighbor(pixels, width, height, mascot, mascotBounds, 58, 51, 168);
   return { width, height, pixels };
 }
 
