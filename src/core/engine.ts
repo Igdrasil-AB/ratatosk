@@ -21,6 +21,7 @@ import type {
   RetrievalProof,
   RunContext,
   RunResult,
+  SyncWindowStats,
   VendorRecipe,
 } from "./types";
 import {
@@ -40,6 +41,7 @@ import { extract } from "./extract";
 import { get, getArray } from "./jsonpath";
 import { DEFAULT_SAFE_CONCURRENCY, mapConcurrentOrdered } from "./concurrency";
 import { isBoundedTenantIdentifierSegment } from "./discovery";
+import { filterInvoiceRefsBySyncWindow } from "./sync-window";
 
 /** Hard runtime limits complement recipe validation: runtime responses are
  * untrusted and config dimensions multiply one another. */
@@ -75,6 +77,7 @@ export interface StreamRunResult {
   retrievalProofs: RetrievalProof[];
   /** Exact single-scope traversal evidence for local candidate diagnostics. */
   retrievalProof?: InvoiceListResult["retrieval"];
+  syncWindow?: SyncWindowStats;
   scopes: RunResult["scopes"];
 }
 
@@ -109,6 +112,7 @@ export async function runVendor(
     documents,
     retrieval: result.retrieval,
     retrievalProofs: result.retrievalProofs,
+    ...(result.syncWindow ? { syncWindow: result.syncWindow } : {}),
     scopes: result.scopes,
   };
 }
@@ -165,8 +169,23 @@ async function executeVendor(
   let emptyScopes = 0;
   let documentCount = 0;
   const retrievalProofs: RetrievalProof[] = [];
+  const syncWindowStats: SyncWindowStats | undefined = ctx.syncWindow
+    ? {
+        range: ctx.syncWindow,
+        mode: "bounded",
+        matched: 0,
+        skippedBefore: 0,
+        skippedAfter: 0,
+        skippedUndated: 0,
+      }
+    : undefined;
 
-  const plans: Array<{ vars: Record<string, unknown>; list: InvoiceListResult; identityScope?: string }> = [];
+  const listedPlans: Array<{
+    vars: Record<string, unknown>;
+    list: InvoiceListResult;
+    boundedRefs?: InvoiceRef[];
+    identityScope?: string;
+  }> = [];
 
   for (const scopeVars of scopes) {
     const vars = { ...ctx.vars, ...scopeVars };
@@ -182,9 +201,22 @@ async function executeVendor(
         ));
         continue;
       }
+      let boundedRefs: InvoiceRef[] | undefined;
+      if (ctx.syncWindow && syncWindowStats) {
+        const filtered = filterInvoiceRefsBySyncWindow(list.refs, ctx.syncWindow);
+        syncWindowStats.matched += filtered.matched;
+        syncWindowStats.skippedBefore += filtered.skippedBefore;
+        syncWindowStats.skippedAfter += filtered.skippedAfter;
+        syncWindowStats.skippedUndated += filtered.skippedUndated;
+        boundedRefs = filtered.refs;
+      }
       succeededScopes++;
-      if (list.refs.length === 0) emptyScopes++;
-      plans.push({ vars, list, identityScope: configIdentityScope(recipe, scopeVars) });
+      listedPlans.push({
+        vars,
+        list,
+        ...(boundedRefs ? { boundedRefs } : {}),
+        identityScope: configIdentityScope(recipe, scopeVars),
+      });
     } catch (err) {
       options.onFailure?.(collectionFailureEvidence(err, "invoice_list"));
       // A dead session or missing document-provider permission is vendor-wide,
@@ -197,7 +229,23 @@ async function executeVendor(
   }
 
   if (options.requireCompleteRetrieval && scopeErrors.length > 0) throw scopeErrors[0];
-  if (plans.length === 0 && scopeErrors.length === scopes.length && scopeErrors.length > 0) throw scopeErrors[0];
+  if (listedPlans.length === 0 && scopeErrors.length === scopes.length && scopeErrors.length > 0) throw scopeErrors[0];
+
+  // A mixed bounded/unbounded supplier run would be impossible to explain and
+  // could still omit an undated invoice that belongs inside the requested
+  // range. Decide once, after every scope list is available and before any
+  // identity reservation or PDF fetch: either every invoice is date-bounded,
+  // or every listed invoice falls back to normal all-history collection.
+  if (syncWindowStats && syncWindowStats.skippedUndated > 0) {
+    syncWindowStats.mode = "all_history_fallback";
+  }
+  const plans = listedPlans.map(({ boundedRefs, ...plan }) => ({
+    ...plan,
+    list: syncWindowStats?.mode === "bounded" && boundedRefs
+      ? { ...plan.list, refs: boundedRefs }
+      : plan.list,
+  }));
+  emptyScopes = plans.filter(({ list }) => list.refs.length === 0).length;
 
   // Reserve every equivalent supplier identity across all scopes before any
   // bounded concurrent fetch begins. A supplier can surface the same invoice
@@ -350,6 +398,7 @@ async function executeVendor(
     retrieval: retrievalErrorCount === 0 ? "complete" : "partial",
     retrievalProofs,
     ...(retrievalProofs.length === 1 ? { retrievalProof: retrievalProofs[0] } : {}),
+    ...(syncWindowStats ? { syncWindow: syncWindowStats } : {}),
     scopes: {
       total: scopes.length,
       succeeded: succeededScopes,

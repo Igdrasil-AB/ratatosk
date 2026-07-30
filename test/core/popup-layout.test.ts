@@ -156,6 +156,24 @@ describe("Collector popup layout regressions", () => {
     expect(popupSource).toContain('data-action="sync-all">Collect All');
   });
 
+  it("asks for an optional starting month before manual collection", () => {
+    expect(popupStyles).toContain('id="sync-dialog"');
+    expect(popupStyles).toContain('id="sync-from-month" type="month" min="1970-01"');
+    expect(popupStyles).toContain("Leave empty to check all available history");
+    expect(popupSource).toContain('openSyncDialog({ kind: "connected", vendorId: vendorId! })');
+    expect(popupSource).toContain('openSyncDialog({ kind: "connected" })');
+    expect(popupSource).toContain('openSyncDialog({ kind: "discovery", vendorId })');
+    expect(popupSource).toContain("...(fromMonth ? { fromMonth } : {})");
+    expect(serviceWorkerSource).toContain("isSyncMonth(message.fromMonth)");
+    expect(serviceWorkerSource).toContain("beginSupplierDiscoveryConnect(message.vendorId, message.fromMonth)");
+    expect(serviceWorkerSource).toContain("}, pending.fromMonth)");
+    expect(serviceWorkerSource).toContain("DISCOVERY_FAILURE_MESSAGES.monthRangeEmpty");
+    expect(popupSource).toContain('connection.lastCode === "month_range_fallback_all"');
+    expect(popupSource).toContain("used all history");
+    expect(popupStyles).toContain("Ratatosk will collect all history and tell you when it finishes");
+    expect(popupSource).toContain("Invoice dates were unavailable, so Ratatosk collected all available history");
+  });
+
   it("closes the date menu with Escape or an outside click and clears stale toast text", () => {
     expect(popupSource).toContain("closeDateFilter(true)");
     expect(popupSource).toContain('document.addEventListener("pointerdown"');

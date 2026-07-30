@@ -109,6 +109,23 @@ export interface InvoiceListResult {
   retrieval: RetrievalProof;
 }
 
+/** User-selected invoice issue-month range. Both endpoints are inclusive. */
+export interface SyncMonthWindow {
+  granularity: "month";
+  fromMonth: string;
+  throughMonth: string;
+}
+
+export interface SyncWindowStats {
+  range: SyncMonthWindow;
+  /** One supplier-wide decision made after every successful scope is listed. */
+  mode: "bounded" | "all_history_fallback";
+  matched: number;
+  skippedBefore: number;
+  skippedAfter: number;
+  skippedUndated: number;
+}
+
 /** A fully materialized invoice document, ready to hand to an {@link IngestSink}. */
 export interface FetchedDocument {
   /** Namespaced source, e.g. `"ext:openai"`. */
@@ -460,6 +477,8 @@ export interface RunContext {
   companyId: string;
   /** Base template variables, e.g. the current `{year}`/`{month}` window. */
   vars: Record<string, unknown>;
+  /** Present only for an explicitly month-bounded collection run. */
+  syncWindow?: SyncMonthWindow;
   seen: SeenStore;
   /** Performs a credentialed HTTP request. Injected so the engine stays platform-free. */
   fetch: (spec: RequestSpec, vars: Record<string, unknown>, signal?: AbortSignal) => Promise<HttpResponse>;
@@ -489,6 +508,7 @@ export interface RunResult {
   /** List proofs in deterministic scope traversal order. A scope that failed
    * before producing a list has no proof and remains visible in `scopes`. */
   retrievalProofs: RetrievalProof[];
+  syncWindow?: SyncWindowStats;
   scopes: {
     total: number;
     succeeded: number;

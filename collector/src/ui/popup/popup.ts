@@ -3,6 +3,7 @@
  * comes from the service worker and each screen renders semantic native controls.
  */
 import { send, type DiscoveryStatusView, type ScheduleInfo, type SourceView } from "../../platform/messaging";
+import type { VendorRunSummary } from "../../platform/collector";
 import type { LedgerEntry } from "../../platform/storage";
 import { vendorLifecycleLabel } from "../../../../src/vendors/lifecycle";
 import {
@@ -40,12 +41,20 @@ const historyDialog = document.getElementById("history-dialog") as HTMLDialogEle
 const historyName = document.getElementById("history-name") as HTMLElement;
 const confirmHistory = document.getElementById("confirm-history") as HTMLButtonElement;
 const cancelHistory = document.getElementById("cancel-history") as HTMLButtonElement;
+const syncDialog = document.getElementById("sync-dialog") as HTMLDialogElement;
+const syncFromMonth = document.getElementById("sync-from-month") as HTMLInputElement;
+const confirmSync = document.getElementById("confirm-sync") as HTMLButtonElement;
+const cancelSync = document.getElementById("cancel-sync") as HTMLButtonElement;
 const VENDOR_GUIDANCE_SEEN = "ui.vendorGuidanceSeen.v1";
 
 let screen: PanelScreen = "home";
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let disconnectVendorId: string | null = null;
 let historyVendorId: string | null = null;
+type CollectionTarget =
+  | { kind: "connected"; vendorId?: string }
+  | { kind: "discovery"; vendorId: string };
+let pendingSyncTarget: CollectionTarget | null = null;
 let hasLoadedBackgroundState = false;
 const expandedSupplierIds = new Set<string>();
 const state = {
@@ -397,8 +406,10 @@ function renderVendors(): void {
       action = `<button type="button" class="btn warn sm" data-action="connect" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}" ${isBusy ? "disabled" : ""}>${isBusy ? "Connecting…" : "Reconnect"}</button>`;
     } else if (connection) {
       const count = connection.lastCount ?? 0;
-      sub = connection.lastStatus === "partial"
-        ? `${count > 0 ? `${count} collected` : "No new invoices"} · ${connection.lastFailedScopes ?? 0} account scope${connection.lastFailedScopes === 1 ? "" : "s"} skipped`
+      sub = connection.lastStatus === "ok" && connection.lastCode === "month_range_fallback_all"
+        ? `${count > 0 ? `${count} collected` : "No new invoices"} · all history checked because invoice dates were unavailable`
+        : connection.lastStatus === "partial"
+          ? `${count > 0 ? `${count} collected` : "No new invoices"} · ${connection.lastFailedScopes ?? 0} account scope${connection.lastFailedScopes === 1 ? "" : "s"} skipped`
         : connection.lastStatus === "rate_limited"
           ? `Supplier asked Ratatosk to wait · resumes ${relTime(connection.nextEligibleRunAt)}`
           : connection.lastStatus === "error"
@@ -447,7 +458,10 @@ function discoveryCard(): string {
     return `<aside class="supplier-request discovery-progress" role="status"><span class="discovery-spinner" aria-hidden="true"></span><span class="supplier-request-copy"><strong>Verifying downloads…</strong><small>${esc(discovery.name)} will be saved only if a valid PDF is collected.</small></span></aside>`;
   }
   if (discovery.stage === "complete") {
-    return `<aside class="supplier-request discovery-complete" role="status"><span class="supplier-request-mark success" aria-hidden="true">✓</span><span class="supplier-request-copy"><strong>${esc(discovery.name)} is connected</strong><small>Collected ${discovery.count} verified invoice${discovery.count === 1 ? "" : "s"}. The supplier is now in your list.</small></span><button type="button" class="quiet-link compact" data-action="dismiss-discovery">Done</button></aside>`;
+    const fallback = discovery.monthFallbackAll
+      ? " Invoice dates were unavailable, so Ratatosk collected all available history."
+      : "";
+    return `<aside class="supplier-request discovery-complete" role="status"><span class="supplier-request-mark success" aria-hidden="true">✓</span><span class="supplier-request-copy"><strong>${esc(discovery.name)} is connected</strong><small>Collected ${discovery.count} verified invoice${discovery.count === 1 ? "" : "s"}. The supplier is now in your list.${fallback}</small></span><button type="button" class="quiet-link compact" data-action="dismiss-discovery">Done</button></aside>`;
   }
   if (discovery.stage === "failed") {
     const emptyResult = discovery.reason === "not_found" || discovery.reason === "limit_reached";
@@ -534,7 +548,7 @@ app.addEventListener("click", (event) => {
     return;
   }
   if (action === "connect-discovery" && vendorId) {
-    void connectDiscoveryFromUserGesture(vendorId);
+    openSyncDialog({ kind: "discovery", vendorId });
     return;
   }
   if (action === "set-ledger-range") {
@@ -667,10 +681,14 @@ async function discoverFromUserGesture(): Promise<void> {
   }
 }
 
-async function connectDiscoveryFromUserGesture(vendorId: string): Promise<void> {
+async function connectDiscoveryFromUserGesture(vendorId: string, fromMonth?: string): Promise<void> {
   const discovery = state.discovery;
   if (discovery.stage !== "preview" || discovery.vendorId !== vendorId) return;
-  const prepared = send({ type: "beginDiscoveryConnect", vendorId });
+  const prepared = send({
+    type: "beginDiscoveryConnect",
+    vendorId,
+    ...(fromMonth ? { fromMonth } : {}),
+  });
   const permission = requestHostPermissions(discovery.requiredOrigins);
   state.discovery = { stage: "connecting", name: discovery.name };
   renderVendors();
@@ -691,6 +709,9 @@ async function connectDiscoveryFromUserGesture(vendorId: string): Promise<void> 
     const response = await send({ type: "completeDiscoveryConnect", vendorId });
     await load();
     if (!response.ok && (state.discovery as DiscoveryStatusView).stage !== "complete") toast(response.error);
+    else if (response.ok && "summaries" in response && response.summaries.length) {
+      showRunCompletion(response.summaries);
+    }
   } catch (error) {
     console.error("[collector] discovered supplier connection failed", error);
     await send({ type: "cancelDiscoveryConnect" });
@@ -707,8 +728,8 @@ async function handle(action: string, vendorId?: string): Promise<void> {
     case "show-all-vendors": state.attentionOnly = false; renderVendors(); return;
     case "home": screen = "home"; state.attentionOnly = false; state.inlineError = null; persistPanelUiState(); await load(); return;
     case "retry-load": await load(); return;
-    case "sync": await run({ type: "runNow", vendorId: vendorId! }, vendorId); return;
-    case "sync-all": await run({ type: "runNow" }); return;
+    case "sync": openSyncDialog({ kind: "connected", vendorId: vendorId! }); return;
+    case "sync-all": openSyncDialog({ kind: "connected" }); return;
     case "disconnect": openDisconnectDialog(vendorId!); return;
     case "forget-history": openHistoryDialog(vendorId!); return;
     case "disable-tab-awareness": await disableTabAwareness(); return;
@@ -750,17 +771,7 @@ async function run(message: Parameters<typeof send>[0], vendorId?: string): Prom
       return;
     }
     if ("summaries" in response) {
-      const collected = response.summaries.reduce((count, summary) => count + (summary.status === "ok" || summary.status === "partial" ? summary.count : 0), 0);
-      const waiting = response.summaries.find((summary) => summary.status === "rate_limited" || summary.status === "skipped");
-      const expired = response.summaries.find((summary) => summary.status === "auth_expired");
-      const failed = response.summaries.find((summary) => summary.status === "error");
-      const attention = response.summaries.filter((summary) =>
-        summary.status !== "ok" && summary.status !== "partial").length;
-      if (collected) toast(`Collected ${collected} Invoice${collected === 1 ? "" : "s"}${attention ? ` · ${attention} need attention` : ""}`);
-      else if (waiting) toast(`Supplier asked Ratatosk to wait until ${relTime(waiting.nextEligibleRunAt)}`);
-      else if (expired) toast("Session expired — sign in to the supplier and reconnect");
-      else if (failed?.error) toast(failed.error);
-      else toast("No New Invoices");
+      showRunCompletion(response.summaries);
     }
     await load();
   } catch (error) {
@@ -768,6 +779,73 @@ async function run(message: Parameters<typeof send>[0], vendorId?: string): Prom
     if (vendorId) sourceError(vendorId, "Ratatosk couldn’t reach the background process. Reopen the extension and try again.");
     else toast("Couldn’t finish. Reopen Ratatosk and try again.");
   }
+}
+
+function showRunCompletion(summaries: readonly VendorRunSummary[]): void {
+  const collected = summaries.reduce((count, summary) =>
+    count + (summary.status === "ok" || summary.status === "partial" ? summary.count : 0), 0);
+  const waiting = summaries.find((summary) => summary.status === "rate_limited" || summary.status === "skipped");
+  const expired = summaries.find((summary) => summary.status === "auth_expired");
+  const failed = summaries.find((summary) => summary.status === "error");
+  const fallbackCount = summaries.filter((summary) => summary.code === "month_range_fallback_all").length;
+  const bounded = summaries.find((summary) => summary.syncWindow?.mode === "bounded");
+  const attention = summaries.filter((summary) =>
+    summary.status !== "ok" && summary.status !== "partial").length;
+
+  if (collected && fallbackCount) {
+    toast(`Collected ${collected} Invoice${collected === 1 ? "" : "s"} · used all history for ${fallbackCount} supplier${fallbackCount === 1 ? "" : "s"} because invoice dates were unavailable`);
+  } else if (collected) {
+    toast(`Collected ${collected} Invoice${collected === 1 ? "" : "s"}${attention ? ` · ${attention} need attention` : ""}`);
+  } else if (waiting) {
+    toast(`Supplier asked Ratatosk to wait until ${relTime(waiting.nextEligibleRunAt)}`);
+  } else if (expired) {
+    toast("Session expired — sign in to the supplier and reconnect");
+  } else if (failed?.error) {
+    toast(failed.error);
+  } else if (fallbackCount) {
+    toast(`Checked all available history for ${fallbackCount} supplier${fallbackCount === 1 ? "" : "s"} because invoice dates were unavailable · no new invoices`);
+  } else if (bounded?.syncWindow) {
+    toast(`No new invoices from ${monthLabel(bounded.syncWindow.range.fromMonth)}`);
+  } else {
+    toast("No New Invoices");
+  }
+}
+
+function openSyncDialog(target: CollectionTarget): void {
+  pendingSyncTarget = target;
+  const now = new Date();
+  syncFromMonth.value = "";
+  syncFromMonth.max = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  syncDialog.showModal();
+  requestAnimationFrame(() => syncFromMonth.focus());
+}
+
+confirmSync.addEventListener("click", () => {
+  if (!pendingSyncTarget || !syncFromMonth.reportValidity()) return;
+  const target = pendingSyncTarget;
+  const fromMonth = syncFromMonth.value || undefined;
+  syncDialog.close();
+  pendingSyncTarget = null;
+  if (target.kind === "discovery") {
+    void connectDiscoveryFromUserGesture(target.vendorId, fromMonth);
+    return;
+  }
+  const message: Extract<Parameters<typeof send>[0], { type: "runNow" }> = {
+    type: "runNow",
+    ...(target.vendorId ? { vendorId: target.vendorId } : {}),
+    ...(fromMonth ? { fromMonth } : {}),
+  };
+  void run(message, target.vendorId);
+});
+
+cancelSync.addEventListener("click", () => syncDialog.close());
+syncDialog.addEventListener("close", () => { pendingSyncTarget = null; });
+
+function monthLabel(value: string): string {
+  const match = /^(\d{4})-(\d{2})$/.exec(value);
+  if (!match) return value;
+  return new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric", timeZone: "UTC" })
+    .format(new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1)));
 }
 
 async function retryDiscovery(): Promise<void> {

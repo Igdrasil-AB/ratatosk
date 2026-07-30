@@ -83,5 +83,10 @@ function candidateLocalCode(code: OperationalOutcomeCode | undefined): boolean {
   // An unclassified failure belongs to the candidate that produced it; letting
   // it abort the whole set defeats the proof-ranked fallbacks retained during
   // discovery and was the reason a GitHub page-fetch failure stopped at 1/3.
-  return code === undefined || code === "document_invalid" || code === "retrieval_incomplete" || code === "recipe_incompatible" || code === "unknown";
+  return code === undefined ||
+    code === "document_invalid" ||
+    code === "retrieval_incomplete" ||
+    code === "recipe_incompatible" ||
+    code === "month_range_fallback_all" ||
+    code === "unknown";
 }

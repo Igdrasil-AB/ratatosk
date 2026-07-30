@@ -70,6 +70,7 @@ import { canContinueSupplierDiscovery } from "./discovery-continuation";
 import { CollectionRunCoordinator } from "../../../src/core/concurrency";
 import { isIgdrasilApiBase } from "../../../src/ingest/igdrasil-sink";
 import { disconnectIgdrasil } from "./igdrasil-disconnect";
+import { isSyncMonth } from "../../../src/core/sync-window";
 
 console.info(`[collector] ready ${formatCollectorRuntimeIdentity()}`);
 void initializeHostTokenStorage().catch((error: unknown) => {
@@ -321,6 +322,9 @@ async function handle(message: Message): Promise<Response> {
       });
 
     case "runNow": {
+      if (message.fromMonth && !isSyncMonth(message.fromMonth)) {
+        return { ok: false, error: "Choose a valid starting month that is not in the future." };
+      }
       if (message.vendorId) {
         // Background contexts cannot open permission prompts. If a recipe gains
         // hosts, send the user back through Connect rather than silently failing.
@@ -329,10 +333,10 @@ async function handle(message: Message): Promise<Response> {
         if (recipe && !(await hasHostPermissions(vendorPermissionOrigins(recipe, connection)))) {
           return { ok: false, error: "vendor access changed; reconnect this vendor" };
         }
-        const summary = await collectionRuns.runInteractive(() => runVendorById(message.vendorId!));
+        const summary = await collectionRuns.runInteractive(() => runVendorById(message.vendorId!, message.fromMonth));
         return { ok: true, summaries: [summary] };
       }
-      return { ok: true, summaries: await collectionRuns.runInteractive(() => runAllConnected()) };
+      return { ok: true, summaries: await collectionRuns.runInteractive(() => runAllConnected(message.fromMonth)) };
     }
 
     case "getVendorDiagnostic": {
@@ -390,7 +394,10 @@ async function handle(message: Message): Promise<Response> {
       return { ok: true };
 
     case "beginDiscoveryConnect": {
-      const pending = await beginSupplierDiscoveryConnect(message.vendorId);
+      if (message.fromMonth && !isSyncMonth(message.fromMonth)) {
+        return { ok: false, error: "Choose a valid starting month that is not in the future." };
+      }
+      const pending = await beginSupplierDiscoveryConnect(message.vendorId, message.fromMonth);
       if (pending && await hasHostPermissions(requiredCandidateOrigins(pending.candidates))) void completeDiscoveredConnect(pending.candidates.id, pending.runId);
       return pending ? { ok: true } : { ok: false, error: "The discovery preview expired. Try the supplier again." };
     }
@@ -578,7 +585,7 @@ function completeDiscoveredConnect(vendorId: string, expectedRunId?: string): Pr
           await upsertDiscoveredSupplier(profile);
           await upsertConnection({ vendorId: profile.id, connectedAt: Date.now() });
           committed = true;
-        });
+        }, pending.fromMonth);
         const proof = summary.retrievalProof;
         console.info(
           `[collector] discovery candidate ${index + 1}/${candidates.candidates.length} ${profile.adapter.id} -> ${summary.code ?? summary.status} retrieval=${summary.retrieval ?? "unknown"} documents=${summary.count}` +
@@ -595,7 +602,13 @@ function completeDiscoveredConnect(vendorId: string, expectedRunId?: string): Pr
         // The collection itself succeeded. A transient session-state write must
         // not undo a delivered document or the now-proven local integration.
         try {
-          await completeSupplierDiscovery(pending.runId, profile.id, profile.displayName, summary.count);
+          await completeSupplierDiscovery(
+            pending.runId,
+            profile.id,
+            profile.displayName,
+            summary.count,
+            summary.syncWindow?.mode === "all_history_fallback",
+          );
         } catch {
           await clearSupplierDiscovery().catch(() => undefined);
         }
@@ -609,6 +622,19 @@ function completeDiscoveredConnect(vendorId: string, expectedRunId?: string): Pr
         await rollbackDiscoveredSupplier(candidates.id);
         await requireSupplierDiscoveryDocumentOrigins(pending.runId, result.summary.requiredOrigins);
         return { ok: false, error: operationalOutcomeLabel("document_permission_required") };
+      }
+      const monthStats = result.summary?.syncWindow;
+      if (
+        pending.fromMonth &&
+        result.kind === "exhausted" &&
+        monthStats?.mode === "bounded" &&
+        monthStats.matched === 0 &&
+        monthStats.skippedBefore + monthStats.skippedAfter > 0
+      ) {
+        await rollbackDiscoveredSupplier(candidates.id);
+        await restoreSupplierDiscoveryPreview(pending.runId);
+        await revokeUnusedPermissions(requiredOrigins);
+        return { ok: false, error: DISCOVERY_FAILURE_MESSAGES.monthRangeEmpty };
       }
       const failure = result.summary?.code
         ? operationalOutcomeLabel(result.summary.code)

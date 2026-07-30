@@ -48,13 +48,55 @@ alarm → service-worker → collector.runAllConnected()
         1. auth evidence     API predicate + final redirect, or exact DOM list
         2. resolveScopes     recipe.config → [{}] or one scope per workspace
         3. strategy.list     enumerate bounded API/HTML/DOM pages → refs + traversal proof
-        4. preflight         reject incomplete discovered-candidate paths before delivery
-        5. dedup             idempotencyKey(company, source, invoiceId)
-        6. strategy.fetch    download PDF bytes in bounded ordered batches
+        4. month boundary    for an explicit manual range, keep only refs with a trusted issue month
+        5. preflight         reject incomplete discovered-candidate paths before delivery
+        6. dedup             idempotencyKey(company, source, invoiceId)
+        7. strategy.fetch    download PDF bytes in bounded ordered batches
   └─ sink.send(doc) through one exclusive commit lane
   └─ seen.add(key) + ledger receipt after the sink accepts
   └─ discovery admission callback only after durable dedup evidence
 ```
+
+### Month-bounded manual collection
+
+The user-facing boundary is month-only: an optional `YYYY-MM` starting month
+through the current calendar month, both inclusive. The platform turns that
+choice into a typed `SyncMonthWindow`; the engine does not accept arbitrary date
+expressions from recipes or the UI.
+
+Every strategy already normalizes invoice metadata into the same `InvoiceRef`
+contract. Network and embedded-page candidates map a discovered date-like field
+to `issuedAt`. DOM candidates carry labelled row dates as provenance-bearing
+metadata evidence. A supplier-provided `YYYY-MM` billing period is sufficient
+for this filter even though downstream accounting metadata still requires a
+full valid date. The engine resolves that shared evidence and applies the
+month boundary after complete list traversal but before identity reservation or
+PDF materialization. First-time discovery stores the month choice in its
+session-state handoff before requesting permissions, so an already-granted
+permission cannot race ahead into an unbounded candidate run.
+
+The decision is supplier-wide and keeps behavior explainable:
+
+- invoices before the starting month or after the current month are skipped;
+- when every listed invoice has a unique trustworthy issue date, only in-range
+  invoices are eligible;
+- when any successful scope contains a missing, invalid, or equally strong
+  conflicting date, every scope falls back to normal all-history collection;
+- the completion result and first-time discovery card explicitly disclose that
+  all history was used because date filtering was unavailable;
+- an unbounded run retains the existing all-history behavior.
+
+List APIs that support server-side bounds may use the closed run variables
+`syncFromYearMonth`, `syncFromDate`, `syncFromIso`,
+`syncFromEpochSeconds`/`syncFromEpochMs`, and the matching
+`syncToExclusive*` values in a recipe request. This is an efficiency
+optimization only and is safe only for a reviewed API contract that guarantees
+date coverage or supports an unbounded retry. Generic discovery enumerates the
+available metadata before filtering. The engine still enforces the normalized
+invoice month, so a supplier that ignores or misinterprets its query cannot
+expand a reliably dated requested set. When the normalized response contains an
+unreliable date, the document phase deliberately uses the disclosed all-history
+fallback instead.
 
 ## Concurrency and cancellation
 

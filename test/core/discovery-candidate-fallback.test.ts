@@ -74,6 +74,34 @@ describe("discovered candidate fallback", () => {
     expect(run).toHaveBeenCalledTimes(2);
   });
 
+  it("continues to another retained candidate when an all-history date fallback still finds no document", async () => {
+    const candidates = set();
+    const run = vi.fn()
+      .mockResolvedValueOnce({
+        vendorId: candidates.id,
+        status: "ok",
+        count: 0,
+        retrieval: "complete",
+        code: "month_range_fallback_all",
+      })
+      .mockResolvedValueOnce({
+        vendorId: candidates.id,
+        status: "ok",
+        count: 1,
+        retrieval: "complete",
+      });
+
+    const result = await collectFirstWorkingCandidate(candidates, run);
+
+    expect(result).toMatchObject({ kind: "success", attempted: 2 });
+    expect(result.outcomes[0]).toEqual({
+      candidate: 1,
+      adapter: "dom-links",
+      result: "month_range_fallback_all",
+      verifiedDocuments: 0,
+    });
+  });
+
   it("carries bounded traversal evidence into candidate diagnostics", async () => {
     const candidates = set();
     const retrievalProof = {

@@ -23,14 +23,14 @@ export type Message =
   | { type: "beginDiscovery"; tabId: number; origin: string }
   | { type: "completeDiscovery" }
   | { type: "cancelDiscovery" }
-  | { type: "beginDiscoveryConnect"; vendorId: string }
+  | { type: "beginDiscoveryConnect"; vendorId: string; fromMonth?: string }
   | { type: "completeDiscoveryConnect"; vendorId: string }
   | { type: "cancelDiscoveryConnect" }
   | { type: "dismissDiscovery" }
   | { type: "connect"; vendorId: string }
   | { type: "disconnect"; vendorId: string }
   | { type: "forgetVendorHistory"; vendorId: string }
-  | { type: "runNow"; vendorId?: string }
+  | { type: "runNow"; vendorId?: string; fromMonth?: string }
   | { type: "getVendorDiagnostic"; vendorId: string }
   | { type: "getLedger" }
   | { type: "getSchedule" }
