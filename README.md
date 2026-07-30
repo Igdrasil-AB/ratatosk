@@ -107,11 +107,12 @@ enters the extension.
 Generic discovery is the path for every supplier, including Anthropic and
 ChatGPT — current browser evidence always beats a stale hard-coded API path.
 
-A small number of packaged recipes predate the engine. Railway ships as a
-bundled pilot recipe; GitHub, Slack, and Vercel remain repository examples that
-Collector does not expose. New packaged recipes are not the direction of the
-project — a supplier that discovery can't handle is a gap in the engine, and
-that's what we want reported.
+A small number of packaged recipes predate the engine, but Collector does not
+present them as suppliers unless the user explicitly connected one in an older
+version. Railway, GitHub, Slack, and Vercel remain repository examples and
+compatibility paths. New packaged recipes are not the direction of the project
+— a supplier that discovery can't handle is a gap in the engine, and that's what
+we want reported.
 
 ## Contributing
 

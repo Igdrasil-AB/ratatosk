@@ -3,6 +3,7 @@ import { getVendor, VENDORS, VENDOR_LIFECYCLE_BY_ID } from "../../../src/vendors
 import type { VendorLifecycleEntry } from "../../../src/vendors/lifecycle";
 import { knownSupplierIcon } from "../../../src/vendors/brand-catalog";
 import { getDiscoveredSupplier, getDiscoveredSuppliers } from "./discovered-suppliers";
+import { getConnections } from "./storage";
 
 export type CollectorSource = {
   kind: "official" | "discovered";
@@ -13,13 +14,19 @@ export type CollectorSource = {
 };
 
 export async function listCollectorSources(): Promise<CollectorSource[]> {
-  const official: CollectorSource[] = VENDORS.map((recipe) => ({
-    kind: "official",
-    recipe,
-    lifecycle: VENDOR_LIFECYCLE_BY_ID[recipe.id],
-    primaryOrigin: originOf(recipe.homepage),
-    presentationIcon: recipe.icon,
-  }));
+  const connections = await getConnections();
+  // Bundled recipes are execution paths, not claims about which suppliers a
+  // user has. Keep an explicitly connected legacy source manageable, but let
+  // every new supplier enter through user-initiated discovery.
+  const official: CollectorSource[] = VENDORS
+    .filter((recipe) => connections[recipe.id] !== undefined)
+    .map((recipe) => ({
+      kind: "official",
+      recipe,
+      lifecycle: VENDOR_LIFECYCLE_BY_ID[recipe.id],
+      primaryOrigin: originOf(recipe.homepage),
+      presentationIcon: recipe.icon,
+    }));
   const discovered = Object.values(await getDiscoveredSuppliers())
     .sort((left, right) => left.displayName.localeCompare(right.displayName))
     .map<CollectorSource>((profile) => ({
