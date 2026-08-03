@@ -24,6 +24,10 @@
         --ring: rgb(147 74 46 / 0.52);
         --shadow-border: 0 0 0 1px rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.06), 0 2px 4px rgb(0 0 0 / 0.04);
         --shadow-border-hover: 0 0 0 1px rgb(0 0 0 / 0.09), 0 1px 2px -1px rgb(0 0 0 / 0.08), 0 2px 4px rgb(0 0 0 / 0.06);
+        /* One scale, so a menu can never be trapped under the bar it belongs to. */
+        --z-bar: 10;
+        --z-menu: 20;
+        --z-toast: 30;
         --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
         --display: Georgia, "Times New Roman", serif;
         --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -34,7 +38,7 @@
       body {
         width: 100%;
         min-width: 320px;
-        min-height: 100vh;
+        min-height: 100dvh;
         margin: 0;
         overflow-x: hidden;
         overflow-y: auto;
@@ -47,7 +51,7 @@
         font-synthesis: none;
         -webkit-tap-highlight-color: rgb(147 74 46 / 0.14);
       }
-      #app { min-height: 100vh; display: flex; flex-direction: column; }
+      #app { min-height: 100dvh; display: flex; flex-direction: column; }
       button, input, select, a, summary { touch-action: manipulation; }
       button, input, select { font: inherit; }
       button:disabled { cursor: wait; opacity: 0.64; }
@@ -175,6 +179,9 @@
       .btn:hover { background: var(--primary-hover); }
       .btn:active, .ghost:active { scale: 0.96; }
       .btn.block { width: 100%; }
+      /* The one action a screen exists for. Full width removes the guessing:
+         there is nothing else at this weight to compare it against. */
+      .btn.lg { width: 100%; min-height: 48px; padding: 12px 16px; border-radius: 12px; font-size: 14px; }
       .btn.sm {
         min-height: 32px;
         padding: 0 12px;
@@ -230,7 +237,7 @@
         line-height: 1.06;
       }
       .home-copy { max-width: 38ch; margin-top: 10px; color: var(--muted); font-size: 12.5px; line-height: 1.55; }
-      .home-actions { margin-top: 18px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+      .home-actions { margin-top: 18px; display: grid; gap: 8px; }
       .home-editorial > .home-actions:first-child { margin-top: 0; }
       .quiet-link {
         min-height: 40px;
@@ -248,11 +255,32 @@
       }
       .quiet-link:hover { background: var(--primary-soft); color: var(--primary-hover); }
       .quiet-link:active { scale: 0.96; }
-      .home-facts, .setup-ledger { margin-top: 20px; border-block: 1px solid var(--border); }
-      .home-facts > div { min-height: 34px; display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: 10px; }
-      .home-facts > div + div { border-top: 1px solid var(--border); }
-      .home-facts dt { color: var(--copper); font-family: var(--mono); font-size: 9.5px; text-transform: uppercase; }
-      .home-facts dd { margin: 0; overflow: hidden; color: var(--muted); font-size: 11px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+      .setup-ledger { margin-top: 20px; border-block: 1px solid var(--border); }
+      /* The two facts a person checks — where invoices go, and which vendors are
+         watched — were read-only text. They are the shortcuts to the screens that
+         change them, so they are buttons. */
+      .home-facts { margin-top: 18px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+      .fact {
+        min-height: 56px;
+        padding: 9px 11px;
+        display: grid;
+        align-content: center;
+        gap: 2px;
+        border: 0;
+        border-radius: 12px;
+        background: var(--surface);
+        color: var(--fg);
+        cursor: pointer;
+        text-align: left;
+        box-shadow: var(--shadow-border);
+        transition-property: background-color, box-shadow, scale;
+        transition-duration: 140ms;
+        transition-timing-function: ease-out;
+      }
+      .fact:hover { background: var(--surface-raised); box-shadow: var(--shadow-border-hover); }
+      .fact:active { scale: 0.98; }
+      .fact-key { color: var(--copper); font-family: var(--mono); font-size: 9.5px; text-transform: uppercase; }
+      .fact-value { overflow: hidden; font-size: 12px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
       .setup-ledger { padding: 0; list-style: none; }
       .setup-ledger li { min-height: 52px; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 9px; }
       .setup-ledger li + li { border-top: 1px solid var(--border); }
@@ -289,8 +317,8 @@
       .date-filter summary > svg:first-child { width: 14px; height: 14px; opacity: 0.72; }
       .date-filter summary > svg:last-child { width: 12px; height: 12px; opacity: 0.58; transition: transform 140ms ease-out; }
       .date-filter[open] summary > svg:last-child { transform: rotate(90deg); }
-      .date-filter-options { position: absolute; z-index: 20; top: calc(100% + 6px); right: 0; width: 148px; padding: 4px; border-radius: 11px; background: var(--surface-raised); box-shadow: 0 12px 28px rgb(44 34 24 / 0.16), var(--shadow-border); }
-      .date-filter-option { width: 100%; min-height: 36px; padding: 0 8px; display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: center; gap: 6px; border: 0; border-radius: 8px; background: transparent; color: var(--fg); cursor: pointer; font-family: var(--ui); font-size: 11.5px; font-weight: 560; text-align: left; }
+      .date-filter-options { position: absolute; z-index: var(--z-menu); top: calc(100% + 6px); right: 0; width: 148px; padding: 4px; border-radius: 11px; background: var(--surface-raised); box-shadow: 0 12px 28px rgb(44 34 24 / 0.16), var(--shadow-border); }
+      .date-filter-option { width: 100%; min-height: 40px; padding: 0 8px; display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: center; gap: 6px; border: 0; border-radius: 8px; background: transparent; color: var(--fg); cursor: pointer; font-family: var(--ui); font-size: 11.5px; font-weight: 560; text-align: left; }
       .date-filter-option:hover { background: var(--surface); }
       .date-filter-option.selected { color: var(--primary); font-weight: 650; }
       .date-filter-option svg { width: 14px; height: 14px; }
@@ -338,7 +366,36 @@
       .feed-empty { min-height: 156px; display: grid; place-content: center; gap: 3px; padding: 20px; text-align: center; }
       .feed-empty strong { font-size: 12.5px; }
       .feed-empty span { color: var(--muted); font-size: 10.5px; text-wrap: pretty; }
-      .add { margin-top: auto; padding: 8px 12px 12px; display: flex; justify-content: center; }
+      /* The recurring action lives in a bar of its own at the bottom of the
+         list, where a thumb is, instead of as an 11px link in the toolbar. */
+      .action-bar {
+        position: sticky;
+        z-index: var(--z-bar);
+        bottom: 0;
+        margin-top: auto;
+        padding: 10px 14px max(12px, env(safe-area-inset-bottom));
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 8px;
+        background: var(--bg);
+        box-shadow: 0 -1px var(--border);
+      }
+      .action-bar .ghost { min-width: 44px; padding-inline: 12px; }
+      .bar-lead { padding: 0 14px 2px; }
+      /* Contextual, not primary: it appears only while a matching tab is open. */
+      .discover-here {
+        width: 100%;
+        min-height: 44px;
+        display: grid;
+        grid-template-columns: 16px minmax(0, 1fr) 12px;
+        align-items: center;
+        gap: 8px;
+        border-radius: 11px;
+        text-align: left;
+      }
+      .discover-here svg { width: 16px; height: 16px; }
+      .discover-here span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
       .sheet-head { min-height: 48px; display: flex; align-items: center; gap: 8px; padding: 6px 14px; }
       .sheet-head h1 { font-size: 14px; font-weight: 680; line-height: 1.2; }
@@ -357,17 +414,17 @@
       .vendor-links { display: flex; flex-wrap: wrap; align-items: center; column-gap: 10px; row-gap: 0; }
       .diagnostic-link { width: auto; min-height: 40px; margin: 0; padding: 8px 0; border: 0; background: transparent; color: var(--primary); cursor: pointer; font-family: var(--ui); font-size: 10.5px; font-weight: 600; line-height: 1.4; white-space: nowrap; }
       .diagnostic-link.subtle { color: var(--muted); }
-      .vrow .actions { width: 124px; flex: none; display: grid; grid-template-columns: 86px 32px; align-items: center; gap: 6px; }
-      .vrow .actions .btn { width: 86px; padding-inline: 8px; }
+      .vrow .actions { width: 138px; flex: none; display: grid; grid-template-columns: 96px 34px; align-items: center; gap: 8px; }
+      .vrow .actions .btn { width: 96px; min-height: 36px; padding-inline: 8px; }
       .vrow .actions .icon-btn { margin: 0; }
-      .action-spacer { width: 32px; height: 32px; }
+      .action-spacer { width: 34px; height: 34px; }
       .vendor-menu { position: relative; width: 32px; height: 32px; }
       .vendor-menu summary { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; color: var(--muted); cursor: pointer; list-style: none; }
       .vendor-menu summary::-webkit-details-marker { display: none; }
       .vendor-menu summary:hover { background: var(--surface); color: var(--fg); }
       .vendor-menu summary svg { width: 17px; height: 17px; }
-      .vendor-menu-items { position: absolute; z-index: 30; top: calc(100% + 4px); right: 0; width: 142px; padding: 4px; border-radius: 10px; background: var(--surface-raised); box-shadow: 0 12px 28px rgb(44 34 24 / 0.16), var(--shadow-border); }
-      .vendor-menu-items button { width: 100%; min-height: 36px; padding: 0 9px; border: 0; border-radius: 7px; background: transparent; color: var(--fg); cursor: pointer; font: 560 11.5px/1.2 var(--ui); text-align: left; }
+      .vendor-menu-items { position: absolute; z-index: var(--z-menu); top: calc(100% + 4px); right: 0; width: 142px; padding: 4px; border-radius: 10px; background: var(--surface-raised); box-shadow: 0 12px 28px rgb(44 34 24 / 0.16), var(--shadow-border); }
+      .vendor-menu-items button { width: 100%; min-height: 40px; padding: 0 9px; border: 0; border-radius: 7px; background: transparent; color: var(--fg); cursor: pointer; font: 560 11.5px/1.2 var(--ui); text-align: left; }
       .vendor-menu-items button:hover { background: var(--surface); }
       .vendor-menu-items button.danger { color: var(--danger); }
       .inline-error { margin-top: 5px; color: var(--danger); font-size: 11px; line-height: 1.35; text-wrap: pretty; }
@@ -386,8 +443,8 @@
       .guidance-body { padding: 0 12px 12px 36px; color: var(--muted); font-size: 12px; }
       .guidance-body p { margin-bottom: 8px; }
       .guidance-body ul { margin: 0 0 10px; padding-left: 16px; display: grid; gap: 3px; }
-      .guidance-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-      .guidance-note { font-size: 10.5px; }
+      .guidance-actions { display: flex; align-items: center; justify-content: flex-end; }
+      .guidance-actions .btn { white-space: nowrap; }
 
       .supplier-request {
         margin: 4px 12px 12px;
@@ -397,7 +454,7 @@
         align-items: center;
         gap: 9px;
         border-radius: 16px;
-        background: linear-gradient(135deg, var(--primary-soft), var(--surface-raised) 72%);
+        background: var(--surface-raised);
         box-shadow: var(--shadow-border);
       }
       .supplier-request-mark {
@@ -422,32 +479,52 @@
         min-height: 40px;
         display: inline-flex;
         align-items: center;
+        justify-content: center;
         gap: 5px;
-        padding: 0 10px 0 12px;
+        padding: 0 14px;
         border: 0;
-        border-radius: 8px;
-        background: var(--fg);
-        color: var(--bg);
+        border-radius: 10px;
+        background: var(--primary);
+        color: var(--primary-fg);
         cursor: pointer;
-        font: 650 11px/1 inherit;
+        font: 650 12.5px/1 inherit;
         box-shadow: 0 1px 2px rgb(42 24 16 / 0.16);
         transition-property: background-color, box-shadow, scale;
         transition-duration: 140ms;
         transition-timing-function: ease-out;
       }
-      .supplier-request-link:hover { background: var(--primary); box-shadow: 0 2px 5px rgb(42 24 16 / 0.2); }
+      .supplier-request-link:hover { background: var(--primary-hover); box-shadow: 0 2px 5px rgb(42 24 16 / 0.2); }
       .supplier-request-link:active { scale: 0.96; }
       .supplier-request-link svg { width: 13px; height: 13px; flex: none; }
       .supplier-request-link:disabled { background: var(--muted); cursor: not-allowed; opacity: 0.55; box-shadow: none; }
-      .tab-awareness .supplier-request-link { max-width: 132px; justify-content: center; text-align: center; white-space: normal; }
+      /* A card whose copy is a sentence puts its action on its own row rather
+         than squeezing both into one line — the button then gets full width and
+         the title stops wrapping mid-phrase. */
+      .discovery-found, .discovery-failed, .tab-awareness {
+        padding: 12px;
+        grid-template-columns: 32px minmax(0, 1fr);
+        align-items: start;
+        row-gap: 8px;
+      }
+      .discovery-found .discovery-actions,
+      .discovery-failed .discovery-actions,
+      .tab-awareness .discovery-actions {
+        grid-column: 2;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 8px;
+      }
+      .discovery-actions .supplier-request-link { flex: 1; }
       .discovery-actions { display: flex; flex-direction: column; align-items: stretch; gap: 2px; }
-      .quiet-link.compact { min-height: 28px; padding: 4px 7px; font-size: 10.5px; }
-      .discovery-progress, .discovery-found, .discovery-complete { background: linear-gradient(135deg, var(--primary-soft), var(--surface-raised) 68%); }
-      .discovery-failed { padding: 12px; grid-template-columns: 32px minmax(0, 1fr); align-items: start; row-gap: 7px; background: var(--surface-raised); box-shadow: var(--shadow-border); }
+      /* Visually compact, but the hit area stays a full 40px through the
+         pseudo-element so a secondary action is never harder to hit. */
+      .quiet-link.compact { position: relative; min-height: 32px; padding: 4px 8px; font-size: 11px; }
+      .quiet-link.compact::after { content: ""; position: absolute; inset: -4px 0; }
+      .discovery-progress, .discovery-found, .discovery-complete { background: var(--primary-soft); }
+      .discovery-failed { background: var(--surface-raised); box-shadow: var(--shadow-border); }
       .discovery-failed .supplier-request-mark { color: var(--muted); }
       .discovery-failed .supplier-request-copy small { margin-top: 3px; line-height: 1.45; }
-      .discovery-failed .discovery-actions { grid-column: 2; flex-direction: row; align-items: center; gap: 6px; margin-top: 2px; }
-      .discovery-failed .quiet-link.compact { min-height: 40px; }
       .discovery-spinner { width: 18px; height: 18px; margin: 7px; border: 2px solid color-mix(in oklab, var(--primary) 22%, transparent); border-top-color: var(--primary); border-radius: 50%; animation: discovery-spin 800ms linear infinite; }
       @keyframes discovery-spin { to { transform: rotate(360deg); } }
 
@@ -529,7 +606,7 @@
       .foot { padding: 10px 14px max(10px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; }
       .toast {
         position: fixed;
-        z-index: 20;
+        z-index: var(--z-toast);
         left: 50%;
         bottom: max(12px, env(safe-area-inset-bottom));
         max-width: calc(100% - 24px);
@@ -582,6 +659,14 @@
       .skeleton-line { height: 12px; border-radius: 6px; background: var(--surface); }
       .skeleton-line.short { width: 48%; }
       .skeleton-card { height: 92px; margin-top: 4px; border-radius: 12px; background: var(--surface); }
+
+      /* A side panel can be dragged narrow. Give the row's name back the width
+         the action column does not need there, rather than truncating it. */
+      @media (max-width: 359px) {
+        .vrow { gap: 9px; padding-inline: 10px; }
+        .vrow .actions { width: 126px; grid-template-columns: 88px 34px; gap: 4px; }
+        .vrow .actions .btn { width: 88px; padding-inline: 6px; }
+      }
 
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }

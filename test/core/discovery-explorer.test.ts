@@ -19,12 +19,12 @@ describe("bounded same-origin discovery exploration", () => {
   it("uses the reviewed best-first search budget", () => {
     expect(MAX_EXPLORATION_PAGES).toBe(15);
     expect(MAX_EXPLORATION_DEPTH).toBe(3);
-    expect(EXPLORATION_DEADLINE_MS).toBe(30_000);
+    expect(EXPLORATION_DEADLINE_MS).toBe(10_000);
   });
 
   it("keeps a substantially broader, still bounded deep coverage envelope", () => {
-    expect(EXPLORATION_BUDGETS.deep).toEqual({ pages: 60, depth: 5, durationMs: 180_000, slices: 1 });
-    expect(EXPLORATION_BUDGETS.self_heal).toEqual({ pages: 80, depth: 5, durationMs: 300_000, slices: 5 });
+    expect(EXPLORATION_BUDGETS.deep).toEqual({ pages: 40, depth: 4, durationMs: 45_000, slices: 1 });
+    expect(EXPLORATION_BUDGETS.self_heal).toEqual({ pages: 60, depth: 5, durationMs: 120_000, slices: 5 });
   });
 
   it("keeps linked invoice evidence first while guaranteeing a common-route turn", () => {
@@ -49,7 +49,7 @@ describe("bounded same-origin discovery exploration", () => {
     expect(targets.length).toBeLessThanOrEqual(MAX_EXPLORATION_PAGES - 1);
   });
 
-  it("includes GitHub's common billing-history shape when the home page has no billing link", () => {
+  it("guesses the most common billing surfaces first and still reaches GitHub's history shape", () => {
     const targets = planExplorationTargets({
       origin: "https://github.com",
       links: [],
@@ -57,10 +57,18 @@ describe("bounded same-origin discovery exploration", () => {
       nextDepth: 1,
       includeCommonRoutes: true,
     });
-    expect(targets[0]).toMatchObject({
-      url: "https://github.com/account/billing/history",
-      source: "common_route",
-    });
+    const urls = targets.map((target) => target.url);
+
+    // The interactive budget affords only a couple of probe waves, so the two
+    // routes that most portals actually use have to come first.
+    expect(urls.slice(0, 2)).toEqual([
+      "https://github.com/settings/billing",
+      "https://github.com/billing",
+    ]);
+    expect(targets[0]).toMatchObject({ source: "common_route", family: "common_billing_route" });
+    expect(urls).toContain("https://github.com/account/billing/history");
+    expect(urls.indexOf("https://github.com/settings/billing"))
+      .toBeLessThan(urls.indexOf("https://github.com/account/billing/history"));
   });
 
   it("reserves a common-route slot when linked billing guesses saturate the page budget", () => {
@@ -177,7 +185,7 @@ describe("bounded same-origin discovery exploration", () => {
     expect(targets.find((target) => target.url.includes(account))).toMatchObject({ source: "common_route" });
   });
 
-  it("prioritizes tenant-scoped Settings/Billing over speculative tenant history routes", () => {
+  it("prioritizes the tenant's own billing surfaces over speculative tenant history routes", () => {
     const origin = "https://app.vendor.example";
     const workspace = "123456789";
     const targets = planExplorationTargets({
@@ -189,10 +197,10 @@ describe("bounded same-origin discovery exploration", () => {
       includeCommonRoutes: true,
     });
 
-    expect(targets[0]).toMatchObject({
-      url: `${origin}/${workspace}/settings/billing`,
-      source: "common_route",
-    });
+    const urls = targets.map((target) => target.url);
+    expect(targets[0]).toMatchObject({ url: `${origin}/${workspace}/billing`, source: "common_route" });
+    expect(urls.indexOf(`${origin}/${workspace}/settings/billing`))
+      .toBeLessThan(urls.indexOf(`${origin}/${workspace}/billing/history`));
   });
 
   it("keeps a typed tenant prefix behind a safe dashboard/org route shape", () => {
@@ -243,7 +251,7 @@ describe("bounded same-origin discovery exploration", () => {
       depth: 1,
       score: 105,
     };
-    expect(explorationProbeOptions(target)).toEqual({ settleMs: 5_000, maxResources: 12, deadlineMs: 7_000 });
+    expect(explorationProbeOptions(target)).toEqual({ settleMs: 2_600, maxResources: 12, deadlineMs: 4_200 });
   });
 
   it("caps each probe and the whole wave to the remaining global budget", async () => {

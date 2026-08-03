@@ -8,13 +8,52 @@ const serviceWorkerSource = readFileSync("collector/src/platform/service-worker.
 
 describe("Collector popup layout regressions", () => {
   it("keeps a stable two-slot vendor action grid in every connection state", () => {
-    expect(popupStyles).toMatch(/\.vrow \.actions \{[^}]*grid-template-columns:\s*86px 32px/s);
+    expect(popupStyles).toMatch(/\.vrow \.actions \{[^}]*grid-template-columns:\s*96px 34px/s);
     expect(popupSource).toContain('class="action-spacer"');
   });
 
   it("uses the rustic editorial home treatment without a large document glyph", () => {
-    expect(popupSource).toContain('class="home-kicker"');
+    expect(popupSource).toContain('class="home-editorial"');
+    expect(popupSource).toContain('class="setup-ledger"');
     expect(popupSource).not.toContain('<span class="m">${docIcon()}</span>');
+    // The screen states its promise once. A kicker, a headline and a paragraph
+    // all introducing the same two-step setup is three ways of saying it.
+    expect(popupSource).not.toContain('class="home-kicker"');
+    expect(popupSource).not.toContain('class="home-copy"');
+  });
+
+  it("gives every screen exactly one full-width primary action", () => {
+    // Setup, the connected empty state, and the ledger each end in one `btn lg`;
+    // everything else on those screens is tonal, ghost, or a quiet link.
+    expect(popupSource.match(/class="btn lg"/g)).toHaveLength(3);
+    expect(popupStyles).toMatch(/\.btn\.lg \{[^}]*width:\s*100%/s);
+    expect(popupStyles).toMatch(/\.btn\.lg \{[^}]*min-height:\s*48px/s);
+    // The recurring collect action is a button in its own bar, not a caption.
+    expect(popupSource).toContain('class="action-bar"');
+    expect(popupSource).not.toContain('class="quiet-link compact" data-action="sync-all"');
+    // Every compact control still clears a 40px target through its extender.
+    expect(popupStyles).toMatch(/\.quiet-link\.compact::after \{[^}]*inset:\s*-4px 0/s);
+    expect(popupStyles).toMatch(/\.date-filter-option \{[^}]*min-height:\s*40px/s);
+    expect(popupStyles).toMatch(/\.vendor-menu-items button \{[^}]*min-height:\s*40px/s);
+  });
+
+  it("reads the two home facts as the shortcuts to the screens that change them", () => {
+    expect(popupSource).toContain('class="fact" data-action="open-vendors"');
+    expect(popupSource).toContain('class="fact" data-action="open-settings"');
+  });
+
+  it("offers the flagship search from the first screen while a matching tab is open", () => {
+    expect(popupSource).toContain("function discoverableTab()");
+    expect(popupSource).toContain('data-action="discover-here"');
+    expect(popupSource).toContain("Find invoices on ${esc(page.hostname)}");
+    // The search reports on the vendors screen, so the click moves there first.
+    expect(popupSource).toMatch(/action === "discover-here"[\s\S]{0,320}screen = "vendors"[\s\S]{0,200}discoverFromUserGesture\(\)/);
+  });
+
+  it("keeps surfaces flat and layering on one declared scale", () => {
+    expect(popupStyles).not.toContain("linear-gradient");
+    expect(popupStyles).not.toMatch(/z-index:\s*\d/);
+    expect(popupStyles).toMatch(/--z-menu:\s*20/);
   });
 
   it("opens the connected empty state directly on collection actions", () => {
@@ -77,7 +116,7 @@ describe("Collector popup layout regressions", () => {
     expect(collectorManifest).toContain("side_panel:");
     expect(collectorManifest).not.toContain("default_popup");
     expect(serviceWorkerSource).toContain("configureSidePanelAction");
-    expect(popupStyles).toMatch(/body \{[^}]*min-height:\s*100vh/s);
+    expect(popupStyles).toMatch(/body \{[^}]*min-height:\s*100dvh/s);
     expect(popupSource).toContain("PANEL_UI_STATE_KEY");
     expect(popupSource).toContain("watchActiveSupplierTab");
     expect(popupSource).not.toContain("window.close()");
@@ -137,12 +176,12 @@ describe("Collector popup layout regressions", () => {
     expect(popupSource).not.toContain("Studio on GitHub");
     expect(popupSource).not.toContain("Build a reviewed recipe instead");
     expect(popupSource).not.toContain('data-action="open-add-supplier"');
-    expect(popupSource).toContain("Found a possible invoice source");
+    expect(popupSource).toContain("Invoice source found");
     expect(popupSource).toContain("No invoices found");
     expect(popupSource).not.toContain("possible invoice${");
     expect(popupStyles).toMatch(/\.supplier-request-link \{[^}]*min-height:\s*40px/s);
-    expect(popupStyles).toMatch(/\.discovery-failed \.discovery-actions \{[^}]*grid-column:\s*2/s);
-    expect(popupStyles).toMatch(/\.discovery-failed \.discovery-actions \{[^}]*flex-direction:\s*row/s);
+    expect(popupStyles).toMatch(/\.tab-awareness \.discovery-actions \{[^}]*grid-column:\s*2/s);
+    expect(popupStyles).toMatch(/\.tab-awareness \.discovery-actions \{[^}]*flex-direction:\s*row/s);
     expect(popupStyles).toContain("prefers-reduced-motion: reduce");
     expect(popupSource).toContain('data-action="retry-discovery"');
     expect(popupSource).toContain("may not include billing access");
@@ -171,7 +210,10 @@ describe("Collector popup layout regressions", () => {
     expect(popupSource).toContain('connection.lastCode === "month_range_fallback_all"');
     expect(popupSource).toContain("used all history");
     expect(popupStyles).toContain("Ratatosk will collect all history and tell you when it finishes");
-    expect(popupSource).toContain("Invoice dates were unavailable, so Ratatosk collected all available history");
+    // The fallback stays disclosed on the completion card, in one short clause
+    // rather than a sentence that doubles the card's height.
+    expect(popupSource).toContain("discovery.monthFallbackAll");
+    expect(popupSource).toContain("All history checked, no invoice dates.");
   });
 
   it("closes the date menu with Escape or an outside click and clears stale toast text", () => {

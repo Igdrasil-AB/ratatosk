@@ -434,11 +434,27 @@ describe("discovered supplier profiles", () => {
     }
     expect(() => assertDiscoveredRecipePolicy(safeStatic, origin, entryUrl)).not.toThrow();
 
+    // A template names a runtime scope discovery, so it carries no captured
+    // identity at rest — including for the account/customer scoping that most
+    // billing APIs actually use. A bounded tenant identifier is the same shape
+    // a first-party billing path may already carry.
+    for (const variables of [
+      { customerId: "{customerId}" },
+      { accountId: "{accountId}" },
+      { workspaceId: "9012345678901" },
+    ]) {
+      const scoped = graphqlRecipe("query BillingInvoices { invoices { id } }");
+      if (scoped.invoices.strategy === "network") {
+        scoped.invoices.list.request.body = JSON.stringify({ query: "query BillingInvoices { invoices { id } }", variables });
+      }
+      expect(() => assertDiscoveredRecipePolicy(scoped, origin, entryUrl)).not.toThrow();
+    }
+
     for (const variables of [
       { accessToken: "{token}" },
       { apiKey: "{apiKey}" },
       { sessionId: "opaque" },
-      { customerId: "{customerId}" },
+      { customerId: "cus_JaneExampleAccount" },
       { accountId: 90121800034 },
       { workspaceId: "raw-workspace-value" },
       { filter: "Jane Example's confidential invoices" },
@@ -451,11 +467,69 @@ describe("discovered supplier profiles", () => {
     }
   });
 
+  it("replays the query data a billing endpoint is addressed by, and nothing personal", () => {
+    const withQuery = (query: string): VendorRecipe => {
+      const recipe = domRecipe();
+      return {
+        ...recipe,
+        invoices: {
+          strategy: "network",
+          list: {
+            request: { url: `${origin}/api/invoices${query}` },
+            items: "invoices",
+            map: { id: "id", issuedAt: "issued_at", documentUrl: "pdf_url" },
+          },
+          document: { contentType: "application/pdf" },
+        },
+      };
+    };
+
+    for (const query of [
+      "?q=enrichCustomer",
+      "?year=2026&view=list",
+      "?since=2026-01-01&status=paid",
+      "?workspace_id=9012345678901",
+      "?page=2&per_page=25",
+      // A billing list is routinely scoped by the account it belongs to. That
+      // identifier is the address of the resource, not a capability.
+      "?customer=cus_1PabcDEFghi",
+    ]) {
+      expect(() => assertDiscoveredRecipePolicy(withQuery(query), origin, entryUrl)).not.toThrow();
+    }
+
+    for (const query of [
+      "?token=YWNjdF8xUGFiY0RFRmdoaUpLTA",
+      "?filter=owner%40example.com",
+      "?q=Jane%20Example",
+      "?ref=YWNjdF8xUGFiY0RFRmdoaUpLTG1ub3A",
+      `?note=${"a".repeat(80)}`,
+    ]) {
+      expect(() => assertDiscoveredRecipePolicy(withQuery(query), origin, entryUrl))
+        .toThrow(/credential-like query data/);
+    }
+  });
+
+  it("keeps the schema vocabulary a real billing query needs", () => {
+    // None of these can carry a captured identity: a page size, a schema enum,
+    // and a variable reference. Rejecting them only cost candidates.
+    for (const query of [
+      "query BillingInvoices($first: Int!) { invoices(first: $first, status: PAID) { id } }",
+      "query BillingInvoices { invoices(first: 100, includeVoided: false) { id } }",
+    ]) {
+      const safe = graphqlRecipe(query);
+      if (safe.invoices.strategy === "network") {
+        safe.invoices.list.request.body = JSON.stringify({ query, variables: { first: 100 } });
+      }
+      expect(() => assertDiscoveredRecipePolicy(safe, origin, entryUrl)).not.toThrow();
+    }
+  });
+
   it("rejects inline GraphQL literals and arguments that could persist account data", () => {
     for (const query of [
       'query BillingInvoices { invoices(customerId: "acct_123", email: "owner@example.com") { id } }',
       "query BillingInvoices { invoices(team: 90121800034) { id } }",
-      "query BillingInvoices { invoices(status: PAID) { id } }",
+      "query BillingInvoices { invoices(account: acct_1PabcDEFghiJKL) { id } }",
+      "query BillingInvoices { invoices(filter: {customerId: acct_1Pabc}) { id } }",
     ]) {
       const unsafe = graphqlRecipe(query);
       if (unsafe.invoices.strategy === "network") {

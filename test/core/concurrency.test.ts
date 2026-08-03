@@ -4,7 +4,7 @@ import { CollectionRunCoordinator, DEFAULT_SAFE_CONCURRENCY, mapConcurrentOrdere
 describe("bounded concurrency", () => {
   it("keeps speculative work bounded and commits exclusive", () => {
     expect(DEFAULT_SAFE_CONCURRENCY).toEqual({
-      routeProbes: 2,
+      routeProbes: 4,
       candidatePreviews: 2,
       documentFetches: 3,
       sinkCommits: 1,

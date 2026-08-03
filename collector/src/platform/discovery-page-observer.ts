@@ -1,6 +1,6 @@
-import { buildEntry, isJsonContentType, normalizeContentType } from "../../../src/core/recorder/cdp";
+import { isJsonContentType, normalizeContentType } from "../../../src/core/recorder/cdp";
+import { buildDiscoveryEvidenceEntry } from "../../../src/core/recorder/discovery-evidence";
 import type { CapturedEntry } from "../../../src/core/recorder/types";
-import { restoreSafeStaticQueryValues } from "../../../src/core/discovery-query";
 
 const OBSERVER_KEY = "__ratatoskDiscoveryObserverV1" as const;
 const MAX_ENTRIES = 12;
@@ -84,13 +84,12 @@ function installObserver(): void {
     url.username = "";
     url.password = "";
     url.hash = "";
-    const entry = buildEntry({
+    const entry = buildDiscoveryEvidenceEntry({
       ...input,
       url: url.toString(),
       body: input.body.slice(0, MAX_BODY_CHARS),
       requestBody: input.requestBody?.slice(0, MAX_REQUEST_BODY_CHARS),
     });
-    entry.url = restoreSafeStaticQueryValues(url.toString(), entry.url);
     if (!entry.responseBody || entry.responseBody.length > MAX_BODY_CHARS) return;
     const key = `${entry.method}|${entry.url}|${entry.requestBody ?? ""}`;
     const existing = entries.findIndex((candidate) => `${candidate.method}|${candidate.url}|${candidate.requestBody ?? ""}` === key);

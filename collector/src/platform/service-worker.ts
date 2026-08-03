@@ -36,6 +36,7 @@ import type { Message, Response, SourceView } from "./messaging";
 import pkg from "../../../package.json";
 import { buildCollectorDiagnostic } from "./diagnostics";
 import { discoverSupplierInTab, removeStaleDiscoveryObserverRegistration, SupplierDiscoveryError } from "./discovery";
+import type { ExplorationCheckpoint, ExplorationMode } from "./discovery-explorer";
 import {
   beginSupplierDiscovery,
   beginSupplierDiscoveryConnect,
@@ -488,15 +489,24 @@ async function completeSupplierScan(): Promise<void> {
     if (!granted) return;
     try {
       console.info(`[collector] discovery start ${formatCollectorRuntimeIdentity()}`);
-      const discovery = await discoverSupplierInTab(pending.tabId, pending.origin, {
-        // A user explicitly chose Find Invoices. Use the deep envelope here so
-        // that route-family coverage is meaningful instead of failing after a
-        // handful of SPA guesses; scheduled syncs never enter this pathway.
-        mode: pending.checkpoint?.mode ?? "deep",
-        checkpoint: pending.checkpoint,
-        onCheckpoint: (checkpoint) => checkpointSupplierDiscovery(pending.runId, checkpoint).then(() => undefined),
-        shouldContinue: () => canContinueSupplierDiscovery(pending.origin),
-      });
+      const scan = (mode: ExplorationMode, checkpoint: ExplorationCheckpoint | undefined) =>
+        discoverSupplierInTab(pending.tabId, pending.origin, {
+          mode,
+          checkpoint,
+          onCheckpoint: (next) => checkpointSupplierDiscovery(pending.runId, next).then(() => undefined),
+          shouldContinue: () => canContinueSupplierDiscovery(pending.origin),
+        });
+      // Someone is watching a spinner, so the first pass uses the interactive
+      // envelope and stops the moment a candidate is proven. A portal the fast
+      // pass cannot resolve is worth more time than a fast "not found", so it —
+      // and only it — escalates once to the deeper envelope.
+      const discovery = await scan(pending.checkpoint?.mode ?? "fast", pending.checkpoint)
+        .catch(async (error: unknown) => {
+          if (!(error instanceof SupplierDiscoveryError) || error.diagnostic.coverage?.mode !== "fast") throw error;
+          if (!(await canContinueSupplierDiscovery(pending.origin))) throw error;
+          console.info("[collector] fast discovery found no candidate; escalating to the deep envelope");
+          return scan("deep", undefined);
+        });
       const current = await getSupplierDiscoveryStatus();
       if (current.stage === "scanning" && current.origin === pending.origin) {
         await setSupplierDiscoveryPreview(pending.runId, discovery.candidates, discovery.diagnostic);

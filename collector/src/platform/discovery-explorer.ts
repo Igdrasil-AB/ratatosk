@@ -10,8 +10,8 @@ import { isBoundedTenantIdentifierSegment } from "../../../src/core/discovery";
 
 export const MAX_EXPLORATION_PAGES = 15;
 export const MAX_EXPLORATION_DEPTH = 3;
-export const EXPLORATION_DEADLINE_MS = 30_000;
-export const DISCOVERY_ENGINE_REVISION = 35;
+export const EXPLORATION_DEADLINE_MS = 10_000;
+export const DISCOVERY_ENGINE_REVISION = 36;
 
 /**
  * A scan starts in the inexpensive fast lane, but its policy is deliberately
@@ -29,10 +29,22 @@ export interface ExplorationBudget {
   slices: number;
 }
 
+/**
+ * `fast` is the interactive envelope: a person is watching a spinner, so the
+ * whole scan is capped at ten seconds. It stays capable rather than shallow —
+ * the page budget is spent in wide concurrent waves and the run stops the
+ * moment a candidate is proven, so the cap is a ceiling, not the usual cost.
+ *
+ * `deep` is the explicit second attempt for a portal the fast envelope could not
+ * resolve, and `self_heal` is background repair of an already-connected
+ * supplier. Neither blocks a person at a spinner, but both stay far below the
+ * multi-minute budgets that made an unattended scan indistinguishable from a
+ * hang.
+ */
 export const EXPLORATION_BUDGETS: Readonly<Record<ExplorationMode, ExplorationBudget>> = {
   fast: { pages: MAX_EXPLORATION_PAGES, depth: MAX_EXPLORATION_DEPTH, durationMs: EXPLORATION_DEADLINE_MS, slices: 1 },
-  deep: { pages: 60, depth: 5, durationMs: 180_000, slices: 1 },
-  self_heal: { pages: 80, depth: 5, durationMs: 300_000, slices: 5 },
+  deep: { pages: 40, depth: 4, durationMs: 45_000, slices: 1 },
+  self_heal: { pages: 60, depth: 5, durationMs: 120_000, slices: 5 },
 };
 
 export function explorationBudget(mode: ExplorationMode = "fast"): ExplorationBudget {
@@ -173,13 +185,47 @@ export interface ExplorationProbeOptions {
   deadlineMs: number;
 }
 
-/** High-signal billing routes get a larger condition-based SPA render window
- * and a wider, still bounded resource sample. Other routes remain inexpensive. */
-export function explorationProbeOptions(target: ExplorationTarget): ExplorationProbeOptions {
-  const highSignal = /(?:^|\/)settings\/billing(?:\/|$)|invoice|receipt/i.test(new URL(target.url).pathname);
-  return highSignal
-    ? { settleMs: 5_000, maxResources: 12, deadlineMs: 7_000 }
-    : { settleMs: 1_500, maxResources: 6, deadlineMs: 3_500 };
+/**
+ * Where the evidence is, spend the render window; everywhere else, be cheap.
+ *
+ * A route reaches the frontier either because it states billing intent or
+ * because it is a settings/account *bridge* toward one. Only the first kind can
+ * hold invoices, so it gets the wide resource sample and a render window long
+ * enough for a single-page app to boot and issue its billing calls. Bridges are
+ * navigation: they are read for their links and abandoned.
+ *
+ * The previous rule keyed on the literal path `settings/billing`, so the most
+ * common billing routes there are — `/billing`, `/account/billing`,
+ * `/<tenant>/billing`, `/subscriptions` — were funded like dead ends while a
+ * page that merely mentioned "invoice" received the generous budget.
+ */
+export function explorationProbeOptions(
+  target: ExplorationTarget,
+  mode: ExplorationMode = "fast",
+): ExplorationProbeOptions {
+  const pathname = new URL(target.url).pathname;
+  const billing = BILLING_INTENT.test(pathname);
+  // The escalation is not just a larger frontier. A portal the interactive pass
+  // could not resolve is often one whose billing view simply had not finished
+  // rendering, so the deeper envelope buys patience per route as well as more
+  // routes — otherwise a second pass re-probes the same page the same way and
+  // reaches the same conclusion.
+  if (mode === "fast") {
+    return billing
+      ? { settleMs: 2_600, maxResources: 12, deadlineMs: 4_200 }
+      : { settleMs: 900, maxResources: 6, deadlineMs: 2_200 };
+  }
+  return billing
+    ? { settleMs: 8_000, maxResources: 12, deadlineMs: 10_000 }
+    : { settleMs: 2_000, maxResources: 6, deadlineMs: 3_500 };
+}
+
+/** The active tab is already loaded and rendered, so it needs a settle window
+ * only for late billing widgets — never for a cold application boot. */
+export function entryProbeOptions(mode: ExplorationMode = "fast"): ExplorationProbeOptions {
+  return mode === "fast"
+    ? { settleMs: 500, maxResources: 6, deadlineMs: 2_200 }
+    : { settleMs: 1_500, maxResources: 12, deadlineMs: 3_500 };
 }
 
 /** Clamp a page probe to the time left in the one global exploration budget. */
@@ -208,24 +254,33 @@ export function runWithinExplorationBudget<T>(operation: Promise<T>, remainingMs
   });
 }
 
+/**
+ * Guessed routes, most likely first.
+ *
+ * The interactive budget only affords a couple of probe waves, so this order is
+ * the whole value of the guess. It is curated rather than derived from
+ * `pathScore`, because that function ranks by how many billing words a path
+ * contains — which puts `/billing/subscriptions` above `/billing` and buries
+ * the single most common billing surface behind its own sub-pages.
+ */
 const COMMON_BILLING_PATHS = [
-  "/account/billing/history",
   "/settings/billing",
-  "/billing/history",
-  "/account/billing",
   "/billing",
+  "/account/billing",
   "/invoices",
+  "/billing/history",
+  "/account/billing/history",
   "/receipts",
   "/settings/subscription",
 ] as const;
 
 const CONTEXTUAL_BILLING_SUFFIXES = [
-  "/billing/history",
-  "/billing/subscriptions",
   "/billing",
-  "/invoices",
-  "/receipts",
   "/settings/billing",
+  "/invoices",
+  "/billing/history",
+  "/receipts",
+  "/billing/subscriptions",
 ] as const;
 const TENANT_CONTAINER = /^(?:account|accounts|organization|organizations|org|workspace|workspaces|tenant|tenants|customer|customers)$/i;
 const TENANT_CONTEXT_PREFIX = /^(?:app|v|t|home|dashboard|manage|admin|account|accounts|organization|organizations|org|workspace|workspaces|team|teams)$/i;
@@ -282,7 +337,7 @@ export function planExplorationTargets(input: {
   if (input.includeCommonRoutes) {
     const contextPrefix = input.contextUrl ? tenantPrefixFromContext(input.contextUrl, origin) : undefined;
     if (contextPrefix) {
-      for (const suffix of CONTEXTUAL_BILLING_SUFFIXES) {
+      for (const [index, suffix] of CONTEXTUAL_BILLING_SUFFIXES.entries()) {
         const url = new URL(`${contextPrefix}${suffix}`, `${origin}/`).toString();
         if (input.visited.has(url)) continue;
         addBest(targets, {
@@ -290,11 +345,11 @@ export function planExplorationTargets(input: {
           depth: 1,
           source: "common_route",
           family: "tenant_contextual_route",
-          score: 80 + contextualPathScore(suffix),
+          score: 80 + (CONTEXTUAL_BILLING_SUFFIXES.length - index),
         });
       }
     }
-    for (const path of COMMON_BILLING_PATHS) {
+    for (const [index, path] of COMMON_BILLING_PATHS.entries()) {
       const url = new URL(path, `${origin}/`).toString();
       if (input.visited.has(url)) continue;
       addBest(targets, {
@@ -302,7 +357,7 @@ export function planExplorationTargets(input: {
         depth: 1,
         source: "common_route",
         family: "common_billing_route",
-        score: 60 + pathScore(path),
+        score: 60 + (COMMON_BILLING_PATHS.length - index),
       });
     }
   }
@@ -370,6 +425,45 @@ function isBoundedOpaqueTenantSegment(value: string): boolean {
     !BILLING_INTENT.test(value) &&
     !MUTATING_OR_SESSION_PATH.test(value) &&
     !MUTATING_SEGMENT.test(value);
+}
+
+/**
+ * The exact page the person is looking at, made safe to *reopen* — not to store.
+ *
+ * The cold replay is the only probe that watches an application boot, so it is
+ * where a single-page portal's billing calls are observed. Routing it through
+ * the persistence rules instead dropped the tenant prefix from a URL like
+ * `/organization/<id>/projects` and reopened the site root, which is the one
+ * page guaranteed to hold no billing evidence.
+ *
+ * Nothing here reaches storage: a candidate's entry URL is separately reduced by
+ * `safeEntryUrl`, and diagnostics carry route templates only. So this admits the
+ * current page's own path while still refusing anything that could act: no
+ * credentials in the authority, no mutating or session route, no direct document
+ * fetch, no query beyond bounded numeric pagination.
+ */
+export function safeReplayUrl(value: string, expectedOrigin: string): string | undefined {
+  try {
+    const origin = exactPublicHttpsOrigin(expectedOrigin);
+    const url = new URL(value, `${origin}/`);
+    if (url.protocol !== "https:" || url.origin !== origin || url.username || url.password) return undefined;
+    const decodedPathname = safeDecodedExplorationPath(url.pathname);
+    if (!decodedPathname) return undefined;
+    const pathname = `${url.pathname}\n${decodedPathname}`;
+    if (
+      url.pathname.length > 320 || decodedPathname.length > 320 ||
+      MUTATING_OR_SESSION_PATH.test(pathname) || MUTATING_SEGMENT.test(pathname) ||
+      DIRECT_DOCUMENT_PATH.test(pathname)
+    ) return undefined;
+    for (const [key, queryValue] of [...url.searchParams.entries()]) {
+      if (!SAFE_NUMERIC_PAGINATION_QUERY.test(key) || !/^\d{1,6}$/.test(queryValue)) url.searchParams.delete(key);
+    }
+    url.searchParams.sort();
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return undefined;
+  }
 }
 
 export function safeExplorationUrl(
@@ -441,10 +535,6 @@ function pathScore(pathname: string): number {
   if (/payment|subscription/i.test(pathname)) score += 5;
   if (/settings|account/i.test(pathname)) score += 2;
   return score;
-}
-
-function contextualPathScore(pathname: string): number {
-  return pathScore(pathname) + (/\/settings\/billing\/?$/i.test(pathname) ? 10 : 0);
 }
 
 function semanticScore(label: string): number {

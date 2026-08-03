@@ -373,13 +373,43 @@ function assertSafeRequest(request: RequestSpec, allowedOrigins: Set<string>): v
     throw new Error("discovered request contains credential-like path data");
   }
   assertSafePathTemplates(request.url);
-  for (const [key, value] of url.searchParams) {
-    const templateValue = value.includes("{");
-    const safeStaticValue = isSafeStaticDiscoveryQueryValue(key, value);
-    if (isSecretScopeName(key) || value.length > 160 || looksCredentialLike(value) || (!templateValue && !safeStaticValue)) {
-      throw new Error("discovered request contains credential-like query data");
-    }
+  for (const [key, value] of url.searchParams) if (!isSafeDiscoveredQueryValue(key, value)) {
+    throw new Error("discovered request contains credential-like query data");
   }
+}
+
+/**
+ * A query parameter a discovered recipe may replay.
+ *
+ * Real billing endpoints address themselves with query data — a GraphQL
+ * operation name, a year, a status filter, a page cursor, a tenant id. An
+ * allowlist of parameter *names* cannot enumerate those, and dropping them does
+ * not produce a safer request, it produces a request for the wrong resource. So
+ * the rule is a denial: names that mean "credential", values shaped like a
+ * credential, and anything unbounded are refused; ordinary addressing data is
+ * kept.
+ */
+function isSafeDiscoveredQueryValue(key: string, value: string): boolean {
+  if (isSecretScopeName(key) || value.length > 160) return false;
+  // Filled at run time from a config scope discovery, so it holds no captured
+  // identity at rest.
+  if (value.includes("{")) return true;
+  if (isSafeStaticDiscoveryQueryValue(key, value)) return true;
+  // One bounded tenant identifier, the same shape a first-party billing path may
+  // already carry, when the parameter says that is what it is.
+  if (isTenantScopeName(key) && isBoundedTenantIdentifierSegment(value)) return true;
+  // Otherwise the value must read as route structure: an operation name, an
+  // enum, a date, a slug, a page number. The charset is what keeps free text,
+  // email addresses, and anything with whitespace out, and `looksCredentialLike`
+  // is the shared test for an opaque capability string. A run of digits is an
+  // identifier or a timestamp rather than a secret, so it stays admissible.
+  return STRUCTURAL_QUERY_VALUE.test(value) && (!looksCredentialLike(value) || /^\d{1,20}$/.test(value));
+}
+
+const STRUCTURAL_QUERY_VALUE = /^[A-Za-z0-9_.:+-]{1,64}$/;
+
+function isTenantScopeName(value: string): boolean {
+  return /^(?:workspace|organization|org|team|project|tenant|account|customer)s?(?:_id)?$/.test(normalizedPolicyKey(value));
 }
 
 function assertSafePathTemplates(rawUrl: string): void {
@@ -451,7 +481,7 @@ function assertTypedDiscoveredScopeValue(scopeId: string, extractor: Extractor):
 }
 
 function discoveredScopeFamily(value: string): string | undefined {
-  const match = /^(workspace|organization|org|team|project|tenant)s?(?:_?id)?$/.exec(value);
+  const match = /^(workspace|organization|org|team|project|tenant|account|customer)s?(?:_?id)?$/.exec(value);
   return match?.[1];
 }
 
@@ -486,22 +516,37 @@ export function isSafeReadOnlyGraphqlRequest(request: RequestSpec): boolean {
   return record.variables === undefined || isSafeGraphqlVariables(record.variables);
 }
 
-/** Automatic discovery persists only a literal-free GraphQL subset. Variable
- * definitions may name types, but field arguments must be supplied by `$vars`;
- * this prevents a captured customer ID, email, enum filter, or numeric tenant
- * ID from becoming a reusable recipe literal. Reviewed packaged recipes retain
- * the full schema vocabulary when a supplier genuinely needs it. */
+/**
+ * Automatic discovery persists only an identity-free GraphQL subset.
+ *
+ * No quoted string may appear at all, so a captured customer ID, email, or
+ * signed token can never survive as a literal. What remains is the vocabulary a
+ * real billing query needs in order to be the query the application actually
+ * sent: `$variables`, a page size, a boolean, and a schema enum. Rejecting those
+ * too did not protect anything — an unquoted `PAID` is not an account — it just
+ * meant a portal whose invoice query takes any argument had no candidate at all.
+ *
+ * Numbers stay short and enums stay digit-free, so an unquoted account number
+ * cannot pass as either. Reviewed packaged recipes retain the full vocabulary.
+ */
+const GRAPHQL_ARGUMENT_VALUE = /^(?:\$[_A-Za-z][_0-9A-Za-z]*|\d{1,4}|true|false|null|[A-Za-z_][A-Za-z_]{0,31})$/;
+
 function isLiteralFreeGraphqlQuery(query: string): boolean {
-  if (/["']/.test(query) || /\b\d+\b/.test(query)) return false;
+  if (/["']/.test(query)) return false;
   // The negative lookbehind distinguishes `$workspaceId: ID!` in an operation
-  // definition from `workspaceId: $workspaceId` in a field argument. Any
-  // argument whose value is not a variable is rejected conservatively.
-  return !/(?<![$\w])[_A-Za-z][_0-9A-Za-z]*\s*:\s*(?!\$)/.test(query);
+  // definition, which names a type, from `workspaceId: $workspaceId` in a field
+  // argument, which supplies a value. An inline input object yields an empty
+  // capture and is rejected: its shape is exactly what the variable policy
+  // declines to reason about.
+  for (const argument of query.matchAll(/(?<![$\w])[_A-Za-z][_0-9A-Za-z]*\s*:\s*([^\s,){]*)/g)) {
+    if (!GRAPHQL_ARGUMENT_VALUE.test(argument[1])) return false;
+  }
+  return true;
 }
 
 function isSafeGraphqlVariables(value: unknown, key = "", depth = 0, seen = { nodes: 0 }): boolean {
   if (depth > 8 || ++seen.nodes > 200) return false;
-  if (key && isSensitiveGraphqlKey(key)) return false;
+  if (key && isSecretScopeName(key)) return false;
   if (value === null) return isPaginationVariable(key);
   if (typeof value === "boolean") return isBooleanGraphqlVariable(key);
   if (typeof value === "number") return isBoundedPaginationNumber(key, value);
@@ -521,11 +566,6 @@ function normalizedPolicyKey(key: string): string {
   return key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[-\s]+/g, "_").toLowerCase();
 }
 
-function isSensitiveGraphqlKey(key: string): boolean {
-  const normalized = normalizedPolicyKey(key);
-  return SECRET_QUERY_KEY.test(normalized) || /(?:^|_)(?:account|customer|user|member|session)(?:_id)?$/.test(normalized);
-}
-
 function isPaginationVariable(key: string): boolean {
   return /^(?:after|before|cursor|page_token|next_cursor)$/i.test(normalizedPolicyKey(key));
 }
@@ -539,12 +579,18 @@ function isBoundedPaginationNumber(key: string, value: number): boolean {
 }
 
 function isSafeGraphqlStringVariable(key: string, value: string): boolean {
-  if (value.length > 160 || isSensitiveGraphqlKey(key)) return false;
+  if (value.length > 160 || isSecretScopeName(key)) return false;
   const normalized = normalizedPolicyKey(key);
-  if (/^\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value)) {
-    return isPaginationVariable(normalized) || /^(?:workspace|organization|org|team|project|tenant)_?id$/.test(normalized);
-  }
-  return /^(?:status|type|sort|order)$/i.test(normalized) && /^[a-z][a-z0-9_-]{0,31}$/i.test(value);
+  // A template names a runtime config scope; the value it stands for is
+  // discovered per user and never captured, so any non-secret variable may
+  // carry one. Literals are what must stay narrow.
+  if (/^\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value)) return true;
+  // The same bounded tenant identifier a first-party billing route may already
+  // carry in its own path is acceptable as a scope literal when discovery could
+  // not trace the endpoint that mints it.
+  if (isTenantScopeName(normalized) && isBoundedTenantIdentifierSegment(value)) return true;
+  return /^(?:status|type|sort|order|state|interval|period|currency)$/i.test(normalized) &&
+    /^[a-z][a-z0-9_-]{0,31}$/i.test(value);
 }
 
 function cleanPageName(raw: string | undefined, preferLast = false): string | undefined {

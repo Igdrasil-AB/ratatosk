@@ -16,7 +16,11 @@ const MONEY_KEY = /amount|total|price|sum|due|charge|cost|gross|net/i;
 const DATE_KEY = /date|created|issued|_ts$|_at$|timestamp|period/i;
 const ID_KEY = /^id$|_id$|invoice.*(id|no|number)|^number$|reference/i;
 const CURRENCY_KEY = /^currency$|^curr$|currency_code/i;
-const PDF_KEY = /pdf|hosted|invoice_url|invoiceurl|download|receipt/i;
+// A billing API names its document field in only so many ways, and missing one
+// costs the whole candidate: without a document path a previewed invoice list is
+// rejected as unusable. The `[_-]?` separator also covers the camelCase spelling
+// because the pattern is case-insensitive.
+const PDF_KEY = /pdf|hosted|download|receipt|(?:invoice|document|file|attachment|statement)[_-]?(?:url|uri|link|href)/i;
 const AUTH_URL = /\/(me|users?\/me|account|session|profile|organizations?|whoami)(\/|\?|$)/i;
 const CURSOR_KEY = /^(?:next_page|next_cursor|nextCursor|cursor|endCursor|page_token|nextPageToken)$/;
 const HAS_MORE_KEY = /^(?:has_more|hasMore|has_next_page|hasNextPage)$/;
@@ -143,6 +147,15 @@ function inferStructured(session: CaptureSession): DraftRecipe | null {
     { ...listRequest, url: invoicesUrl, ...(invoicesBody !== undefined ? { body: invoicesBody } : {}) },
     authHeaders,
   );
+  // The same endpoint without its pagination template. When there is no
+  // dedicated auth endpoint the list request becomes the login check, and a
+  // `{page}`/`{cursor}` placeholder has no value to render there — the probe
+  // would request a literal `?page={page}` and report a transport failure for
+  // an endpoint that works.
+  let unpaginatedUrl = isHtml ? String(listRequest.url) : entry.url;
+  for (const pv of provenance) {
+    if (pv.location === "url") unpaginatedUrl = replaceProvenanceInUrl(unpaginatedUrl, pv);
+  }
   // A redacted placeholder is safe to store but never safe to replay. Only
   // emit a draft when every such URL value was correlated with a runtime config
   // source above; otherwise a reviewer would receive a recipe guaranteed to
@@ -161,7 +174,10 @@ function inferStructured(session: CaptureSession): DraftRecipe | null {
     ? withHeaders({ url: probe.url }, authHeaders)
     : config.length
       ? ((config[0].discover as Obj).request as Obj)
-      : withHeaders({ ...listRequest }, authHeaders);
+      : withHeaders(
+        { ...listRequest, url: unpaginatedUrl, ...(invoicesBody !== undefined ? { body: invoicesBody } : {}) },
+        authHeaders,
+      );
   if (!probe.real && config.length) notes.push("No dedicated auth endpoint — using the config discovery call as the login check.");
   else if (!probe.real) notes.push("No dedicated auth endpoint found — using the invoice list request as the login check.");
 
