@@ -304,7 +304,7 @@ export function assertDiscoveredRecipePolicy(recipe: VendorRecipe, primaryOrigin
   if (new URL(recipe.homepage).origin !== primaryOrigin) throw new Error("recipe homepage must match the primary origin");
   if (recipe.fetchContext !== "page") throw new Error("discovered recipes must use the first-party page transport");
   if (recipe.icon) throw new Error("discovered recipes cannot provide remote or unreviewed logos");
-  if (recipe.auth.token) throw new Error("discovered recipes cannot persist token-exchange instructions");
+  assertSafeDiscoveredTokenExchange(recipe);
   if (recipe.hosts.length > MAX_HOSTS || new Set(recipe.hosts).size !== recipe.hosts.length) {
     throw new Error("discovered recipes have too many or duplicate origins");
   }
@@ -320,6 +320,7 @@ export function assertDiscoveredRecipePolicy(recipe: VendorRecipe, primaryOrigin
   if (!allowedOrigins.has(primaryOrigin)) throw new Error("primary origin is missing from recipe permissions");
 
   const requests: RequestSpec[] = [recipe.auth.check.request];
+  if (recipe.auth.token) requests.push(recipe.auth.token.request);
   for (const option of recipe.config ?? []) assertSafeDiscoveredScope(option, allowedOrigins);
   if (recipe.invoices.strategy === "network") requests.push(recipe.invoices.list.request);
   if (recipe.invoices.strategy === "html") requests.push(recipe.invoices.list.request);
@@ -357,11 +358,89 @@ export function assertDiscoveredRecipePolicy(recipe: VendorRecipe, primaryOrigin
   }
 }
 
+/**
+ * A discovered recipe may exchange the user's own session for the short-lived
+ * bearer that same site issues to itself — and nothing more.
+ *
+ * The credential is never stored: what persists is the *instruction* to fetch it
+ * from an endpoint that rides the cookie, and `resolveAuthToken` re-mints it at
+ * the start of every run and holds it in that run's variables. So the cookie
+ * remains the only thing that proves identity; the token is a derivative with
+ * the lifetime of one collection.
+ *
+ * The risk in automatic discovery was never the token's existence. It was that
+ * a page it observed could influence *which* endpoint mints one and *where* it
+ * is then sent. These rules remove that freedom:
+ *
+ *   - the minting request is a plain same-origin GET with no body and no
+ *     headers, so it can only ever be a read of the site's own session;
+ *   - every request that carries the token is on that same origin, so the token
+ *     can never be forwarded to a second host the evidence named;
+ *   - the token variable is `token`, referenced only from an `authorization`
+ *     header, so it cannot be smuggled into a URL, a query value, or a body
+ *     where it would be logged or persisted by something downstream.
+ *
+ * Admission is still not proof. `previewCandidate` has to mint the token and
+ * come back with real invoices before the candidate is retained at all.
+ */
+function assertSafeDiscoveredTokenExchange(recipe: VendorRecipe): void {
+  const token = recipe.auth.token;
+  if (!token) return;
+  const variable = token.as ?? "token";
+  if (variable !== "token") throw new Error("discovered token exchange must bind the reviewed token variable");
+
+  const method = token.request.method ?? "GET";
+  if (method !== "GET" || token.request.body || Object.keys(token.request.headers ?? {}).length) {
+    throw new Error("discovered token exchange must be a plain GET that rides the existing session");
+  }
+  const source = new URL(token.request.url.replace(TEMPLATE, "x"));
+  if (source.origin !== new URL(recipe.homepage).origin) {
+    throw new Error("discovered token exchange must read the supplier's own origin");
+  }
+  const path = typeof token.value === "string" ? token.value : token.value.path;
+  if (typeof token.value !== "string" && token.value.transforms?.length) {
+    throw new Error("discovered token exchange cannot transform the credential");
+  }
+  if (!/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(path) || path.length > 160) {
+    throw new Error("discovered token exchange must read a named response field");
+  }
+
+  const marker = `{${variable}}`;
+  for (const request of tokenBearingRequests(recipe)) {
+    const carries = Object.values(request.headers ?? {}).some((value) => value.includes(marker));
+    if (!carries) continue;
+    if (Object.entries(request.headers ?? {}).some(([name, value]) =>
+      value.includes(marker) && name.toLowerCase() !== "authorization")) {
+      throw new Error("a discovered token may only be sent as an authorization header");
+    }
+    if (new URL(request.url.replace(TEMPLATE, "x")).origin !== source.origin) {
+      throw new Error("a discovered token may only be sent to the origin that issued it");
+    }
+  }
+  if ([...tokenBearingRequests(recipe)].some((request) =>
+    request.url.includes(marker) || (request.body ?? "").includes(marker))) {
+    throw new Error("a discovered token may not be placed in a URL or request body");
+  }
+}
+
+function* tokenBearingRequests(recipe: VendorRecipe): Generator<RequestSpec> {
+  yield recipe.auth.check.request;
+  for (const option of recipe.config ?? []) yield option.discover.request;
+  if (recipe.invoices.strategy !== "dom") yield recipe.invoices.list.request;
+  if (recipe.invoices.document.request) yield recipe.invoices.document.request;
+}
+
 function assertSafeRequest(request: RequestSpec, allowedOrigins: Set<string>): void {
   const method = request.method ?? "GET";
   if (method === "GET") {
     if (request.body) throw new Error("discovered GET requests cannot persist request bodies");
-    if (request.headers && Object.keys(request.headers).length) throw new Error("discovered GET requests cannot persist request headers");
+    // The one header a GET may carry is the templated authorization the token
+    // exchange fills in at run time. It holds no value at rest, and
+    // `assertSafeDiscoveredTokenExchange` has already bound it to one origin.
+    const headers = Object.entries(request.headers ?? {});
+    if (headers.some(([name, value]) => name.toLowerCase() !== "authorization" || value !== "Bearer {token}")) {
+      throw new Error("discovered GET requests cannot persist request headers");
+    }
   } else if (!isSafeReadOnlyGraphqlRequest(request)) {
     throw new Error("discovered POST requests must be an explicit read-only GraphQL query");
   }

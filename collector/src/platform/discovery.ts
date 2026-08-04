@@ -11,7 +11,7 @@ import {
   type DiscoveredSupplierProfileV1,
 } from "../../../src/core/discovery";
 import { extract } from "../../../src/core/extract";
-import { assertAuthenticated } from "../../../src/core/auth";
+import { assertAuthenticated, resolveAuthToken } from "../../../src/core/auth";
 import { AuthExpired, AuthFailure } from "../../../src/core/errors";
 import { getArray } from "../../../src/core/jsonpath";
 import { inferRecipe } from "../../../src/core/recorder/infer";
@@ -105,6 +105,12 @@ type ProbedResource = {
   requestHeaders?: Record<string, string>;
   source?: "observed" | "replayed";
   hasLinkNext?: boolean;
+  /** Structural authentication marker only: which scheme the application used,
+   * never the credential it sent. */
+  requestAuthScheme?: "bearer" | "basic" | "custom";
+  /** Response paths whose value was a credential. Field names only — this is
+   * what lets a token exchange be wired without the token ever being held. */
+  credentialPaths?: string[];
 };
 
 export interface PageEvidence {
@@ -503,6 +509,11 @@ export async function previewCandidate(recipe: VendorRecipe): Promise<number> {
     // document fetches. Non-DOM candidates still require the explicit auth probe.
     if (recipe.invoices.strategy !== "dom") {
       try {
+        // A token exchange is a claim until it is exercised. Minting first means
+        // a candidate that only works with a bearer is proven end to end here,
+        // and one whose inferred exchange is wrong fails now rather than during
+        // the user's first collection.
+        await resolveAuthToken(recipe, ctx);
         await assertAuthenticated(recipe, ctx);
       } catch (error) {
         if (error instanceof AuthExpired) throw new CandidatePreviewError("auth_expired");
@@ -600,6 +611,8 @@ export function compileCandidates(
     contentType: resource.contentType,
     requestBody: resource.requestBody,
     requestHeaders: resource.requestHeaders,
+    ...(resource.requestAuthScheme ? { requestAuth: { scheme: resource.requestAuthScheme } } : {}),
+    ...(resource.credentialPaths?.length ? { redactedResponsePaths: resource.credentialPaths } : {}),
     responseBody: resource.body,
   }));
   const networkDraft = resourceEntries.length
@@ -734,7 +747,9 @@ export function parsePageEvidence(value: unknown, expectedOrigin: string, option
       (resource.requestBody !== undefined && (typeof resource.requestBody !== "string" || resource.requestBody.length > 65_536)) ||
       (resource.requestHeaders !== undefined && !isSafeObservedRequestHeaders(resource.requestHeaders)) ||
       (resource.source !== undefined && resource.source !== "observed" && resource.source !== "replayed") ||
-      (resource.hasLinkNext !== undefined && typeof resource.hasLinkNext !== "boolean")
+      (resource.hasLinkNext !== undefined && typeof resource.hasLinkNext !== "boolean") ||
+      (resource.requestAuthScheme !== undefined && !isAuthScheme(resource.requestAuthScheme)) ||
+      (resource.credentialPaths !== undefined && !isCredentialPathList(resource.credentialPaths))
     ) return invalid();
     let url: URL;
     try { url = new URL(resource.url); } catch { return invalid(); }
@@ -750,6 +765,8 @@ export function parsePageEvidence(value: unknown, expectedOrigin: string, option
       ...(typeof resource.requestBody === "string" ? { requestBody: resource.requestBody } : {}),
       ...(resource.requestHeaders ? { requestHeaders: resource.requestHeaders as Record<string, string> } : {}),
       ...(resource.source ? { source: resource.source } : {}),
+      ...(isAuthScheme(resource.requestAuthScheme) ? { requestAuthScheme: resource.requestAuthScheme } : {}),
+      ...(isCredentialPathList(resource.credentialPaths) ? { credentialPaths: resource.credentialPaths } : {}),
       hasLinkNext: resource.hasLinkNext === true,
     });
   }
@@ -812,6 +829,17 @@ export function parsePageEvidence(value: unknown, expectedOrigin: string, option
       semanticNavigationSteps: Number(stats.semanticNavigationSteps ?? 0),
     },
   };
+}
+
+function isAuthScheme(value: unknown): value is "bearer" | "basic" | "custom" {
+  return value === "bearer" || value === "basic" || value === "custom";
+}
+
+/** Structural field paths only: no values, no separators that could smuggle one. */
+function isCredentialPathList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length <= 40 && value.every((item) =>
+    typeof item === "string" && item.length > 0 && item.length <= 300 &&
+    item.split(".").every((part) => /^[A-Za-z0-9_$-]+$/.test(part)));
 }
 
 function isSafeObservedRequestHeaders(value: unknown): value is Record<string, string> {
@@ -1184,6 +1212,8 @@ async function collectPageEvidenceInPage(
           body: entry.responseBody,
           ...(entry.requestBody !== undefined ? { requestBody: entry.requestBody } : {}),
           ...(contentType === "application/json" ? { requestHeaders: { "content-type": contentType } } : {}),
+          ...(entry.requestAuth && entry.requestAuth.scheme !== "none" ? { requestAuthScheme: entry.requestAuth.scheme } : {}),
+          ...(entry.redactedResponsePaths?.length ? { credentialPaths: entry.redactedResponsePaths.slice(0, 40) } : {}),
           source: "observed",
         });
         total += entry.responseBody.length;

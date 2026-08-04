@@ -24,6 +24,7 @@
  */
 
 import { EXPLORATION_ROUTE_POLICY, safeExplorationUrl } from "../../collector/src/platform/discovery-explorer";
+import { buildDiscoveryEvidenceEntry } from "../../src/core/recorder/discovery-evidence";
 
 export interface ObservedCall {
   url: string;
@@ -32,6 +33,9 @@ export interface ObservedCall {
   contentType?: string;
   requestBody?: string;
   requestHeaders?: Record<string, string>;
+  /** The application sent `Authorization: Bearer …` on this call, so a replay
+   * carrying only the session cookie is refused. */
+  requiresBearer?: boolean;
   body: string;
 }
 
@@ -76,7 +80,12 @@ export interface Portal {
   navMs?: number;
   routes: PortalRoute[];
   /** Serves what a compiled recipe replays during candidate preview. */
-  endpoint?: (request: { url: string; method: string; body?: string }) => HttpReply | undefined;
+  endpoint?: (request: {
+    url: string;
+    method: string;
+    body?: string;
+    headers?: Record<string, string>;
+  }) => HttpReply | undefined;
 }
 
 export interface SimulationTrace {
@@ -222,17 +231,39 @@ export function createSimulation(portal: Portal): Simulation {
       ? calls
       : calls.filter((call) => (call.method ?? "GET") === "GET" &&
         safeSameOrigin(call.url, origin) && REPLAYABLE_RESOURCE.test(call.url));
-    const resources = rankCalls(visible).slice(0, options.maxResources).map((call) => ({
-      url: call.url,
-      method: call.method ?? "GET",
-      status: call.status ?? 200,
-      contentType: call.contentType ?? "application/json",
-      body: call.body,
-      ...(call.requestBody !== undefined ? { requestBody: call.requestBody } : {}),
-      ...(call.requestHeaders !== undefined ? { requestHeaders: call.requestHeaders } : {}),
-      source: tab.observed ? ("observed" as const) : ("replayed" as const),
-      hasLinkNext: false,
-    }));
+    // Observed calls go through the real evidence normalizer, so the harness
+    // exercises the redaction and the credential-path recording rather than a
+    // convenient imitation of them.
+    const resources = rankCalls(visible).slice(0, options.maxResources).map((call) => {
+      const observed = tab.observed;
+      const entry = observed
+        ? buildDiscoveryEvidenceEntry({
+          url: call.url,
+          method: call.method ?? "GET",
+          status: call.status ?? 200,
+          contentType: call.contentType ?? "application/json",
+          body: call.body,
+          requestBody: call.requestBody,
+          requestHeaders: {
+            ...(call.requestHeaders ?? {}),
+            ...(call.requiresBearer ? { authorization: "Bearer" } : {}),
+          },
+        })
+        : undefined;
+      return {
+        url: entry?.url ?? call.url,
+        method: call.method ?? "GET",
+        status: call.status ?? 200,
+        contentType: call.contentType ?? "application/json",
+        body: entry?.responseBody ?? call.body,
+        ...(call.requestBody !== undefined ? { requestBody: entry?.requestBody ?? call.requestBody } : {}),
+        ...(call.requestHeaders !== undefined ? { requestHeaders: call.requestHeaders } : {}),
+        ...(observed && call.requiresBearer ? { requestAuthScheme: "bearer" as const } : {}),
+        ...(entry?.redactedResponsePaths?.length ? { credentialPaths: entry.redactedResponsePaths } : {}),
+        source: observed ? ("observed" as const) : ("replayed" as const),
+        hasLinkNext: false,
+      };
+    });
 
     const html = hydrated ? route!.html ?? shellFor(route) : shellFor(route);
     const links = shellReady ? route!.links ?? [] : [];
@@ -260,12 +291,12 @@ export function createSimulation(portal: Portal): Simulation {
     };
   };
 
-  const replay = (request: { url: string; method?: string; body?: string }) => {
-    if (process.env.SIM_DEBUG) console.info("[sim] replay", JSON.stringify(request));
+  const replay = (request: { url: string; method?: string; body?: string; headers?: Record<string, string> }) => {
     const reply = portal.endpoint?.({
       url: request.url,
       method: (request.method ?? "GET").toUpperCase(),
       body: request.body,
+      headers: lowercaseKeys(request.headers),
     });
     advanceTo(now() + 90);
     return reply;
@@ -346,7 +377,7 @@ export function createSimulation(portal: Portal): Simulation {
           return [{ result: await collectEvidence(tab, first as unknown as { settleMs: number; maxResources: number; deadlineMs: number }) }];
         }
         if (args?.length === 1 && typeof first?.url === "string") {
-          const reply = replay(first as { url: string; method?: string; body?: string });
+          const reply = replay(first as { url: string; method?: string; body?: string; headers?: Record<string, string> });
           if (!reply) return [{ result: { ok: false, status: 404, contentType: null, base64: "" } }];
           return [{
             result: {
@@ -386,7 +417,12 @@ export function createSimulation(portal: Portal): Simulation {
       (globalThis as { chrome?: unknown }).chrome = fakeChrome;
       globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-        const reply = replay({ url, method: init?.method, body: init?.body as string | undefined });
+        const reply = replay({
+          url,
+          method: init?.method,
+          body: init?.body as string | undefined,
+          headers: init?.headers as Record<string, string> | undefined,
+        });
         const body = reply?.body ?? "";
         const status = reply ? reply.status ?? 200 : 404;
         return {
@@ -408,6 +444,10 @@ export function createSimulation(portal: Portal): Simulation {
       (globalThis as { chrome?: unknown }).chrome = realChrome;
     },
   };
+}
+
+function lowercaseKeys(headers: Record<string, string> | undefined): Record<string, string> {
+  return Object.fromEntries(Object.entries(headers ?? {}).map(([key, value]) => [key.toLowerCase(), value]));
 }
 
 function safeSameOrigin(url: string, origin: string): boolean {

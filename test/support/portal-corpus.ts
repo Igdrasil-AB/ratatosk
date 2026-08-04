@@ -420,6 +420,48 @@ const opaqueRoutePortal: Portal = {
   ],
 };
 
+const BEARER_SESSION = JSON.stringify({ user: { id: "u_88" }, accessToken: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1Xzg4In0.sig" });
+const BEARER_INVOICES = JSON.stringify({
+  invoices: [
+    { id: "BR-3301", issued_at: "2026-07-05", amount_due: 18_000, currency: "usd", invoice_pdf: "https://app.bearer.example/files/BR-3301.pdf" },
+    { id: "BR-3302", issued_at: "2026-06-05", amount_due: 18_000, currency: "usd", invoice_pdf: "https://app.bearer.example/files/BR-3302.pdf" },
+  ],
+});
+
+/**
+ * The shape this corpus could not previously reach: the invoice API refuses a
+ * cookie and requires the short-lived bearer the application mints for itself
+ * from a cookie-backed session endpoint.
+ */
+const bearerApiPortal: Portal = {
+  name: "invoice API behind a session-minted bearer",
+  origin: "https://app.bearer.example",
+  entryPath: "/settings/billing",
+  routes: [
+    {
+      path: "/settings/billing",
+      title: "Billing | Bearer",
+      hydrateMs: 800,
+      html: '<html><head><title>Billing | Bearer</title></head><body><h1>Invoices</h1></body></html>',
+      calls: [
+        { url: "https://app.bearer.example/api/auth/session", body: BEARER_SESSION },
+        { url: "https://app.bearer.example/api/invoices?limit=50", body: BEARER_INVOICES, requiresBearer: true },
+      ],
+    },
+  ],
+  endpoint: (request) => {
+    if (request.url === "https://app.bearer.example/api/auth/session") return { body: BEARER_SESSION };
+    if (request.url.startsWith("https://app.bearer.example/api/invoices")) {
+      // The whole point of the shape: a cookie alone is refused.
+      if (!/^Bearer \S+/.test(request.headers?.authorization ?? "")) {
+        return { status: 401, body: JSON.stringify({ error: "unauthorized" }) };
+      }
+      return { body: BEARER_INVOICES };
+    }
+    return undefined;
+  },
+};
+
 export interface CorpusEntry {
   portal: Portal;
   /** The adapter the strongest retained candidate must use. */
@@ -440,4 +482,5 @@ export const PORTAL_CORPUS: readonly CorpusEntry[] = [
   { portal: noisyTenantPortal, expectedAdapter: "network-json" },
   { portal: cursorPaginatedPortal, expectedAdapter: "network-json" },
   { portal: opaqueRoutePortal, expectedAdapter: "dom-links" },
+  { portal: bearerApiPortal, expectedAdapter: "network-json" },
 ];

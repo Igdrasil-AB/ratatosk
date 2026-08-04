@@ -31,6 +31,7 @@ import { isPaymentSensitiveKey, isPaymentSensitiveValue } from "./payment-sensit
  */
 
 const MAX_BODY_CHARS = 256_000;
+const MAX_REDACTED_PATHS = 40;
 
 /** Field and query-parameter names whose value is a credential, never data. */
 const CREDENTIAL_KEY =
@@ -60,15 +61,20 @@ export function buildDiscoveryEvidenceEntry(input: {
   requestHeaders?: Record<string, unknown>;
 }): CapturedEntry {
   const contentType = normalizeContentType(input.contentType);
+  const response = input.body === undefined ? undefined : redactDiscoveryBody(input.body);
   return {
     url: sanitizeDiscoveryUrl(input.url),
     method: (input.method || "GET").toUpperCase(),
     status: input.status,
     contentType,
-    requestBody: input.requestBody === undefined ? undefined : redactDiscoveryBody(input.requestBody),
+    requestBody: input.requestBody === undefined ? undefined : redactDiscoveryBody(input.requestBody)?.value,
     requestHeaders: sanitizeHeaders(input.requestHeaders),
     requestAuth: detectRequestAuth(input.requestHeaders),
-    responseBody: input.body === undefined ? undefined : redactDiscoveryBody(input.body),
+    // Where a credential *was*, never what it was. This is what lets discovery
+    // wire a runtime token exchange without ever holding the token: the path is
+    // structure, and the value is fetched fresh from the user's own session.
+    ...(response?.redactedPaths.length ? { redactedResponsePaths: response.redactedPaths } : {}),
+    responseBody: response?.value,
   };
 }
 
@@ -94,7 +100,13 @@ export function sanitizeDiscoveryUrl(value: string): string {
   return url.toString();
 }
 
-function redactDiscoveryBody(body: string): string | undefined {
+interface RedactedBody {
+  value: string;
+  /** Structural paths whose value was a credential. */
+  redactedPaths: string[];
+}
+
+function redactDiscoveryBody(body: string): RedactedBody | undefined {
   if (!body || body.length > MAX_BODY_CHARS) return undefined;
   let parsed: unknown;
   try {
@@ -104,24 +116,52 @@ function redactDiscoveryBody(body: string): string | undefined {
     // free of credentials. Discovery only ever infers from JSON.
     return undefined;
   }
-  return JSON.stringify(redactCredentialLeaves(parsed, undefined, 0));
+  const redactedPaths: string[] = [];
+  const value = JSON.stringify(redactCredentialLeaves(parsed, undefined, "", 0, redactedPaths));
+  return { value, redactedPaths };
 }
 
-function redactCredentialLeaves(value: unknown, key: string | undefined, depth: number): unknown {
+function redactCredentialLeaves(
+  value: unknown,
+  key: string | undefined,
+  path: string,
+  depth: number,
+  redactedPaths: string[],
+): unknown {
   if (depth > 12) return null;
-  if (key !== undefined && (CREDENTIAL_KEY.test(key) || isPaymentSensitiveKey(key))) return REDACTED;
-  if (isPaymentSensitiveValue(value)) return REDACTED;
-  if (typeof value === "string") return isCredentialValue(value) ? REDACTED : value;
+  const redact = () => {
+    if (redactedPaths.length < MAX_REDACTED_PATHS && isStructuralPath(path)) redactedPaths.push(path);
+    return REDACTED;
+  };
+  if (key !== undefined && (isCredentialKey(key) || isPaymentSensitiveKey(key))) return redact();
+  if (isPaymentSensitiveValue(value)) return redact();
+  if (typeof value === "string") return isCredentialValue(value) ? redact() : value;
   // Containers are traversed whatever they are called. A key named `customer`
   // or `account` describes where invoices live; it is not itself a secret.
-  if (Array.isArray(value)) return value.map((item) => redactCredentialLeaves(item, key, depth + 1));
+  if (Array.isArray(value)) {
+    return value.map((item, index) => redactCredentialLeaves(item, key, joinPath(path, String(index)), depth + 1, redactedPaths));
+  }
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
-        .map(([childKey, child]) => [childKey, redactCredentialLeaves(child, childKey, depth + 1)]),
+        .map(([childKey, child]) => [childKey, redactCredentialLeaves(child, childKey, joinPath(path, childKey), depth + 1, redactedPaths)]),
     );
   }
   return value;
+}
+
+/** JSON field names are routinely camelCase, so `accessToken` has to receive the
+ * same treatment as `access_token`. */
+function isCredentialKey(key: string): boolean {
+  return CREDENTIAL_KEY.test(key.replace(/([a-z0-9])([A-Z])/g, "$1_$2"));
+}
+
+function joinPath(prefix: string, key: string): string {
+  return prefix ? `${prefix}.${key}` : key;
+}
+
+function isStructuralPath(path: string): boolean {
+  return path.length > 0 && path.length <= 300 && path.split(".").every((part) => /^[A-Za-z0-9_$-]+$/.test(part));
 }
 
 function isCredentialValue(value: string): boolean {

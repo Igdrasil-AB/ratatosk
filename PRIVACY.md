@@ -58,7 +58,12 @@ closes the tabs when the search ends. On those temporary pages, a packaged
 exact-origin observer may temporarily inspect bounded JSON fetch/XHR responses
 and the request structure needed to recognize an explicit read-only
 GraphQL query. Credential-named fields, credential-shaped values, and payment
-instrument data are removed from that evidence before it is read. It does not initiate the page's POST requests. Bounded rendered-page snapshots and JSON
+instrument data are removed from that evidence before it is read; where one was
+removed, only its field name is kept, so a supplier whose API requires a
+short-lived token can be recognized without the token ever being retained. That
+token is re-requested from your own signed-in session at the start of each
+collection, used only against the site that issued it, and discarded when the
+run ends. It is never written to storage. It does not initiate the page's POST requests. Bounded rendered-page snapshots and JSON
 evidence stay in memory, are not logged or uploaded, and are discarded after the
 packaged adapters produce up to three proof-ranked structural candidates. A
 failed search or verification may retain a redacted diagnostic in session storage
