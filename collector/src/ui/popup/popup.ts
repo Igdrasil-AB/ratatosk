@@ -493,7 +493,13 @@ function discoveryCard(): string {
     const sites = discovery.requiredOrigins.length;
     const hostnames = discovery.requiredOrigins.map((pattern) => new URL(pattern.slice(0, -2)).hostname).join(", ");
     const clues = discovery.candidateCount;
-    return `<aside class="supplier-request discovery-found" aria-labelledby="supplier-request-title"><span class="supplier-request-mark letter" aria-hidden="true">${esc(discovery.name.charAt(0).toUpperCase())}</span><span class="supplier-request-copy"><strong id="supplier-request-title">Invoice source found</strong><small>${esc(discovery.name)} · ${clues} invoice clue${clues === 1 ? "" : "s"} · ${sites} site${sites === 1 ? "" : "s"}</small><small class="discovery-hosts">Access: ${esc(hostnames)}</small></span><span class="discovery-actions"><button type="button" class="supplier-request-link" data-action="connect-discovery" data-id="${esc(discovery.vendorId)}">Connect &amp; Collect</button><button type="button" class="quiet-link compact" data-action="cancel-discovery">Cancel</button></span></aside>`;
+    // Access is what the person is granting, so it is stated where they grant
+    // it. A token exchange changes what Ratatosk holds during a run, and that
+    // belongs on this card rather than only in the security notes.
+    const sessionToken = discovery.usesSessionToken
+      ? `<small class="discovery-consent">Uses the sign-in token ${esc(discovery.name)} issues to itself. Re-read each time, never stored.</small>`
+      : "";
+    return `<aside class="supplier-request discovery-found" aria-labelledby="supplier-request-title"><span class="supplier-request-mark letter" aria-hidden="true">${esc(discovery.name.charAt(0).toUpperCase())}</span><span class="supplier-request-copy"><strong id="supplier-request-title">Invoice source found</strong><small>${esc(discovery.name)} · ${clues} invoice clue${clues === 1 ? "" : "s"} · ${sites} site${sites === 1 ? "" : "s"}</small><small class="discovery-hosts">Access: ${esc(hostnames)}</small>${sessionToken}</span><span class="discovery-actions"><button type="button" class="supplier-request-link" data-action="connect-discovery" data-id="${esc(discovery.vendorId)}">Connect &amp; Collect</button><button type="button" class="quiet-link compact" data-action="cancel-discovery">Cancel</button></span></aside>`;
   }
   if (discovery.stage === "connecting") {
     return `<aside class="supplier-request discovery-progress" role="status"><span class="discovery-spinner" aria-hidden="true"></span><span class="supplier-request-copy"><strong>Verifying a real PDF…</strong><small>${esc(discovery.name)} is saved only if one arrives.</small></span></aside>`;

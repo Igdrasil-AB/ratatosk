@@ -22,6 +22,48 @@ import { DISCOVERY_DIAGNOSTIC_SCHEMA } from "../../collector/src/platform/discov
 import { createExplorationCheckpoint } from "../../collector/src/platform/discovery-explorer";
 
 describe("durable supplier discovery handoff", () => {
+  it("discloses a token exchange to the person approving access", async () => {
+    const withToken = createDiscoveredSupplierProfile({
+      primaryOrigin: "https://vendor.example",
+      entryUrl: "https://vendor.example/account/billing",
+      displayName: "Example Vendor",
+      nameSource: "page",
+      nameConfidence: "medium",
+      adapterId: "network-json",
+      candidateCount: 2,
+      recipe: tokenRecipe(),
+    });
+    const runId = await beginSupplierDiscovery(42, "https://vendor.example");
+    await markSupplierDiscoveryScanning();
+    await setSupplierDiscoveryPreview(runId, createDiscoveredSupplierCandidateSet([withToken]), candidateDiagnostic());
+
+    await expect(getSupplierDiscoveryStatus()).resolves.toMatchObject({
+      stage: "preview",
+      usesSessionToken: true,
+    });
+  });
+
+  it("claims no token exchange when no retained plan needs one", async () => {
+    const plain = createDiscoveredSupplierProfile({
+      primaryOrigin: "https://vendor.example",
+      entryUrl: "https://vendor.example/account/billing",
+      displayName: "Example Vendor",
+      nameSource: "page",
+      nameConfidence: "medium",
+      adapterId: "dom-links",
+      candidateCount: 2,
+      recipe: recipe(),
+    });
+    const runId = await beginSupplierDiscovery(42, "https://vendor.example");
+    await markSupplierDiscoveryScanning();
+    await setSupplierDiscoveryPreview(runId, createDiscoveredSupplierCandidateSet([plain]), candidateDiagnostic());
+
+    await expect(getSupplierDiscoveryStatus()).resolves.toMatchObject({
+      stage: "preview",
+      usesSessionToken: false,
+    });
+  });
+
   const values: Record<string, unknown> = {};
 
   beforeEach(() => {
@@ -285,6 +327,29 @@ function candidateDiagnostic() {
     attempts: [],
     termination: "candidate_set_complete" as const,
     result: "candidates_found" as const,
+  };
+}
+
+function tokenRecipe(): VendorRecipe {
+  const base = recipe();
+  return {
+    ...base,
+    auth: {
+      ...base.auth,
+      token: { request: { url: "https://vendor.example/api/session" }, value: "accessToken" },
+    },
+    invoices: {
+      strategy: "network",
+      list: {
+        request: {
+          url: "https://vendor.example/api/invoices?limit=50",
+          headers: { authorization: "Bearer {token}" },
+        },
+        items: "invoices",
+        map: { id: "id", issuedAt: "issued_at", documentUrl: "pdf_url" },
+      },
+      document: { contentType: "application/pdf" },
+    },
   };
 }
 

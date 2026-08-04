@@ -129,6 +129,20 @@ describe("discovered token exchange", () => {
     expect(observer).not.toMatch(/authorization:\s*value/);
   });
 
+  it("tells the person about the token exchange where they grant access", () => {
+    const popup = readFileSync("collector/src/ui/popup/popup.ts", "utf8");
+    const state = readFileSync("collector/src/platform/discovery-state.ts", "utf8");
+
+    // The disclosure sits on the approval card, beside the origins it belongs
+    // with — not only in the security notes.
+    expect(popup).toContain("discovery.usesSessionToken");
+    expect(popup).toContain("Re-read each time, never stored.");
+    expect(popup).toMatch(/discovery-hosts[\s\S]{0,200}\$\{sessionToken\}/);
+    // Any retained candidate may be the one that runs, so the flag covers the set.
+    expect(state).toContain("usesSessionToken: state.candidates.candidates.some(");
+    expect(state).toContain("Boolean(candidate.recipe.auth.token)");
+  });
+
   it("records where a credential was, never what it was", () => {
     const entry = buildDiscoveryEvidenceEntry({
       url: "https://app.vendor.example/api/session",

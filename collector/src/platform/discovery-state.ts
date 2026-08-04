@@ -57,6 +57,9 @@ export type DiscoveryStatusView =
     candidateCount: number;
     adapterId: DiscoveredSupplierProfileV1["adapter"]["id"];
     requiredOrigins: readonly string[];
+    /** A retained plan re-mints the short-lived token this site issues to
+     * itself. The person approving access is told before they grant it. */
+    usesSessionToken: boolean;
   }
   | { stage: "connecting"; name: string }
   | { stage: "complete"; vendorId: string; name: string; count: number; monthFallbackAll?: boolean }
@@ -265,6 +268,9 @@ export async function getSupplierDiscoveryStatus(): Promise<DiscoveryStatusView>
       candidateCount: state.candidates.candidates[0].candidateCount,
       adapterId: state.candidates.candidates[0].adapter.id,
       requiredOrigins: requiredCandidateOrigins(state.candidates),
+      // Any retained candidate may be the one that runs, so the disclosure
+      // covers the whole set rather than only the highest-ranked plan.
+      usesSessionToken: state.candidates.candidates.some((candidate) => Boolean(candidate.recipe.auth.token)),
     };
     case "confirming": return { stage: "connecting", name: state.candidates.displayName };
     case "complete": return {
