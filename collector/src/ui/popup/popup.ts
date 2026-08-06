@@ -31,6 +31,12 @@ import { parseConfigResponse, parseInitialBackgroundState, PopupLoadError } from
 import { folderPath, getDownloadRoot } from "../../platform/filesystem-sink";
 import { clearRememberedRoutes, listRememberedRoutes } from "../../platform/discovery-route-memory";
 import {
+  buildCollectionIssueReport,
+  buildDiscoveryIssueReport,
+  generalIssueUrl,
+  type IssueReport,
+} from "../../platform/issue-report";
+import {
   ordinalDay,
   syncScheduleLabel,
   weekdayNames,
@@ -480,7 +486,7 @@ function renderVendors(): void {
       ? `<div class="inline-error" id="vendor-error-${esc(source.id)}" role="alert" tabindex="-1">${esc(state.inlineError.message)}</div>` : "";
     if (connection) {
       const diagnostic = connection.lastStatus && connection.lastStatus !== "ok"
-        ? `<button type="button" data-action="copy-diagnostic" data-id="${esc(source.id)}">Copy details</button>`
+        ? `<button type="button" data-action="report-vendor" data-id="${esc(source.id)}">Report issue</button>`
         : "";
       secondaryAction = `<details class="vendor-menu"><summary aria-label="More actions for ${esc(source.name)}">${moreIcon()}</summary><div class="vendor-menu-items">${diagnostic}<button type="button" data-action="forget-history" data-id="${esc(source.id)}">Forget history</button><button type="button" class="danger" data-action="disconnect" data-id="${esc(source.id)}">Disconnect</button></div></details>`;
     }
@@ -537,8 +543,10 @@ function discoveryCard(): string {
     const detail = emptyResult
       ? "This account may not include billing access."
       : discovery.message;
+    // One step instead of three. "Copy details" left a person holding a blob of
+    // JSON and no idea where it was meant to go.
     const diagnostic = discovery.diagnosticAvailable
-      ? `<button type="button" class="quiet-link compact" data-action="copy-discovery-diagnostic">Copy details</button>`
+      ? `<button type="button" class="quiet-link compact" data-action="report-discovery">Report Issue</button>`
       : "";
     return `<aside class="supplier-request discovery-failed" role="${emptyResult ? "status" : "alert"}"><span class="supplier-request-mark" aria-hidden="true">${emptyResult ? "–" : "!"}</span><span class="supplier-request-copy"><strong>${title}</strong><small>${esc(detail)}</small></span><span class="discovery-actions"><button type="button" class="supplier-request-link" data-action="retry-discovery">${emptyResult ? "Search Again" : "Try Again"}</button>${diagnostic}</span></aside>`;
   }
@@ -613,6 +621,7 @@ function renderSettings(): void {
       </div>${destinationFields}${error}</fieldset>
       <fieldset class="grp divider"><legend>Check for New Invoices</legend>${scheduleControls()}</fieldset>
       <fieldset class="grp divider"><legend>Browser Context</legend>${tabAwareness}${rememberedRoutes()}</fieldset>
+      <fieldset class="grp divider"><legend>Help</legend><div class="context-access"><span><strong>Report a problem</strong><small>Open an issue on GitHub. A failed search offers a prefilled report with its own details attached.</small></span><button type="button" class="btn outline sm" data-action="open-issues">Open GitHub</button></div></fieldset>
     </form>
     <p class="foot">Runs while Chrome is open. If it is closed, Ratatosk catches up next time.</p>`);
 }
@@ -959,8 +968,9 @@ async function handle(action: string, vendorId?: string): Promise<void> {
     case "forget-history": openHistoryDialog(vendorId!); return;
     case "disable-tab-awareness": await disableTabAwareness(); return;
     case "forget-routes": await forgetRememberedRoutes(); return;
-    case "copy-diagnostic": await copyVendorDiagnostic(vendorId!); return;
-    case "copy-discovery-diagnostic": await copyDiscoveryDiagnostic(); return;
+    case "report-vendor": await reportVendorIssue(vendorId!); return;
+    case "report-discovery": await reportDiscoveryIssue(); return;
+    case "open-issues": await chrome.tabs.create({ url: generalIssueUrl() }); return;
     case "connect-igdrasil": await openIgdrasilConnect(); return;
     case "manage-igdrasil": await chrome.tabs.create({ url: "https://accounting.igdrasil.se/integrations/invoice-collector" }); return;
     case "cancel-discovery":
@@ -1078,32 +1088,41 @@ async function retryDiscovery(): Promise<void> {
   await discoverFromUserGesture();
 }
 
-async function copyVendorDiagnostic(vendorId: string): Promise<void> {
+/**
+ * Hand over a written report instead of a blob of JSON.
+ *
+ * The clipboard write comes first: the issue form asks for one paste, and
+ * opening the tab before the copy succeeded would present a form the person
+ * cannot complete. If the clipboard is unavailable the report is abandoned
+ * rather than opened half-ready.
+ */
+async function openIssueReport(report: IssueReport, onError: (message: string) => void): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(report.clipboard);
+  } catch {
+    onError("Ratatosk couldn’t copy the details. Reopen the extension and try again.");
+    return;
+  }
+  await chrome.tabs.create({ url: report.url });
+  toast("Details Copied · Paste Into the Issue");
+}
+
+async function reportVendorIssue(vendorId: string): Promise<void> {
   const response = await send({ type: "getVendorDiagnostic", vendorId });
   if (!response.ok || !("diagnostic" in response)) {
     sourceError(vendorId, response.ok ? "Diagnostic unavailable." : response.error);
     return;
   }
-  try {
-    await navigator.clipboard.writeText(`${JSON.stringify(response.diagnostic, null, 2)}\n`);
-    toast("Redacted Diagnostic Copied");
-  } catch {
-    sourceError(vendorId, "Clipboard access failed. Reopen Ratatosk and try again.");
-  }
+  await openIssueReport(buildCollectionIssueReport(response.diagnostic), (message) => sourceError(vendorId, message));
 }
 
-async function copyDiscoveryDiagnostic(): Promise<void> {
+async function reportDiscoveryIssue(): Promise<void> {
   const response = await send({ type: "getDiscoveryDiagnostic" });
   if (!response.ok || !("discoveryDiagnostic" in response)) {
     toast(response.ok ? "Diagnostic unavailable." : response.error);
     return;
   }
-  try {
-    await navigator.clipboard.writeText(`${JSON.stringify(response.discoveryDiagnostic, null, 2)}\n`);
-    toast("Redacted Diagnostic Copied");
-  } catch {
-    toast("Clipboard access failed. Reopen Ratatosk and try again.");
-  }
+  await openIssueReport(buildDiscoveryIssueReport(response.discoveryDiagnostic), toast);
 }
 
 async function switchToFilesystem(): Promise<void> {

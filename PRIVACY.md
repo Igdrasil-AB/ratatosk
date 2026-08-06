@@ -75,6 +75,15 @@ tenant, account, workspace, and document segments with `:id` or `:segment`.
 They never contain origins, raw paths, queries, fragments, page content, headers,
 response bodies, tokens, account or invoice identifiers, or financial values.
 
+A failed search, and a supplier whose last run did not succeed, offer a **Report
+Issue** action. It copies that same redacted diagnostic to the clipboard and
+opens a prefilled GitHub issue in a new tab; Settings links to the issue tracker
+for anything else. Nothing is transmitted by the extension: the tab is a draft on
+github.com, and nothing becomes public until the user reviews it and presses
+submit there. The report names the supplier's hostname, which the issue itself
+states, so filing one publicly records which supplier was being collected from.
+Collector still makes no automatic or background report of any kind.
+
 After the user confirms **Connect & Collect**, Collector verifies the ranked
 candidates by fetching and validating an actual PDF, falling through only when a
 candidate shape is invalid or empty. A locally discovered supplier may activate
