@@ -28,6 +28,13 @@ import {
   type ActiveSupplierTab,
 } from "./active-supplier-tab";
 import { parseConfigResponse, parseInitialBackgroundState, PopupLoadError } from "./load-state";
+import { folderPath, getDownloadRoot } from "../../platform/filesystem-sink";
+import {
+  ordinalDay,
+  syncScheduleLabel,
+  weekdayNames,
+  type SyncSchedule,
+} from "../../../../src/core/sync-schedule";
 
 type InlineError = { scope: "vendor"; vendorId: string; message: string } | { scope: "settings"; message: string };
 
@@ -56,12 +63,17 @@ type CollectionTarget =
   | { kind: "discovery"; vendorId: string };
 let pendingSyncTarget: CollectionTarget | null = null;
 let hasLoadedBackgroundState = false;
+/** How long the discovery success card stays before retiring itself. Matches
+ * the `discovery-retire` fade in popup.html so it leaves rather than blinks. */
+const SUCCESS_CARD_MS = 4_000;
+let successDismissTimer: ReturnType<typeof setTimeout> | undefined;
+let retiredSuccessVendorId: string | null = null;
 const expandedSupplierIds = new Set<string>();
 const state = {
   sources: [] as SourceView[],
   ledger: [] as LedgerEntry[],
   config: null as Awaited<ReturnType<typeof getConfig>>,
-  schedule: { periodMinutes: null, nextRunAt: null } as ScheduleInfo,
+  schedule: { schedule: { mode: "daily" }, nextRunAt: null } as ScheduleInfo,
   vendorGuidanceSeen: false,
   forceGuidance: false,
   busyVendorId: null as string | null,
@@ -72,6 +84,8 @@ const state = {
   tabAwarenessRequestPending: false,
   ledgerDateFilter: "all" as LedgerDateFilter,
   attentionOnly: false,
+  /** Absolute directory Chrome saves into, known only after the first save. */
+  downloadRoot: null as string | null,
 };
 
 // ---- helpers --------------------------------------------------------------
@@ -240,6 +254,7 @@ async function load(): Promise<void> {
       queryActiveSupplierTab(),
       hasTabAwarenessPermission(),
       chrome.storage.local.get(VENDOR_GUIDANCE_SEEN),
+      getDownloadRoot().then((root) => { state.downloadRoot = root ?? null; }),
     ]);
     const background = parseInitialBackgroundState({
       sourceResponse,
@@ -305,7 +320,7 @@ function renderHome(): void {
     status = `<button type="button" class="status status-action" data-action="open-attention"><span class="dot warn" aria-hidden="true"></span><strong>${needsReconnect.length} Vendor${needsReconnect.length > 1 ? "s" : ""} Need Reconnecting</strong><span aria-hidden="true">→</span></button>`;
   } else if (needsAttention.length) {
     status = `<button type="button" class="status status-action" data-action="open-attention"><span class="dot warn" aria-hidden="true"></span><strong>${needsAttention.length} Vendor${needsAttention.length > 1 ? "s" : ""} Need Attention</strong><span aria-hidden="true">→</span></button>`;
-  } else if (state.schedule.periodMinutes && connected.length) {
+  } else if (state.schedule.schedule.mode !== "off" && connected.length) {
     const completeSyncs = connected.map((source) =>
       source.connection?.lastCompleteSyncAt ??
       (source.connection?.lastStatus === "ok" ? source.connection.lastRunAt : undefined)
@@ -506,7 +521,10 @@ function discoveryCard(): string {
   }
   if (discovery.stage === "complete") {
     const fallback = discovery.monthFallbackAll ? " All history checked, no invoice dates." : "";
-    return `<aside class="supplier-request discovery-complete" role="status"><span class="supplier-request-mark success" aria-hidden="true">✓</span><span class="supplier-request-copy"><strong>${esc(discovery.name)} connected</strong><small>${discovery.count} invoice${discovery.count === 1 ? "" : "s"} collected.${fallback}</small></span><button type="button" class="quiet-link compact" data-action="dismiss-discovery">Done</button></aside>`;
+    // No dismissal to perform: the supplier is already in the list above with
+    // this same count, so the card retires itself. See `scheduleSuccessDismiss`.
+    scheduleSuccessDismiss();
+    return `<aside class="supplier-request discovery-complete" role="status"><span class="supplier-request-mark success" aria-hidden="true">✓</span><span class="supplier-request-copy"><strong>${esc(discovery.name)} connected</strong><small>${discovery.count} invoice${discovery.count === 1 ? "" : "s"} collected.${fallback}</small></span></aside>`;
   }
   if (discovery.stage === "failed") {
     const emptyResult = discovery.reason === "not_found" || discovery.reason === "limit_reached";
@@ -536,16 +554,45 @@ function discoveryCard(): string {
   return `<aside class="supplier-request" aria-labelledby="supplier-request-title"><span class="supplier-request-mark" aria-hidden="true">${branchIcon()}</span><span class="supplier-request-copy"><strong id="supplier-request-title">Supplier not listed?</strong><small>${esc(detail)}</small></span><button type="button" class="supplier-request-link" data-action="try-discovery" ${ready ? "" : "disabled"}>Find Invoices</button></aside>`;
 }
 
+/**
+ * Clear the completed run without making the person acknowledge it.
+ *
+ * Confirmation is the card's whole job, and the supplier row above it already
+ * carries the same name and count permanently. Requiring a click to get back
+ * to the list turned a finished task into an outstanding one.
+ *
+ * Armed once per completed run: `retiredSuccessVendorId` keeps a re-render from
+ * restarting the timer, and the background copy expires on its own shortly
+ * after, so a panel closed before the timer fires does not reopen to the card.
+ */
+function scheduleSuccessDismiss(): void {
+  const discovery = state.discovery;
+  if (discovery.stage !== "complete") return;
+  if (successDismissTimer || retiredSuccessVendorId === discovery.vendorId) return;
+  const vendorId = discovery.vendorId;
+  successDismissTimer = setTimeout(() => {
+    successDismissTimer = undefined;
+    retiredSuccessVendorId = vendorId;
+    void (async () => {
+      try {
+        await send({ type: "dismissDiscovery" });
+        await load();
+      } catch {
+        // The card expires in the background regardless; a failed refresh here
+        // is not worth an error in front of a run that succeeded.
+      }
+    })();
+  }, SUCCESS_CARD_MS);
+}
+
 function renderSettings(): void {
   const config = state.config;
   const kind = config?.kind ?? "unconfigured";
   const filesystemConfig = config?.kind === "filesystem" ? config : null;
-  const period = state.schedule.periodMinutes ?? 0;
-  const scheduleOption = (label: string, minutes: number) => `<label><input type="radio" name="schedule" value="${minutes}" ${period === minutes ? "checked" : ""} /><span>${label}</span></label>`;
   const filesystemChecked = kind === "filesystem" ? "checked" : "";
 
   const destinationFields = filesystemConfig
-    ? `<div class="fields"><div class="field"><label for="folder">Folder</label><input id="folder" name="folder" autocomplete="off" maxlength="100" data-field="folder" value="${esc(filesystemConfig.rootFolder)}" /></div><div class="field"><label for="date-mode">Folders By</label><select id="date-mode" name="dateMode" autocomplete="off" data-field="datemode"><option value="extraction" ${filesystemConfig.dateMode === "extraction" ? "selected" : ""}>Date Collected</option><option value="invoice" ${filesystemConfig.dateMode === "invoice" ? "selected" : ""}>Invoice Date</option></select></div></div>`
+    ? `<div class="fields"><div class="field wide"><label for="folder">Folder</label><input id="folder" name="folder" autocomplete="off" spellcheck="false" maxlength="200" placeholder="Accounting/Invoices" data-field="folder" value="${esc(filesystemConfig.rootFolder)}" aria-describedby="folder-path" /></div><p class="save-path" id="folder-path">Saves to <code>${esc(savePath(filesystemConfig.rootFolder))}</code>/supplier/date<span class="save-path-note">Use <code>/</code> to nest. Chrome only lets extensions write inside Downloads.</span></p><div class="field"><label for="date-mode">Folders By</label><select id="date-mode" name="dateMode" autocomplete="off" data-field="datemode"><option value="extraction" ${filesystemConfig.dateMode === "extraction" ? "selected" : ""}>Date Collected</option><option value="invoice" ${filesystemConfig.dateMode === "invoice" ? "selected" : ""}>Invoice Date</option></select></div></div>`
     : kind === "igdrasil"
       ? `<div class="callout"><strong>Connected through Igdrasil.</strong> Manage it from the Igdrasil web app.</div>`
       : `<div class="callout"><strong>Choose a destination first.</strong> Nothing is fetched or saved until you do.</div>`;
@@ -561,10 +608,96 @@ function renderSettings(): void {
         <label class="opt"><input type="radio" name="destination" value="filesystem" ${filesystemChecked} /><span class="radio" aria-hidden="true"></span><span><strong>This Computer</strong><small>Downloads folder</small></span></label>
         <button type="button" class="opt opt-link ${kind === "igdrasil" ? "selected" : ""}" data-action="${kind === "igdrasil" ? "manage-igdrasil" : "connect-igdrasil"}"><span class="radio" aria-hidden="true"></span><span><strong>Igdrasil Accounting</strong><small>${kind === "igdrasil" ? "Connected · invoices go to your inbox" : "Connect or create an Igdrasil account"}</small></span><span class="open-label">${kind === "igdrasil" ? "Manage" : "Connect"}</span></button>
       </div>${destinationFields}${error}</fieldset>
-      <fieldset class="grp divider"><legend>Check for New Invoices</legend><div class="seg">${scheduleOption("Off", 0)}${scheduleOption("6h", 360)}${scheduleOption("12h", 720)}${scheduleOption("Daily", 1440)}</div>${period && state.schedule.nextRunAt ? `<p class="schedule-next">Next check ${relTime(state.schedule.nextRunAt)}</p>` : ""}</fieldset>
+      <fieldset class="grp divider"><legend>Check for New Invoices</legend>${scheduleControls()}</fieldset>
       <fieldset class="grp divider"><legend>Browser Context</legend>${tabAwareness}</fieldset>
     </form>
     <p class="foot">Runs while Chrome is open. If it is closed, Ratatosk catches up next time.</p>`);
+}
+
+/**
+ * The schedule, stated as a calendar rather than an interval.
+ *
+ * "Every 12 hours" is a machine's way of saying it. A person filing invoices
+ * thinks in days of the week and days of the month, so the cadence and the day
+ * it lands on are chosen separately, and the exact next run is spelled out
+ * underneath rather than left to be inferred.
+ */
+function scheduleControls(): string {
+  const schedule = state.schedule.schedule;
+  const modeOption = (label: string, value: SyncSchedule["mode"]) =>
+    `<label><input type="radio" name="schedule-mode" value="${value}" ${schedule.mode === value ? "checked" : ""} /><span>${label}</span></label>`;
+
+  const dayPicker = schedule.mode === "weekly"
+    ? menuSelect({
+        label: "Day of the week to sync",
+        action: "set-schedule-weekday",
+        current: String(schedule.weekday),
+        options: weekdayNames().map((name, index) => ({ value: String(index), label: name })),
+      })
+    : schedule.mode === "monthly"
+      ? menuSelect({
+          label: "Day of the month to sync",
+          action: "set-schedule-monthday",
+          current: String(schedule.day),
+          options: Array.from({ length: 31 }, (_value, index) => ({ value: String(index + 1), label: ordinalDay(index + 1) })),
+        })
+      : "";
+
+  const dayRow = dayPicker ? `<div class="schedule-day"><span>On</span>${dayPicker}</div>` : "";
+  // Only surfaced once it can actually bite, so the common choices stay silent.
+  const shortMonths = schedule.mode === "monthly" && schedule.day > 28
+    ? `<p class="schedule-note">Months without a ${ordinalDay(schedule.day)} use their last day.</p>`
+    : "";
+  const next = schedule.mode !== "off" && state.schedule.nextRunAt
+    ? `<p class="schedule-next">Next check ${esc(nextRunLabel(state.schedule.nextRunAt))}</p>`
+    : "";
+
+  return `<div class="seg">${modeOption("Off", "off")}${modeOption("Daily", "daily")}${modeOption("Weekly", "weekly")}${modeOption("Monthly", "monthly")}</div>${dayRow}${shortMonths}${next}`;
+}
+
+/** The chosen day, with the weekday and time it resolves to. */
+function nextRunLabel(timestamp: number): string {
+  const when = new Intl.DateTimeFormat(undefined, {
+    weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
+  }).format(new Date(timestamp));
+  return `${when} · ${relTime(timestamp)}`;
+}
+
+/**
+ * A listbox that looks like the rest of the panel.
+ *
+ * A native `<select>` renders as an OS menu that ignores the panel's type and
+ * colour, and a date input would offer a calendar for what is a recurring day,
+ * not a date. `<details>` supplies the open/close, dismissal and Escape
+ * handling the platform already does well; the options carry listbox semantics
+ * on top so the control is announced and driven as one.
+ */
+function menuSelect(input: {
+  label: string;
+  action: string;
+  current: string;
+  options: readonly { value: string; label: string }[];
+}): string {
+  const selectedLabel = input.options.find((option) => option.value === input.current)?.label
+    ?? input.options[0]?.label ?? "";
+  const options = input.options.map((option) => {
+    const selected = option.value === input.current;
+    return `<button type="button" role="option" aria-selected="${selected}" class="menu-option${selected ? " selected" : ""}" data-action="${esc(input.action)}" data-value="${esc(option.value)}"><span class="menu-check" aria-hidden="true">${selected ? checkIcon() : ""}</span>${esc(option.label)}</button>`;
+  }).join("");
+  return `<details class="menu-select"><summary aria-label="${esc(input.label)}"><span class="menu-value">${esc(selectedLabel)}</span>${chevronIcon()}</summary><div class="menu-options" role="listbox" aria-label="${esc(input.label)}">${options}</div></details>`;
+}
+
+/** Put focus back after a re-render replaced the control that was just used. */
+function restoreFocusTo(selector: string): void {
+  requestAnimationFrame(() => document.querySelector<HTMLElement>(selector)?.focus());
+}
+
+/** Close an open menu and hand focus back to the control that opened it. */
+function closeMenuSelect(): void {
+  const open = document.querySelector<HTMLDetailsElement>(".menu-select[open]");
+  if (!open) return;
+  open.open = false;
+  open.querySelector<HTMLElement>("summary")?.focus();
 }
 
 // ---- actions --------------------------------------------------------------
@@ -605,6 +738,17 @@ app.addEventListener("click", (event) => {
     openSyncDialog({ kind: "discovery", vendorId });
     return;
   }
+  if (action === "set-schedule-weekday" || action === "set-schedule-monthday") {
+    const value = Number(element.dataset.value);
+    closeMenuSelect();
+    // The re-render replaces the menu, so focus is put back on the control that
+    // was just used rather than dropped to the document.
+    void updateSchedule(action === "set-schedule-weekday"
+      ? { mode: "weekly", weekday: value }
+      : { mode: "monthly", day: value },
+    ).then(() => restoreFocusTo(".menu-select summary"));
+    return;
+  }
   if (action === "set-ledger-range") {
     const filter = element.dataset.range;
     if (filter === "all" || filter === "30d" || filter === "90d" || filter === "year") {
@@ -624,11 +768,22 @@ app.addEventListener("change", (event) => {
     void saveField(element.dataset.field, element.value);
     return;
   }
-  if (element instanceof HTMLInputElement && element.name === "schedule") {
-    void updateSchedule(Number(element.value));
+  if (element instanceof HTMLInputElement && element.name === "schedule-mode") {
+    const mode = element.value;
+    void updateSchedule(scheduleForMode(mode))
+      .then(() => restoreFocusTo(`input[name="schedule-mode"][value="${CSS.escape(mode)}"]`));
   } else if (element instanceof HTMLInputElement && element.name === "destination" && element.value === "filesystem") {
     void switchToFilesystem();
   }
+});
+
+// The path is the point of the field, so it resolves while typing rather than
+// waiting for the value to be committed on blur.
+app.addEventListener("input", (event) => {
+  const element = event.target;
+  if (!(element instanceof HTMLInputElement) || element.dataset.field !== "folder") return;
+  const preview = document.querySelector<HTMLElement>("#folder-path code");
+  if (preview) preview.textContent = savePath(element.value || "Ratatosk");
 });
 
 app.addEventListener("toggle", (event) => {
@@ -792,8 +947,7 @@ async function handle(action: string, vendorId?: string): Promise<void> {
     case "connect-igdrasil": await openIgdrasilConnect(); return;
     case "manage-igdrasil": await chrome.tabs.create({ url: "https://accounting.igdrasil.se/integrations/invoice-collector" }); return;
     case "cancel-discovery":
-    case "dismiss-discovery":
-      await send({ type: action === "cancel-discovery" ? "cancelDiscovery" : "dismissDiscovery" });
+      await send({ type: "cancelDiscovery" });
       await load();
       return;
     case "dismiss-vendor-guidance":
@@ -953,13 +1107,28 @@ async function switchToFilesystem(): Promise<void> {
   await load();
 }
 
-async function updateSchedule(periodMinutes: number): Promise<void> {
-  const response = await send({ type: "setSchedule", periodMinutes });
+/**
+ * Switching cadence keeps the day already chosen where it still applies, so
+ * moving weekly → monthly → weekly does not silently reset it.
+ */
+function scheduleForMode(mode: string): SyncSchedule {
+  const current = state.schedule.schedule;
+  if (mode === "weekly") {
+    return { mode: "weekly", weekday: current.mode === "weekly" ? current.weekday : new Date().getDay() };
+  }
+  if (mode === "monthly") {
+    return { mode: "monthly", day: current.mode === "monthly" ? current.day : 1 };
+  }
+  return mode === "daily" ? { mode: "daily" } : { mode: "off" };
+}
+
+async function updateSchedule(schedule: SyncSchedule): Promise<void> {
+  const response = await send({ type: "setSchedule", schedule });
   if (!response.ok) {
     settingsError(response.error);
     return;
   }
-  toast(periodMinutes ? "Auto-Sync Updated" : "Auto-Sync Turned Off");
+  toast(schedule.mode === "off" ? "Auto-Sync Turned Off" : `Auto-Sync · ${syncScheduleLabel(schedule)}`);
   await load();
 }
 
@@ -1082,10 +1251,22 @@ function iconFor(vendorId: string): string | undefined {
 
 function destinationLabel(): string {
   const config = state.config;
-  if (config?.kind === "filesystem") return `Downloads / ${config.rootFolder}`;
+  if (config?.kind === "filesystem") return savePath(config.rootFolder);
   if (config?.kind === "igdrasil") return "Igdrasil Accounting";
   if (config?.kind === "http") return "Connected Accounting App";
   return "Not Selected";
+}
+
+/**
+ * Name the destination as a path a person can go and open.
+ *
+ * The absolute directory is only knowable once a download has revealed it, so
+ * until then this says `Downloads/…` — which is where Chrome puts extension
+ * downloads regardless of what that folder is called on this machine.
+ */
+function savePath(rootFolder: string): string {
+  const folders = folderPath(rootFolder);
+  return state.downloadRoot ? `${state.downloadRoot}/${folders}` : `Downloads/${folders}`;
 }
 
 function ledgerDateFilter(): string {
@@ -1111,12 +1292,44 @@ document.addEventListener("pointerdown", (event) => {
     for (const menu of document.querySelectorAll<HTMLDetailsElement>(".vendor-menu[open]")) {
       if (!menu.contains(target)) menu.open = false;
     }
+    for (const menu of document.querySelectorAll<HTMLDetailsElement>(".menu-select[open]")) {
+      if (!menu.contains(target)) menu.open = false;
+    }
   }
 });
+
+// A listbox is driven with the arrow keys, and 31 days are far too many to
+// reach by tabbing. Home/End matter most in the month list, where the useful
+// choices sit at both ends.
+app.addEventListener("keydown", (event) => {
+  const option = (event.target as HTMLElement).closest<HTMLElement>(".menu-option");
+  if (!option) return;
+  const options = [...option.closest(".menu-options")!.querySelectorAll<HTMLElement>(".menu-option")];
+  const index = options.indexOf(option);
+  const next = event.key === "ArrowDown" ? index + 1
+    : event.key === "ArrowUp" ? index - 1
+    : event.key === "Home" ? 0
+    : event.key === "End" ? options.length - 1
+    : -1;
+  if (next < 0 || next >= options.length) return;
+  event.preventDefault();
+  options[next].focus();
+});
+
+// Opening a menu puts the keyboard on the current value, not the first option —
+// otherwise choosing "the 28th" starts 27 keystrokes away.
+app.addEventListener("toggle", (event) => {
+  const details = event.target;
+  if (!(details instanceof HTMLDetailsElement) || !details.classList.contains("menu-select") || !details.open) return;
+  const selected = details.querySelector<HTMLElement>(".menu-option.selected") ?? details.querySelector<HTMLElement>(".menu-option");
+  selected?.scrollIntoView({ block: "nearest" });
+  requestAnimationFrame(() => selected?.focus());
+}, true);
 
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   closeDateFilter(true);
+  closeMenuSelect();
   const menu = document.querySelector<HTMLDetailsElement>(".vendor-menu[open]");
   if (menu) {
     menu.open = false;

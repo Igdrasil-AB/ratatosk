@@ -2,6 +2,7 @@ import type { OperationalOutcomeCode } from "../../../src/core/errors";
 import type { SeenStore } from "../../../src/core/types";
 import { isExactDocumentProviderOriginPattern } from "../../../src/core/document-provider";
 import { normalizeIgdrasilApiBase } from "../../../src/ingest/igdrasil-sink";
+import { folderPath } from "./filesystem-sink";
 import type { InvoiceMetadataEvidence, ResolvedInvoiceMetadata } from "../../../src/core/types";
 
 /**
@@ -313,8 +314,11 @@ export async function clearLedgerForVendor(vendorId: string): Promise<void> {
 function validateSinkConfig(cfg: SinkConfig): SinkConfig {
   if (!cfg || typeof cfg !== "object") throw new Error("invalid destination");
   if (cfg.kind === "filesystem") {
-    const rootFolder = cfg.rootFolder.trim();
-    if (!rootFolder || rootFolder.length > 100) throw new Error("invalid download folder");
+    const raw = cfg.rootFolder.trim();
+    if (!raw || raw.length > 200) throw new Error("invalid download folder");
+    // Store the folders that will actually be created, so what the panel shows
+    // and what lands on disk cannot drift apart.
+    const rootFolder = folderPath(raw);
     if (cfg.dateMode !== "extraction" && cfg.dateMode !== "invoice") throw new Error("invalid date mode");
     return { kind: "filesystem", rootFolder, dateMode: cfg.dateMode };
   }

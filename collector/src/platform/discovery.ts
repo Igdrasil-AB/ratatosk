@@ -6,9 +6,11 @@ import {
   MAX_DISCOVERY_CANDIDATES,
   safeEntryUrl,
   reuseDiscoveredSupplierIdentity,
+  withSupplierDisplayName,
   type DiscoveryAdapterId,
   type DiscoveredSupplierCandidateSetV1,
   type DiscoveredSupplierProfileV1,
+  type SupplierNameObservation,
 } from "../../../src/core/discovery";
 import { extract } from "../../../src/core/extract";
 import { assertAuthenticated, resolveAuthToken } from "../../../src/core/auth";
@@ -222,6 +224,7 @@ export async function discoverSupplierInTab(
   diagnostic.coverage!.attemptedFamilies = [...(resumed?.attemptedFamilies ?? [])];
   diagnostic.coverage!.slicesCompleted = resumed?.slicesCompleted ?? 0;
   let display: ReturnType<typeof deriveSupplierDisplayName> | undefined;
+  const nameObservations: SupplierNameObservation[] = [];
   let entryExplored = false;
   let exploredWaves = 0;
   const retained: Array<{ profile: DiscoveredSupplierProfileV1; score: number }> = [];
@@ -326,12 +329,15 @@ export async function discoverSupplierInTab(
         }
 
         const evidence = probe.value;
-        display ??= deriveSupplierDisplayName({
-          origin: evidence.origin,
+        // Every page seen adds a vote. The provisional name is recomputed from
+        // the whole set rather than fixed by whichever page answered first, and
+        // the retained profiles are re-stamped once exploration ends.
+        nameObservations.push({
           applicationName: evidence.applicationName,
           siteName: evidence.siteName,
           title: evidence.title,
         });
+        display = deriveSupplierDisplayName({ origin: evidence.origin, observations: nameObservations });
         const resolvedPage = canonicalPageUrl(evidence.url, expectedOrigin);
         if (resolvedPage && resolvedPage !== target.url) {
           known.add(resolvedPage);
@@ -458,7 +464,11 @@ export async function discoverSupplierInTab(
     diagnostic.result = "candidates_found";
     const existing = Object.values(await getDiscoveredSuppliers())
       .find((profile) => profile.primaryOrigin === new URL(expectedOrigin).origin);
-    const profiles = retained.map((candidate) => reuseDiscoveredSupplierIdentity(candidate.profile, existing));
+    // Pages probed after the first candidate compiled still count as evidence
+    // of the supplier's name, so the set is named from the finished run.
+    const finalName = deriveSupplierDisplayName({ origin: expectedOrigin, observations: nameObservations });
+    const profiles = retained.map((candidate) =>
+      reuseDiscoveredSupplierIdentity(withSupplierDisplayName(candidate.profile, finalName), existing));
     return {
       candidates: createDiscoveredSupplierCandidateSet(profiles),
       diagnostic: parseDiscoveryDiagnostic(diagnostic),

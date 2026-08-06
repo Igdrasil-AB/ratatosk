@@ -224,21 +224,160 @@ export function createDiscoveredSupplierProfile(input: {
   });
 }
 
+/**
+ * Re-name a compiled profile without disturbing anything else about it.
+ *
+ * A candidate is compiled the moment its evidence is sufficient, which is
+ * usually before every page has been seen. The recipe is settled at that point;
+ * the name is not, because naming improves with corroboration. Applying the
+ * finished run's name to the whole set also keeps the candidates in agreement,
+ * which `createDiscoveredSupplierCandidateSet` requires.
+ */
+export function withSupplierDisplayName(
+  profile: DiscoveredSupplierProfileV1,
+  display: { name: string; source: "page" | "domain"; confidence: "medium" | "low" },
+): DiscoveredSupplierProfileV1 {
+  if (profile.displayName === display.name) return profile;
+  return parseDiscoveredSupplierProfile({
+    ...profile,
+    displayName: display.name,
+    nameSource: display.source,
+    nameConfidence: display.confidence,
+    recipe: { ...profile.recipe, name: display.name },
+  });
+}
+
+export interface SupplierNameObservation {
+  title?: string;
+  applicationName?: string;
+  siteName?: string;
+}
+
+const MAX_NAME_OBSERVATIONS = 24;
+
+/**
+ * Name a supplier from what several of its own pages agree on.
+ *
+ * One page title is a weak identifier. An application's billing route is as
+ * likely to be titled "Overview" as anything else, and that word says nothing
+ * about who issued the invoice — `dashboard.clerk.com` was named "Overview" for
+ * exactly this reason. Taking the first page's title also made the name depend
+ * on probe ordering, so the same supplier could be named differently run to run.
+ *
+ * A page-derived name therefore has to be corroborated before it outranks the
+ * domain, which is the one identifier the browser has already verified:
+ *
+ *   1. a name whose opening words are the registrable label ("Clerk" at
+ *      `clerk.com`) — two independent sources naming the same party;
+ *   2. a title fragment that survives across *differing* pages, since the part
+ *      that stays constant is the brand and the part that changes is the route;
+ *   3. `og:site_name` or `application-name`, which a site declares for itself
+ *      rather than for one page;
+ *   4. the domain label.
+ *
+ * An uncorroborated title fragment ranks below the domain and is reached only
+ * when the origin yields no label at all. Nothing here is supplier-specific:
+ * every rule is about how many independent sources agree.
+ */
 export function deriveSupplierDisplayName(input: {
   origin: string;
   applicationName?: string;
   siteName?: string;
   title?: string;
+  observations?: readonly SupplierNameObservation[];
 }): { name: string; source: "page" | "domain"; confidence: "medium" | "low" } {
-  for (const raw of [input.applicationName, input.siteName]) {
-    const name = cleanPageName(raw);
-    if (name) return { name, source: "page", confidence: "medium" };
+  const observations = (input.observations ?? [{
+    title: input.title,
+    applicationName: input.applicationName,
+    siteName: input.siteName,
+  }]).slice(0, MAX_NAME_OBSERVATIONS);
+  const label = domainNameLabel(input.origin);
+
+  const declared: string[] = [];
+  const titles = new Set<string>();
+  for (const observation of observations) {
+    for (const raw of [observation.applicationName, observation.siteName]) {
+      const name = cleanPageName(raw);
+      if (name) declared.push(name);
+    }
+    const title = observation.title?.replace(/\s+/g, " ").trim();
+    if (title) titles.add(title);
   }
-  const titleName = cleanPageName(input.title, true);
-  if (titleName) return { name: titleName, source: "page", confidence: "medium" };
-  const id = deriveVendorId(input.origin);
+  // Distinct titles only: the same page probed twice corroborates nothing.
+  const fragmentsByPage = [...titles].map((title) => pageNameFragments(title));
+
+  for (const candidate of [...declared, ...fragmentsByPage.flat()]) {
+    const corroborated = matchDomainLabel(candidate, label.id);
+    if (corroborated) return { name: corroborated, source: "page", confidence: "medium" };
+  }
+
+  const stable = stableAcrossPages(fragmentsByPage);
+  if (stable) return { name: stable, source: "page", confidence: "medium" };
+
+  if (declared[0]) return { name: declared[0], source: "page", confidence: "medium" };
+  if (label.name) return { name: label.name, source: "domain", confidence: "low" };
+
+  const uncorroborated = fragmentsByPage.flat()[0];
+  return uncorroborated
+    ? { name: uncorroborated, source: "page", confidence: "low" }
+    : { name: "Discovered Supplier", source: "domain", confidence: "low" };
+}
+
+/** The registrable label, as both a comparison key and a display name. */
+function domainNameLabel(origin: string): { id: string; name: string } {
+  try {
+    new URL(origin);
+  } catch {
+    return { id: "", name: "" };
+  }
+  const id = deriveVendorId(origin);
   const name = id.replace(/(^|-)([a-z])/g, (_match, separator: string, letter: string) => `${separator ? " " : ""}${letter.toUpperCase()}`);
-  return { name: name || "Discovered Supplier", source: "domain", confidence: "low" };
+  return { id, name };
+}
+
+/**
+ * Match a page name against the domain label, tolerating the ways a brand gets
+ * spaced or punctuated: "My Vendor" corroborates `my-vendor.com`, "Clerk"
+ * corroborates `clerk.com`. What follows the label is kept — "Example Cloud" is
+ * the supplier's name, not "Example" — except for a trailing page word, which
+ * makes "Clerk Dashboard" resolve to "Clerk".
+ */
+function matchDomainLabel(candidate: string, labelId: string): string | undefined {
+  const target = normalizeNameWord(labelId);
+  if (!target) return undefined;
+  const words = candidate.split(/\s+/).filter(Boolean);
+  let joined = "";
+  for (let index = 0; index < words.length; index += 1) {
+    joined += normalizeNameWord(words[index]);
+    if (joined === target) {
+      let end = words.length;
+      while (end > index + 1 && GENERIC_NAME.test(words[end - 1])) end -= 1;
+      return words.slice(0, end).join(" ").slice(0, MAX_NAME_LENGTH);
+    }
+    if (!target.startsWith(joined)) return undefined;
+  }
+  return undefined;
+}
+
+/** The fragment repeated across the most distinct pages, shortest first — the
+ * part of a title that does not change is the part that names the supplier. */
+function stableAcrossPages(fragmentsByPage: readonly string[][]): string | undefined {
+  if (fragmentsByPage.length < 2) return undefined;
+  const counts = new Map<string, { name: string; pages: number }>();
+  for (const fragments of fragmentsByPage) {
+    for (const fragment of new Set(fragments)) {
+      const entry = counts.get(fragment.toLowerCase()) ?? { name: fragment, pages: 0 };
+      entry.pages += 1;
+      counts.set(fragment.toLowerCase(), entry);
+    }
+  }
+  return [...counts.values()]
+    .filter((entry) => entry.pages >= 2)
+    .sort((left, right) => right.pages - left.pages || left.name.length - right.name.length)[0]?.name;
+}
+
+function normalizeNameWord(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
 export function safeEntryUrl(value: string): string {
@@ -672,17 +811,27 @@ function isSafeGraphqlStringVariable(key: string, value: string): boolean {
     /^[a-z][a-z0-9_-]{0,31}$/i.test(value);
 }
 
-function cleanPageName(raw: string | undefined, preferLast = false): string | undefined {
-  if (!raw) return undefined;
-  const generic = /^(?:account|billing|billing portal|dashboard|home|invoice|invoices|payments?|receipts?|settings|subscription)$/i;
-  const pieces = raw
+/** Words that name a page rather than the party that issued the invoice. */
+const GENERIC_NAME = /^(?:account|billing|billing portal|dashboard|home|invoice|invoices|payments?|receipts?|settings|subscription)$/i;
+
+/**
+ * Split a title into the parts that could name a supplier. Titles are
+ * conventionally "<page> | <brand>", so every separated piece is a candidate
+ * and the caller decides which one the evidence supports.
+ */
+function pageNameFragments(raw: string): string[] {
+  return raw
     .replace(/\s+/g, " ")
     .split(/\s+[|·–—]\s+|\s+-\s+/)
     .map((piece) => piece.trim())
-    .filter((piece) => piece.length >= 2 && piece.length <= MAX_NAME_LENGTH && !generic.test(piece));
-  const usable = pieces.filter((piece) => !/sign in|log in|customer portal/i.test(piece));
-  const candidate = preferLast ? usable.at(-1) : usable[0];
-  return candidate?.slice(0, MAX_NAME_LENGTH);
+    .filter((piece) =>
+      piece.length >= 2 && piece.length <= MAX_NAME_LENGTH &&
+      !GENERIC_NAME.test(piece) && !/sign in|log in|customer portal/i.test(piece))
+    .map((piece) => piece.slice(0, MAX_NAME_LENGTH));
+}
+
+function cleanPageName(raw: string | undefined): string | undefined {
+  return raw ? pageNameFragments(raw)[0] : undefined;
 }
 
 function discoveredSupplierId(origin: string): string {

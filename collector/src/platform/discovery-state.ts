@@ -15,6 +15,13 @@ import { isSyncMonth } from "../../../src/core/sync-window";
 const KEY = "supplierDiscovery.v1";
 const ACTIVE_TTL_MS = 15 * 60_000;
 const RESULT_TTL_MS = 24 * 60 * 60_000;
+/**
+ * A success card only has to confirm what already happened. The supplier is in
+ * the list by then, carrying its own invoice count, so the card is redundant
+ * within a minute — and keeping it for a day meant reopening the panel
+ * tomorrow to a stale "connected" banner that had to be clicked away.
+ */
+const SUCCESS_TTL_MS = 45_000;
 let transitionTail: Promise<void> = Promise.resolve();
 
 export const DISCOVERY_FAILURE_MESSAGES = {
@@ -298,7 +305,11 @@ async function read(): Promise<DiscoveryState | undefined> {
     if (raw !== undefined) await chrome.storage.session.remove(KEY);
     return undefined;
   }
-  const ttl = state.stage === "complete" || state.stage === "failed" ? RESULT_TTL_MS : ACTIVE_TTL_MS;
+  // A failure keeps its full window: its diagnostic is the only record of why,
+  // and a person may come back for it. A success has nothing left to offer.
+  const ttl = state.stage === "complete"
+    ? SUCCESS_TTL_MS
+    : state.stage === "failed" ? RESULT_TTL_MS : ACTIVE_TTL_MS;
   if (Date.now() - state.updatedAt > ttl) {
     await chrome.storage.session.remove(KEY);
     return undefined;

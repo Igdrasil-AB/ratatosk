@@ -10,7 +10,7 @@
  */
 import { isLifecycleRunnable } from "../../../src/vendors/lifecycle";
 import { runAllConnected, runDiscoveredCandidate, runVendorById } from "./collector";
-import { ensureSyncAlarm, getScheduleInfo, isSyncAlarm, isSyncCatchUpDue, setSchedulePeriod } from "./scheduler";
+import { ensureSyncAlarm, getScheduleInfo, isSyncAlarm, isSyncCatchUpDue, rearmSyncAlarm, setSyncSchedule } from "./scheduler";
 import { hasHostPermissions, missingHostPermissions, revokeHostPermissions, vendorPermissionOrigins } from "./permissions";
 import { notifyReconnect, openLoginFor } from "./notifications";
 import {
@@ -102,6 +102,11 @@ chrome.runtime.onStartup.addListener(() => {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (isSyncAlarm(alarm.name)) {
+    // The alarm is one-shot, so the following occurrence is armed first: a run
+    // that throws must not end the series.
+    void rearmSyncAlarm().catch((error) => {
+      console.error("[collector] sync alarm could not be re-armed", error instanceof Error ? error.name : "unknown");
+    });
     void collectionRuns.runScheduled(() => runAllConnected()).then((summaries) => {
       if (summaries === undefined) console.info("[collector] scheduled sync already queued");
     }).catch((error) => {
@@ -113,7 +118,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 async function resumeScheduledSync(): Promise<void> {
   await ensureSyncAlarm();
   const [schedule, connections] = await Promise.all([getScheduleInfo(), getConnections()]);
-  if (isSyncCatchUpDue(connections, schedule.periodMinutes)) {
+  if (isSyncCatchUpDue(connections, schedule.schedule)) {
     await collectionRuns.runScheduled(() => runAllConnected());
   }
 }
@@ -422,7 +427,7 @@ async function handle(message: Message): Promise<Response> {
       return { ok: true, schedule: await getScheduleInfo() };
 
     case "setSchedule":
-      await setSchedulePeriod(message.periodMinutes);
+      await setSyncSchedule(message.schedule);
       return { ok: true, schedule: await getScheduleInfo() };
   }
 }
