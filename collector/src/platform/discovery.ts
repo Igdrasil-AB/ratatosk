@@ -20,7 +20,7 @@ import { inferRecipe } from "../../../src/core/recorder/infer";
 import type { CapturedEntry, DraftRecipe } from "../../../src/core/recorder/types";
 import { validateRecipe } from "../../../src/core/schema";
 import type { InvoiceRef, VendorRecipe } from "../../../src/core/types";
-import { DEFAULT_SAFE_CONCURRENCY, mapConcurrentOrdered } from "../../../src/core/concurrency";
+import { DEFAULT_SAFE_CONCURRENCY, mapConcurrentInSettleOrder, mapConcurrentOrdered } from "../../../src/core/concurrency";
 import {
   canonicalDocumentProviderUrl,
   documentProviderForUrl,
@@ -311,7 +311,11 @@ export async function discoverSupplierInTab(
           }
         })
         : -1;
-      const probes = await mapConcurrentOrdered(scheduled, {
+      // Settle order, not queue order. A wave is only as useful as its first
+      // sufficient answer, and waiting out the siblings of a page that already
+      // produced a structured invoice source spent seconds on results that
+      // would be discarded.
+      const probes = mapConcurrentInSettleOrder(scheduled, {
         limit: DEFAULT_SAFE_CONCURRENCY.routeProbes,
       }, async ({ target }, index) => {
         const remainingMs = explorationDeadline - Date.now();
@@ -329,7 +333,7 @@ export async function discoverSupplierInTab(
         return runWithinExplorationBudget(probe, remainingMs);
       });
 
-      for (const probe of probes) {
+      for await (const probe of probes) {
         const { target, page, pageStartedAt } = scheduled[probe.index];
         if (probe.status !== "fulfilled") {
           recordAttempt(diagnostic, page, target.source, undefined, "probe_failed", Date.now() - pageStartedAt, {
@@ -465,6 +469,16 @@ export async function discoverSupplierInTab(
           enqueueTargets(queue, known, planned, completedTargetKeys);
         }
         completedTargetKeys.add(explorationTargetKey(target));
+
+        // Stop the wave only on evidence that nothing still running could
+        // improve on. A structured invoice source ends the search either way,
+        // so its siblings are already destined to be discarded — whereas a DOM
+        // candidate can be beaten by a JSON one from the very probe that would
+        // be abandoned, and those waves are still played out in full.
+        if (structuredProofRetained(retained)) {
+          console.info(`[collector] discovery stopped wave ${exploredWaves + 1} early on structured evidence`);
+          break;
+        }
       }
       await checkpoint();
       if (isEntryWave) entryExplored = true;
@@ -1729,12 +1743,26 @@ export function hasEnoughStrongCandidates(retained: readonly { score: number }[]
  * condition, which structured evidence alone could never satisfy — meant a
  * portal that answered on its first page still paid the entire budget.
  */
+/**
+ * Whether a retained candidate is backed by structured data.
+ *
+ * This is the one condition `discoveryProofIsSufficient` accepts without regard
+ * to how much of the site has been explored — which is exactly what makes it
+ * safe to act on mid-wave, before the rest of the site has been seen.
+ */
+export function structuredProofRetained(
+  retained: readonly { profile: { adapter: { id: DiscoveryAdapterId } } }[],
+): boolean {
+  return retained.some(({ profile }) =>
+    profile.adapter.id === "network-json" || profile.adapter.id === "embedded-json");
+}
+
 export function discoveryProofIsSufficient(
   retained: readonly { profile: { adapter: { id: DiscoveryAdapterId } } }[],
   progress: { entryExplored: boolean; exploredWaves: number },
 ): boolean {
   const adapters = retained.map((candidate) => candidate.profile.adapter.id);
-  if (adapters.some((adapter) => adapter === "network-json" || adapter === "embedded-json")) return true;
+  if (structuredProofRetained(retained)) return true;
   if (!progress.entryExplored) return false;
   if (adapters.includes("dom-links")) return true;
   return adapters.length > 0 && progress.exploredWaves >= 1;

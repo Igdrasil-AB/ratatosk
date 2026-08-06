@@ -129,3 +129,57 @@ export async function mapConcurrentOrdered<Input, Output>(
     (_, index) => outcomes[index] ?? { status: "cancelled", index, reason },
   );
 }
+
+/**
+ * Run every task at once and yield each outcome the moment it settles.
+ *
+ * `mapConcurrentOrdered` is a barrier: it resolves only after the slowest task
+ * finishes. That is correct when every result is needed, and wasteful when the
+ * first sufficient one ends the work — a caller that already has its answer
+ * still waits out siblings whose answers it will discard.
+ *
+ * Abandoning the generator early leaves the outstanding tasks running. They are
+ * not awaited, but their rejections are absorbed, because a task nobody is
+ * waiting for must not surface as an unhandled rejection. Callers that own
+ * external resources are responsible for releasing them afterwards; this
+ * primitive deliberately does not cancel work it did not start.
+ *
+ * Concurrency is bounded like the ordered variant, so a caller passing more
+ * items than `limit` still yields in settle order among the running subset.
+ */
+export async function* mapConcurrentInSettleOrder<Input, Output>(
+  items: readonly Input[],
+  options: { limit: number },
+  task: (item: Input, index: number) => Promise<Output>,
+): AsyncGenerator<BoundedTaskOutcome<Output>> {
+  if (items.length === 0) return;
+  const limit = Math.max(1, Math.min(16, Math.trunc(options.limit) || 1));
+  const pending = new Map<number, Promise<BoundedTaskOutcome<Output>>>();
+  let cursor = 0;
+
+  const start = (index: number) => {
+    const settled: Promise<BoundedTaskOutcome<Output>> = (async () => {
+      try {
+        return { status: "fulfilled" as const, index, value: await task(items[index], index) };
+      } catch (error) {
+        return { status: "rejected" as const, index, error };
+      }
+    })();
+    pending.set(index, settled);
+  };
+
+  try {
+    while (cursor < items.length && pending.size < limit) start(cursor++);
+    while (pending.size > 0) {
+      const outcome = await Promise.race(pending.values());
+      pending.delete(outcome.index);
+      if (cursor < items.length) start(cursor++);
+      yield outcome;
+    }
+  } finally {
+    // Reached on early `break` as well as on completion. Whatever is still in
+    // flight keeps running; swallowing its rejection is the only handling a
+    // result nobody asked for should receive.
+    for (const settled of pending.values()) void settled.catch(() => undefined);
+  }
+}
