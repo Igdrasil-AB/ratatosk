@@ -29,6 +29,7 @@ import {
 } from "./active-supplier-tab";
 import { parseConfigResponse, parseInitialBackgroundState, PopupLoadError } from "./load-state";
 import { folderPath, getDownloadRoot } from "../../platform/filesystem-sink";
+import { clearRememberedRoutes, listRememberedRoutes } from "../../platform/discovery-route-memory";
 import {
   ordinalDay,
   syncScheduleLabel,
@@ -86,6 +87,7 @@ const state = {
   attentionOnly: false,
   /** Absolute directory Chrome saves into, known only after the first save. */
   downloadRoot: null as string | null,
+  rememberedRouteCount: 0,
 };
 
 // ---- helpers --------------------------------------------------------------
@@ -255,6 +257,7 @@ async function load(): Promise<void> {
       hasTabAwarenessPermission(),
       chrome.storage.local.get(VENDOR_GUIDANCE_SEEN),
       getDownloadRoot().then((root) => { state.downloadRoot = root ?? null; }),
+      listRememberedRoutes().then((routes) => { state.rememberedRouteCount = Object.keys(routes).length; }),
     ]);
     const background = parseInitialBackgroundState({
       sourceResponse,
@@ -609,9 +612,22 @@ function renderSettings(): void {
         <button type="button" class="opt opt-link ${kind === "igdrasil" ? "selected" : ""}" data-action="${kind === "igdrasil" ? "manage-igdrasil" : "connect-igdrasil"}"><span class="radio" aria-hidden="true"></span><span><strong>Igdrasil Accounting</strong><small>${kind === "igdrasil" ? "Connected · invoices go to your inbox" : "Connect or create an Igdrasil account"}</small></span><span class="open-label">${kind === "igdrasil" ? "Manage" : "Connect"}</span></button>
       </div>${destinationFields}${error}</fieldset>
       <fieldset class="grp divider"><legend>Check for New Invoices</legend>${scheduleControls()}</fieldset>
-      <fieldset class="grp divider"><legend>Browser Context</legend>${tabAwareness}</fieldset>
+      <fieldset class="grp divider"><legend>Browser Context</legend>${tabAwareness}${rememberedRoutes()}</fieldset>
     </form>
     <p class="foot">Runs while Chrome is open. If it is closed, Ratatosk catches up next time.</p>`);
+}
+
+/**
+ * What Ratatosk remembers about where suppliers keep their invoices.
+ *
+ * It outlives disconnecting a supplier, so it needs somewhere to be seen and
+ * removed. Hidden entirely until there is something to show — an empty row
+ * explaining a shortcut nobody has earned yet is just noise in Settings.
+ */
+function rememberedRoutes(): string {
+  const count = state.rememberedRouteCount;
+  if (count === 0) return "";
+  return `<div class="context-access"><span><strong>Remembered billing pages</strong><small>${count} supplier${count === 1 ? "" : "s"} · speeds up searching again. Kept on this device, never shared.</small></span><button type="button" class="btn outline sm" data-action="forget-routes">Clear</button></div>`;
 }
 
 /**
@@ -942,6 +958,7 @@ async function handle(action: string, vendorId?: string): Promise<void> {
     case "disconnect": openDisconnectDialog(vendorId!); return;
     case "forget-history": openHistoryDialog(vendorId!); return;
     case "disable-tab-awareness": await disableTabAwareness(); return;
+    case "forget-routes": await forgetRememberedRoutes(); return;
     case "copy-diagnostic": await copyVendorDiagnostic(vendorId!); return;
     case "copy-discovery-diagnostic": await copyDiscoveryDiagnostic(); return;
     case "connect-igdrasil": await openIgdrasilConnect(); return;
@@ -1120,6 +1137,13 @@ function scheduleForMode(mode: string): SyncSchedule {
     return { mode: "monthly", day: current.mode === "monthly" ? current.day : 1 };
   }
   return mode === "daily" ? { mode: "daily" } : { mode: "off" };
+}
+
+async function forgetRememberedRoutes(): Promise<void> {
+  await clearRememberedRoutes();
+  state.rememberedRouteCount = 0;
+  toast("Remembered Pages Cleared");
+  renderSettings();
 }
 
 async function updateSchedule(schedule: SyncSchedule): Promise<void> {

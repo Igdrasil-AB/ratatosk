@@ -61,6 +61,7 @@ import {
 import { COLLECTOR_RUNTIME_IDENTITY, formatCollectorRuntimeIdentity } from "./collector-runtime-identity";
 import discoveryPageObserverScript from "./discovery-page-observer?script&iife";
 import { getDiscoveredSuppliers } from "./discovered-suppliers";
+import { getRememberedRoute } from "./discovery-route-memory";
 import { DISCOVERY_DOM_POLICY } from "./discovery-dom-policy";
 import { withForegroundTabVisibility } from "./tab-visibility";
 import { DocumentActionController } from "./document-action-controller";
@@ -164,6 +165,7 @@ class CandidatePreviewError extends Error {
 export function createInitialExplorationTargets(
   entryUrl: string,
   observerReady: boolean,
+  rememberedRoute?: string,
 ): ExplorationTarget[] {
   const targets: ExplorationTarget[] = [{
     url: entryUrl,
@@ -181,8 +183,25 @@ export function createInitialExplorationTargets(
       score: Number.MAX_SAFE_INTEGER - 1,
     });
   }
+  // Where this supplier's invoices were last found. Ranked above every curated
+  // guess but kept out of `exact_entry`, so it is probed in the first explored
+  // wave rather than sharing the trust boundary of the user's own tab — and so
+  // a stale route costs one probe in a wave that was going to run regardless.
+  if (rememberedRoute && rememberedRoute !== entryUrl) {
+    targets.push({
+      url: rememberedRoute,
+      depth: 1,
+      source: "remembered",
+      family: "common_billing_route",
+      score: REMEMBERED_ROUTE_SCORE,
+    });
+  }
   return targets;
 }
+
+/** Above the curated billing paths (which top out near 68) and every observed
+ * link, but far below the entry page. */
+const REMEMBERED_ROUTE_SCORE = 5_000;
 
 export async function discoverSupplierInTab(
   tabId: number,
@@ -208,7 +227,11 @@ export async function discoverSupplierInTab(
   const pageObserver = new DiscoveryPageObserverRegistration(expectedOrigin);
   const observerReady = await pageObserver.start();
   if (observerReady) await pageObserver.adopt(tabId);
-  const queue = createInitialExplorationTargets(firstUrl, observerReady);
+  // Resuming a checkpoint already carries its own frontier, so the shortcut is
+  // only seeded when a search actually starts.
+  const remembered = resumed ? undefined : (await getRememberedRoute(expectedOrigin))?.entryUrl;
+  if (remembered) console.info(`[collector] discovery will try the remembered route ${toDiagnosticRoute(remembered)} first`);
+  const queue = createInitialExplorationTargets(firstUrl, observerReady, remembered);
   const known = new Set([firstUrl]);
   const foregroundProbeBudget = { remaining: 1 };
   const explorers = Array.from(
@@ -1717,15 +1740,24 @@ export function discoveryProofIsSufficient(
   return adapters.length > 0 && progress.exploredWaves >= 1;
 }
 
-/** The entry snapshot and its cold replay are the only targets that may share a
- * wave with the user's active tab. */
+/**
+ * Targets that may share a wave with the user's active tab.
+ *
+ * The entry snapshot, its cold replay, and a remembered route. The last two run
+ * in disposable tabs of their own, so none of the three can interfere with
+ * another — and a remembered route only earns its keep by running here. Held
+ * back to the following wave it merely joins probes that were going to happen
+ * anyway, costing a page and saving no time at all.
+ */
+const ENTRY_WAVE_SOURCES: ReadonlySet<ExplorationPageSource> = new Set(["entry", "entry_replay", "remembered"]);
+
 function entryWave(queue: readonly ExplorationTarget[]): boolean {
-  return queue[0]?.source === "entry" || queue[0]?.source === "entry_replay";
+  return queue[0] !== undefined && ENTRY_WAVE_SOURCES.has(queue[0].source);
 }
 
 function entryWaveWidth(queue: readonly ExplorationTarget[]): number {
   let width = 0;
-  while (width < queue.length && width < 2 && (queue[width].source === "entry" || queue[width].source === "entry_replay")) {
+  while (width < queue.length && width < ENTRY_WAVE_SOURCES.size && ENTRY_WAVE_SOURCES.has(queue[width].source)) {
     width += 1;
   }
   return Math.max(1, width);

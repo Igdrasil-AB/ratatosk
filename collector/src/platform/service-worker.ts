@@ -26,6 +26,7 @@ import {
 import { clearHostToken, getHostToken, initializeHostTokenStorage, setHostToken } from "./auth";
 import { clearFilesystemDeliveryJournalForSource } from "./filesystem-sink";
 import { clearPendingConnect, getPendingConnect, setPendingConnect } from "./pending-connect";
+import { recordRouteMiss, rememberSupplierRoute } from "./discovery-route-memory";
 import { configureSidePanelAction } from "./side-panel";
 import {
   consumeIgdrasilConnectIntent,
@@ -519,6 +520,12 @@ async function completeSupplierScan(): Promise<void> {
     } catch (error) {
       const current = await getSupplierDiscoveryStatus();
       if (current.stage !== "scanning" || current.origin !== pending.origin) return;
+      // A whole search reaching no candidate is the signal that a remembered
+      // route may have moved. Counted rather than acted on immediately: one
+      // failure is far more often a signed-out session than a relocated page.
+      if (error instanceof SupplierDiscoveryError) {
+        await recordRouteMiss(pending.origin).catch(() => undefined);
+      }
       const changed = error instanceof Error && /tab changed|did not match/.test(error.message);
       await failSupplierDiscovery(pending.runId,
         changed
@@ -618,6 +625,9 @@ function completeDiscoveredConnect(vendorId: string, expectedRunId?: string): Pr
       });
       if (result.kind === "success") {
         const { profile, summary } = result;
+        // A real document arrived from this page, which is the only evidence
+        // worth shortening the next search with.
+        await rememberSupplierRoute(profile.primaryOrigin, profile.entryUrl).catch(() => undefined);
         // The collection itself succeeded. A transient session-state write must
         // not undo a delivered document or the now-proven local integration.
         try {

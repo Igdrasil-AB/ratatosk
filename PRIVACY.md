@@ -139,6 +139,15 @@ creditworthiness or for lending.
   in local extension storage until changed, cleared through extension actions, or
   the extension is uninstalled. Chrome removes extension storage on uninstall,
   subject to Chrome's own sync, backup, and device behavior.
+- After a supplier's invoices are collected, Collector remembers on this device
+  which page of that supplier they were found on — one exact-origin page address
+  per supplier, and nothing about the request, the response, or the invoices. It
+  shortens the next search for the same supplier, is re-checked like any other
+  candidate page, and is dropped after three searches fail to confirm it. It is
+  kept when a supplier is disconnected, because reconnecting is when it is most
+  useful. It is never uploaded or shared. Users can remove every remembered page
+  at any time under **Settings → Remembered billing pages**, and Chrome removes
+  it on uninstall.
 - Locally downloaded files remain until the user deletes them.
 - Documents delivered to Igdrasil are retained under the user's Igdrasil
   agreement and Igdrasil's applicable retention rules.
