@@ -35,6 +35,7 @@ import {
   type CandidateAdmissionSignal,
 } from "./discovery-diagnostic";
 import {
+  entryProbeOptions,
   EXPLORATION_ROUTE_POLICY,
   capExplorationProbeOptions,
   createExplorationCheckpoint,
@@ -47,6 +48,7 @@ import {
   rankExplorationQueue,
   runWithinExplorationBudget,
   safeExplorationUrl,
+  safeReplayUrl,
   type ExplorationCheckpoint,
   type ExplorationFamily,
   type ExplorationLinkEvidence,
@@ -197,11 +199,14 @@ export async function discoverSupplierInTab(
   const completedTargetKeys = new Set(resumed?.completedTargetKeys ?? []);
   const pageObserver = new DiscoveryPageObserverRegistration(expectedOrigin);
   const observerReady = await pageObserver.start();
+  if (observerReady) await pageObserver.adopt(tabId);
   const queue = createInitialExplorationTargets(firstUrl, observerReady);
   const known = new Set([firstUrl]);
   const foregroundProbeBudget = { remaining: 1 };
   const explorers = Array.from(
-    { length: DEFAULT_SAFE_CONCURRENCY.routeProbes },
+    // One tab per concurrent probe slot, and never fewer than the two the entry
+    // wave needs to snapshot the live page and replay it cold at the same time.
+    { length: Math.max(2, DEFAULT_SAFE_CONCURRENCY.routeProbes) },
     () => new BackgroundExplorationTab(expectedOrigin, foregroundProbeBudget),
   );
   const diagnostic = emptyDiagnostic(expectedOrigin, mode);
@@ -211,6 +216,8 @@ export async function discoverSupplierInTab(
   diagnostic.coverage!.attemptedFamilies = [...(resumed?.attemptedFamilies ?? [])];
   diagnostic.coverage!.slicesCompleted = resumed?.slicesCompleted ?? 0;
   let display: ReturnType<typeof deriveSupplierDisplayName> | undefined;
+  let entryExplored = false;
+  let exploredWaves = 0;
   const retained: Array<{ profile: DiscoveredSupplierProfileV1; score: number }> = [];
 
   const checkpoint = async (): Promise<void> => {
@@ -244,10 +251,13 @@ export async function discoverSupplierInTab(
     while (queue.length && diagnostic.pages.attempted < budget.pages && Date.now() < explorationDeadline) {
       if (options.shouldContinue && !(await options.shouldContinue())) throw new Error("supplier discovery was cancelled");
       const remainingPages = budget.pages - diagnostic.pages.attempted;
-      // The user's active entry tab is a unique trust boundary. Probe it alone,
-      // then explore independent read-only GET routes in deterministic waves.
-      const width = queue[0].source === "entry" || queue[0].source === "entry_replay"
-        ? 1
+      const isEntryWave = entryWave(queue);
+      // The user's active entry tab is a unique trust boundary, so it is never
+      // batched with explored routes. Its cold replay uses a separate disposable
+      // tab, though, so the two run together: they cannot interfere, and
+      // serializing them spent seconds of the interactive budget on nothing.
+      const width = isEntryWave
+        ? entryWaveWidth(queue)
         : Math.min(DEFAULT_SAFE_CONCURRENCY.routeProbes, remainingPages);
       const scheduled = queue.splice(0, Math.min(width, remainingPages)).map((target) => {
         const page = diagnostic.pages.attempted + 1;
@@ -259,6 +269,9 @@ export async function discoverSupplierInTab(
       });
       const foregroundCandidateIndex = foregroundProbeBudget.remaining > 0
         ? scheduled.findIndex(({ target }) => {
+          // The active entry tab is already foreground; only a disposable
+          // exploration tab can spend the shared visibility lease.
+          if (target.source === "entry") return false;
           try {
             return FOREGROUND_BILLING_ROUTE.test(new URL(target.url).pathname);
           } catch {
@@ -272,8 +285,8 @@ export async function discoverSupplierInTab(
         const remainingMs = explorationDeadline - Date.now();
         if (remainingMs <= 0) throw new Error("supplier exploration deadline exceeded");
         const baseOptions = target.source === "entry"
-          ? { settleMs: 350, maxResources: 2, deadlineMs: 3_000 }
-          : explorationProbeOptions(target);
+          ? entryProbeOptions(mode)
+          : explorationProbeOptions(target, mode);
         const probeOptions: ProbeOptions = {
           ...capExplorationProbeOptions(baseOptions, remainingMs),
           allowForegroundRetry: index === foregroundCandidateIndex,
@@ -419,7 +432,12 @@ export async function discoverSupplierInTab(
         completedTargetKeys.add(explorationTargetKey(target));
       }
       await checkpoint();
-      if (hasEnoughStrongCandidates(retained) && allEnabledFamiliesAttempted(diagnostic)) break;
+      if (isEntryWave) entryExplored = true;
+      else exploredWaves += 1;
+      if (
+        discoveryProofIsSufficient(retained, { entryExplored, exploredWaves }) ||
+        (hasEnoughStrongCandidates(retained) && allEnabledFamiliesAttempted(diagnostic))
+      ) break;
     }
   } finally {
     await disposeDiscoveryResources(explorers, pageObserver, [tabId]);
@@ -1337,6 +1355,34 @@ class DiscoveryPageObserverRegistration {
     }
   }
 
+  /**
+   * Install the observer into a document that was already open.
+   *
+   * A registered content script only runs on the *next* navigation, so the tab
+   * the person is looking at never receives one. Every discovery probe now runs
+   * inside the document-action scope, and that scope is taken by asking the page
+   * observer for it — so without this the entry snapshot, the one probe that
+   * inspects the page the person actually chose, could not run at all.
+   *
+   * Injecting late means the application's boot requests are already gone; this
+   * still sees anything it issues afterwards, and the exact-entry replay in a
+   * fresh tab remains the probe that watches a cold start.
+   */
+  async adopt(tabId: number): Promise<boolean> {
+    if (!this.registered) return false;
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "MAIN",
+        files: [discoveryPageObserverScript],
+      });
+      return true;
+    } catch (error) {
+      console.warn("[collector] the active tab could not be observed; its snapshot is skipped", error);
+      return false;
+    }
+  }
+
   async dispose(possiblyObservedTabs: readonly number[]): Promise<void> {
     if (!this.registered) return;
     this.registered = false;
@@ -1405,38 +1451,37 @@ class BackgroundExplorationTab {
         await waitForTabComplete(this.tabId, Math.min(8_000, Math.max(1, options.deadlineMs - (Date.now() - startedAt))));
       }
     }
-    // Spend a short inactive pass first. Some SPAs deliberately defer billing
-    // hydration until their tab is visible; only an empty, high-confidence
-    // billing route may consume the single shared foreground retry.
-    const inactiveOptions = FOREGROUND_BILLING_ROUTE.test(new URL(target).pathname)
-      ? {
-        ...options,
-        settleMs: Math.min(options.settleMs, 1_200),
-        deadlineMs: Math.min(options.deadlineMs, 3_000),
-      }
+    const remainingMs = () => options.deadlineMs - (Date.now() - startedAt);
+    const leaseAvailable = options.allowForegroundRetry === true && this.foregroundProbeBudget.remaining > 0;
+
+    // Spend an inactive pass first: bringing a tab forward is visible to the
+    // person, so it stays a repair for the minority of applications that defer
+    // billing hydration until their tab is visible — never the default cost of a
+    // scan. The inactive pass is held to most of the route's budget rather than
+    // a fixed fraction of it, so the reserve is enough for the retry to render
+    // without starving the pass that usually succeeds on its own.
+    const inactiveOptions = leaseAvailable && FOREGROUND_BILLING_ROUTE.test(new URL(target).pathname)
+      ? { ...options, deadlineMs: Math.trunc(options.deadlineMs * 0.6) }
       : options;
     const evidence = await probeSupplierTab(
       this.tabId,
       this.expectedOrigin,
-      capExplorationProbeOptions(inactiveOptions, options.deadlineMs - (Date.now() - startedAt)),
+      capExplorationProbeOptions(inactiveOptions, Math.min(inactiveOptions.deadlineMs, remainingMs())),
     );
     if (
       !shouldRetryProbeInForeground(target, evidence) ||
+      this.foregroundProbeBudget.remaining <= 0 ||
       options.allowForegroundRetry !== true ||
-      this.foregroundProbeBudget.remaining <= 0
+      remainingMs() < 500
     ) return evidence;
 
-    const remainingMs = options.deadlineMs - (Date.now() - startedAt);
-    if (remainingMs < 500) return evidence;
+    const retryMs = remainingMs();
     this.foregroundProbeBudget.remaining -= 1;
     try {
       return await withForegroundTabVisibility(this.tabId, () => probeSupplierTab(
         this.tabId!,
         this.expectedOrigin,
-        capExplorationProbeOptions({
-          ...options,
-          settleMs: Math.min(options.settleMs, 3_000),
-        }, remainingMs),
+        capExplorationProbeOptions(options, retryMs),
       ));
     } catch {
       console.warn("[collector] foreground billing hydration unavailable; keeping inactive evidence");
@@ -1478,7 +1523,9 @@ function canonicalPageUrl(value: string, expectedOrigin: string): string | undef
     if (url.protocol !== "https:" || url.origin !== expectedOrigin || url.username || url.password || url.pathname.length > 320) return undefined;
     const exploration = safeExplorationUrl(url.toString(), expectedOrigin);
     if (exploration) return exploration;
-    return safeEntryUrl(url.toString());
+    // Reopening the page the person already has open is not persistence, so it
+    // keeps its own route. Everything a candidate stores is reduced separately.
+    return safeReplayUrl(url.toString(), expectedOrigin);
   } catch {
     return undefined;
   }
@@ -1596,6 +1643,52 @@ export function hasEnoughStrongCandidates(retained: readonly { score: number }[]
   const STRUCTURED_EVIDENCE_SCORE = 200;
   return retained.length >= MAX_DISCOVERY_CANDIDATES &&
     retained.every((candidate) => candidate.score >= STRUCTURED_EVIDENCE_SCORE);
+}
+
+/**
+ * Stop as soon as the search has proof, not when its budget runs out.
+ *
+ * A `network-json` or `embedded-json` candidate only reaches `retained` after
+ * `previewCandidate` has authenticated, listed real invoice references, and
+ * checked that every document URL is an approved HTTPS origin. That is the same
+ * proof the run would hold after exhausting the frontier, so the remaining pages
+ * can only cost the person time.
+ *
+ * A `dom-links` plan is proof of documents too — invoice-context links the page
+ * actually renders — but it carries no field mapping, so it waits until the two
+ * places a structured source is most likely to appear have been read: the page
+ * the person opened, and its cold replay.
+ *
+ * A `dom-actions` plan is the weakest evidence, so it keeps the frontier moving
+ * for one wave of billing-intent routes before it settles for itself.
+ *
+ * Requiring all four adapter families to have been *attempted* — the old
+ * condition, which structured evidence alone could never satisfy — meant a
+ * portal that answered on its first page still paid the entire budget.
+ */
+export function discoveryProofIsSufficient(
+  retained: readonly { profile: { adapter: { id: DiscoveryAdapterId } } }[],
+  progress: { entryExplored: boolean; exploredWaves: number },
+): boolean {
+  const adapters = retained.map((candidate) => candidate.profile.adapter.id);
+  if (adapters.some((adapter) => adapter === "network-json" || adapter === "embedded-json")) return true;
+  if (!progress.entryExplored) return false;
+  if (adapters.includes("dom-links")) return true;
+  return adapters.length > 0 && progress.exploredWaves >= 1;
+}
+
+/** The entry snapshot and its cold replay are the only targets that may share a
+ * wave with the user's active tab. */
+function entryWave(queue: readonly ExplorationTarget[]): boolean {
+  return queue[0]?.source === "entry" || queue[0]?.source === "entry_replay";
+}
+
+function entryWaveWidth(queue: readonly ExplorationTarget[]): number {
+  let width = 0;
+  while (width < queue.length && width < 2 && (queue[width].source === "entry" || queue[width].source === "entry_replay")) {
+    width += 1;
+  }
+  return Math.max(1, width);
 }
 
 function retainCandidate(

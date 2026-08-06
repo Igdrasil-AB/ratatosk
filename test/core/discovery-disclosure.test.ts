@@ -17,7 +17,7 @@ describe("public discovery-limit disclosures", () => {
 
     expect(listing).toMatch(/active page and at most fourteen additional[\s\S]*fifteen total[\s\S]*depth three/i);
     expect(checklist).toMatch(/maximum fifteen-page\/depth-three search/i);
-    expect(security).toMatch(/capped at 15 pages, depth three, and 30 seconds/i);
+    expect(security).toMatch(/capped at 15 pages, depth three, and 10 seconds interactively/i);
     expect(privacy).toMatch(/active page and up to\s+fourteen additional same-origin pages[\s\S]*depth\s+three/i);
   });
 });

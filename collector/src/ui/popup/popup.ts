@@ -298,7 +298,9 @@ function renderHome(): void {
 
   let status = "";
   if (!state.config) {
-    status = `<div class="status"><span class="dot warn" aria-hidden="true"></span><strong>Setup Required</strong><span class="sep" aria-hidden="true">·</span><button type="button" class="status-link" data-action="open-settings">Choose Destination</button></div>`;
+    // The button below is this screen's action; repeating it here as a link
+    // only makes a person choose between two identical things.
+    status = `<div class="status"><span class="dot warn" aria-hidden="true"></span><strong>Setup Required</strong></div>`;
   } else if (needsReconnect.length) {
     status = `<button type="button" class="status status-action" data-action="open-attention"><span class="dot warn" aria-hidden="true"></span><strong>${needsReconnect.length} Vendor${needsReconnect.length > 1 ? "s" : ""} Need Reconnecting</strong><span aria-hidden="true">→</span></button>`;
   } else if (needsAttention.length) {
@@ -341,34 +343,69 @@ function renderHome(): void {
     }).join("");
     const history = groups.length
       ? `<div class="supplier-groups">${groupRows}</div>`
-      : `<div class="feed-empty"><strong>No invoices in this period</strong><span>Choose a wider date range to see older invoices.</span></div>`;
+      : `<div class="feed-empty"><strong>No invoices in this period</strong><span>Choose a wider date range.</span></div>`;
     body = `<section class="invoice-history" aria-labelledby="invoice-history-title">
-      <div class="feed-toolbar"><span><strong id="invoice-history-title">Invoices</strong><small>${invoiceCountLabel(visibleEntries.length, state.ledger.length)}</small></span><span class="feed-toolbar-actions"><button type="button" class="quiet-link compact" data-action="sync-all">Collect All</button>${ledgerDateFilter()}</span></div>
+      <div class="feed-toolbar"><span><strong id="invoice-history-title">Invoices</strong><small>${invoiceCountLabel(visibleEntries.length, state.ledger.length)}</small></span><span class="feed-toolbar-actions">${ledgerDateFilter()}</span></div>
       ${history}
-    </section><div class="add"><button type="button" class="ghost" data-action="open-vendors">Manage Vendors <span aria-hidden="true">→</span></button></div>`;
+    </section>${homeActionBar()}`;
   } else if (connected.length) {
     const count = connected.length;
-    const vendorLabel = `${count} vendor${count === 1 ? "" : "s"} connected`;
     body = `<section class="home-editorial" aria-label="Invoice collection">
-      <div class="home-actions"><button type="button" class="btn" data-action="sync-all">Check for Invoices</button><button type="button" class="quiet-link" data-action="open-vendors">Review Vendors <span aria-hidden="true">→</span></button></div>
-      <dl class="home-facts"><div><dt>Vendors</dt><dd>${vendorLabel}</dd></div><div><dt>Destination</dt><dd>${esc(destinationLabel())}</dd></div></dl>
+      ${homePrimaryAction()}
+      <div class="home-facts">
+        <button type="button" class="fact" data-action="open-vendors"><span class="fact-key">Vendors</span><span class="fact-value">${count} connected</span></button>
+        <button type="button" class="fact" data-action="open-settings" title="${esc(destinationLabel())}"><span class="fact-key">Destination</span><span class="fact-value">${esc(destinationLabel())}</span></button>
+      </div>
     </section>`;
   } else {
     const hasDestination = Boolean(state.config);
     body = `<section class="home-editorial" aria-labelledby="setup-title">
-      <p class="home-kicker">01 · Set Up Ratatosk</p>
       <h1 id="setup-title">Every invoice, in one place.</h1>
-      <p class="home-copy">${hasDestination ? "Your destination is ready. Connect the first vendor you want Ratatosk to watch." : "Choose where invoices should go, then connect the first vendor you want Ratatosk to watch."}</p>
       <ol class="setup-ledger">
-        <li class="${hasDestination ? "done" : "current"}"><span class="ledger-number">01</span><span><strong>Destination</strong><small>${hasDestination ? esc(destinationLabel()) : "Choose where invoices are saved"}</small></span><span class="ledger-state">${hasDestination ? "Ready" : "Next"}</span></li>
-        <li class="${hasDestination ? "current" : ""}"><span class="ledger-number">02</span><span><strong>Vendor</strong><small>Use the session already in Chrome</small></span><span class="ledger-state">${hasDestination ? "Next" : "Waiting"}</span></li>
+        <li class="${hasDestination ? "done" : "current"}"><span class="ledger-number">01</span><span><strong>Destination</strong><small>${hasDestination ? esc(destinationLabel()) : "Where invoices are saved"}</small></span><span class="ledger-state">${hasDestination ? "Ready" : "Next"}</span></li>
+        <li class="${hasDestination ? "current" : ""}"><span class="ledger-number">02</span><span><strong>Vendor</strong><small>Uses your Chrome session</small></span><span class="ledger-state">${hasDestination ? "Next" : "Waiting"}</span></li>
       </ol>
-      <div class="home-actions"><button type="button" class="btn" data-action="${hasDestination ? "open-vendors" : "open-settings"}">${hasDestination ? "Connect First Vendor" : "Choose Destination"}</button></div>
-      <p class="trust">Passwords, cookies & session tokens are never stored.</p>
+      <div class="home-actions"><button type="button" class="btn lg" data-action="${hasDestination ? "open-vendors" : "open-settings"}">${hasDestination ? "Connect First Vendor" : "Choose Destination"}</button></div>
+      <p class="trust">Passwords and cookies are never stored.</p>
     </section>`;
   }
 
   replaceApp(header() + status + body);
+}
+
+/**
+ * The supplier site the person is looking at right now, when Ratatosk does not
+ * already know it. Searching that site is the product's headline capability, so
+ * it belongs on the first screen rather than at the bottom of a second one.
+ */
+function discoverableTab(): ActiveSupplierTab | null {
+  const page = state.activeSupplierTab;
+  if (!state.config || !page) return null;
+  return state.sources.some((source) => source.primaryOrigin === page.origin) ? null : page;
+}
+
+/** Offered only while that tab is open, so it never competes for the primary
+ * slot a screen's own action occupies. */
+function discoveryBanner(): string {
+  const page = discoverableTab();
+  if (!page || state.discovery.stage !== "idle") return "";
+  return `<button type="button" class="btn tonal block discover-here" data-action="discover-here">${branchIcon()}<span>Find invoices on ${esc(page.hostname)}</span><span aria-hidden="true">→</span></button>`;
+}
+
+function homePrimaryAction(): string {
+  return `<div class="home-actions">
+    <button type="button" class="btn lg" data-action="sync-all">Check for Invoices</button>
+    ${discoveryBanner()}
+  </div>`;
+}
+
+/** The recurring action, kept at thumb height under the list it acts on. */
+function homeActionBar(): string {
+  const banner = discoveryBanner();
+  return `${banner ? `<div class="bar-lead">${banner}</div>` : ""}<div class="action-bar">
+    <button type="button" class="btn lg" data-action="sync-all">Collect All</button>
+    <button type="button" class="ghost" data-action="open-vendors">${branchIcon()}<span>Vendors</span></button>
+  </div>`;
 }
 
 function sheetHeader(title: string, trailing = ""): string {
@@ -380,12 +417,13 @@ function renderVendors(): void {
     ? "your local Downloads folder"
     : state.config?.kind === "igdrasil" ? "your connected Igdrasil company" : "the destination you select";
   const showGuidance = !state.vendorGuidanceSeen || state.forceGuidance;
-  const guidance = showGuidance ? `<details class="guidance" open>
+  // Collapsed by default. It answers a question a person may not have yet, and
+  // expanded it pushed the vendors — and their buttons — below the fold.
+  const guidance = showGuidance ? `<details class="guidance" ${state.forceGuidance ? "open" : ""}>
     <summary>${chevronIcon()} How Ratatosk Connects</summary>
     <div class="guidance-body">
-      <p>Ratatosk uses your current browser session only for vendors you choose.</p>
-      <ul><li>New documents go to ${esc(destination)}.</li><li>Passwords, cookies & temporary vendor tokens are not stored.</li><li>Disconnecting revokes vendor access.</li></ul>
-      <div class="guidance-actions"><span class="guidance-note">Reviewed recipes and locally verified discoveries only.</span><button type="button" class="btn tonal sm" data-action="dismiss-vendor-guidance">Got It</button></div>
+      <ul><li>Uses your Chrome session, only for vendors you pick.</li><li>Invoices go to ${esc(destination)}.</li><li>No passwords or cookies are stored.</li></ul>
+      <div class="guidance-actions"><button type="button" class="btn tonal sm" data-action="dismiss-vendor-guidance">Got It</button></div>
     </div>
   </details>` : "";
 
@@ -398,23 +436,26 @@ function renderVendors(): void {
       ? `<button type="button" class="btn tonal sm" data-action="connect" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}" ${isBusy ? "disabled" : ""}>${isBusy ? "Connecting…" : "Connect"}</button>`
       : `<button type="button" class="btn tonal sm" disabled aria-describedby="vendor-status-${esc(source.id)}">Unavailable</button>`;
     let secondaryAction = `<span class="action-spacer" aria-hidden="true"></span>`;
+    // A row is a status plus a button. The button says what to do, so the status
+    // only has to say what is true — not repeat the instruction.
     if (connection && source.missingHosts.length > 0) {
-      sub = "Vendor access changed — review the newly required site";
+      sub = "New site access needed";
       action = `<button type="button" class="btn warn sm" data-action="connect" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}" ${isBusy ? "disabled" : ""}>${isBusy ? "Reviewing…" : "Review Access"}</button>`;
     } else if (connection?.lastStatus === "auth_expired") {
-      sub = "Session expired — sign in, then reconnect";
+      sub = "Signed out of this vendor";
       action = `<button type="button" class="btn warn sm" data-action="connect" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}" ${isBusy ? "disabled" : ""}>${isBusy ? "Connecting…" : "Reconnect"}</button>`;
     } else if (connection) {
       const count = connection.lastCount ?? 0;
+      const synced = relTime(connection.lastCompleteSyncAt ?? connection.lastRunAt);
       sub = connection.lastStatus === "ok" && connection.lastCode === "month_range_fallback_all"
-        ? `${count > 0 ? `${count} collected` : "No new invoices"} · all history checked because invoice dates were unavailable`
+        ? `${count > 0 ? `${count} collected` : "No new invoices"} · all history checked, no invoice dates`
         : connection.lastStatus === "partial"
           ? `${count > 0 ? `${count} collected` : "No new invoices"} · ${connection.lastFailedScopes ?? 0} account scope${connection.lastFailedScopes === 1 ? "" : "s"} skipped`
         : connection.lastStatus === "rate_limited"
-          ? `Supplier asked Ratatosk to wait · resumes ${relTime(connection.nextEligibleRunAt)}`
+          ? `Paused by vendor · resumes ${relTime(connection.nextEligibleRunAt)}`
           : connection.lastStatus === "error"
-        ? connection.lastError ? `Couldn’t sync — ${connection.lastError}` : "Couldn’t sync — try again"
-        : count > 0 ? `${count} collected · synced ${relTime(connection.lastCompleteSyncAt ?? connection.lastRunAt)}` : `Connected · synced ${relTime(connection.lastCompleteSyncAt ?? connection.lastRunAt)}`;
+        ? connection.lastError ? `Sync failed — ${connection.lastError}` : "Sync failed"
+        : count > 0 ? `${count} collected · ${synced}` : `Connected · ${synced}`;
       action = `<button type="button" class="btn outline sm" data-action="sync" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}">Sync</button>`;
     }
     const error = state.inlineError?.scope === "vendor" && state.inlineError.vendorId === source.id
@@ -446,48 +487,46 @@ function discoveryCard(): string {
   const discovery = state.discovery;
   const page = state.activeSupplierTab;
   if (discovery.stage === "scanning") {
-    return `<aside class="supplier-request discovery-progress" role="status"><span class="discovery-spinner" aria-hidden="true"></span><span class="supplier-request-copy"><strong>Searching this app…</strong><small>Checking a small set of billing-related pages on ${esc(new URL(discovery.origin).hostname)}.</small></span><button type="button" class="quiet-link compact" data-action="cancel-discovery">Cancel</button></aside>`;
+    return `<aside class="supplier-request discovery-progress" role="status"><span class="discovery-spinner" aria-hidden="true"></span><span class="supplier-request-copy"><strong>Searching ${esc(new URL(discovery.origin).hostname)}…</strong></span><button type="button" class="quiet-link compact" data-action="cancel-discovery">Cancel</button></aside>`;
   }
   if (discovery.stage === "preview") {
     const sites = discovery.requiredOrigins.length;
     const hostnames = discovery.requiredOrigins.map((pattern) => new URL(pattern.slice(0, -2)).hostname).join(", ");
     const clues = discovery.candidateCount;
-    return `<aside class="supplier-request discovery-found" aria-labelledby="supplier-request-title"><span class="supplier-request-mark letter" aria-hidden="true">${esc(discovery.name.charAt(0).toUpperCase())}</span><span class="supplier-request-copy"><strong id="supplier-request-title">Found a possible invoice source</strong><small>${esc(discovery.name)} · ${clues} invoice clue${clues === 1 ? "" : "s"} seen · ${sites} exact site${sites === 1 ? "" : "s"}</small><small class="discovery-hosts">Access: ${esc(hostnames)}</small></span><span class="discovery-actions"><button type="button" class="btn tonal sm" data-action="connect-discovery" data-id="${esc(discovery.vendorId)}">Connect &amp; Collect</button><button type="button" class="quiet-link compact" data-action="cancel-discovery">Cancel</button></span></aside>`;
+    return `<aside class="supplier-request discovery-found" aria-labelledby="supplier-request-title"><span class="supplier-request-mark letter" aria-hidden="true">${esc(discovery.name.charAt(0).toUpperCase())}</span><span class="supplier-request-copy"><strong id="supplier-request-title">Invoice source found</strong><small>${esc(discovery.name)} · ${clues} invoice clue${clues === 1 ? "" : "s"} · ${sites} site${sites === 1 ? "" : "s"}</small><small class="discovery-hosts">Access: ${esc(hostnames)}</small></span><span class="discovery-actions"><button type="button" class="supplier-request-link" data-action="connect-discovery" data-id="${esc(discovery.vendorId)}">Connect &amp; Collect</button><button type="button" class="quiet-link compact" data-action="cancel-discovery">Cancel</button></span></aside>`;
   }
   if (discovery.stage === "connecting") {
-    return `<aside class="supplier-request discovery-progress" role="status"><span class="discovery-spinner" aria-hidden="true"></span><span class="supplier-request-copy"><strong>Verifying downloads…</strong><small>${esc(discovery.name)} will be saved only if a valid PDF is collected.</small></span></aside>`;
+    return `<aside class="supplier-request discovery-progress" role="status"><span class="discovery-spinner" aria-hidden="true"></span><span class="supplier-request-copy"><strong>Verifying a real PDF…</strong><small>${esc(discovery.name)} is saved only if one arrives.</small></span></aside>`;
   }
   if (discovery.stage === "complete") {
-    const fallback = discovery.monthFallbackAll
-      ? " Invoice dates were unavailable, so Ratatosk collected all available history."
-      : "";
-    return `<aside class="supplier-request discovery-complete" role="status"><span class="supplier-request-mark success" aria-hidden="true">✓</span><span class="supplier-request-copy"><strong>${esc(discovery.name)} is connected</strong><small>Collected ${discovery.count} verified invoice${discovery.count === 1 ? "" : "s"}. The supplier is now in your list.${fallback}</small></span><button type="button" class="quiet-link compact" data-action="dismiss-discovery">Done</button></aside>`;
+    const fallback = discovery.monthFallbackAll ? " All history checked, no invoice dates." : "";
+    return `<aside class="supplier-request discovery-complete" role="status"><span class="supplier-request-mark success" aria-hidden="true">✓</span><span class="supplier-request-copy"><strong>${esc(discovery.name)} connected</strong><small>${discovery.count} invoice${discovery.count === 1 ? "" : "s"} collected.${fallback}</small></span><button type="button" class="quiet-link compact" data-action="dismiss-discovery">Done</button></aside>`;
   }
   if (discovery.stage === "failed") {
     const emptyResult = discovery.reason === "not_found" || discovery.reason === "limit_reached";
     const title = emptyResult ? "No invoices found" : "Couldn’t check this supplier";
-    const detail = discovery.reason === "limit_reached"
-      ? "Ratatosk checked the likely billing pages within its safe search limit. It found no downloadable invoices, or this account may not include billing access."
-      : discovery.reason === "not_found"
-        ? "Ratatosk checked this app’s likely billing pages. It found no downloadable invoices, or this account may not include billing access."
-        : discovery.message;
+    // The finite reason belongs in the copyable diagnostic, not in three lines
+    // of prose above the button that retries.
+    const detail = emptyResult
+      ? "This account may not include billing access."
+      : discovery.message;
     const diagnostic = discovery.diagnosticAvailable
       ? `<button type="button" class="quiet-link compact" data-action="copy-discovery-diagnostic">Copy details</button>`
       : "";
-    return `<aside class="supplier-request discovery-failed" role="${emptyResult ? "status" : "alert"}"><span class="supplier-request-mark" aria-hidden="true">${emptyResult ? "–" : "!"}</span><span class="supplier-request-copy"><strong>${title}</strong><small>${esc(detail)}</small></span><span class="discovery-actions"><button type="button" class="btn tonal sm" data-action="retry-discovery">${emptyResult ? "Search Again" : "Try Again"}</button>${diagnostic}</span></aside>`;
+    return `<aside class="supplier-request discovery-failed" role="${emptyResult ? "status" : "alert"}"><span class="supplier-request-mark" aria-hidden="true">${emptyResult ? "–" : "!"}</span><span class="supplier-request-copy"><strong>${title}</strong><small>${esc(detail)}</small></span><span class="discovery-actions"><button type="button" class="supplier-request-link" data-action="retry-discovery">${emptyResult ? "Search Again" : "Try Again"}</button>${diagnostic}</span></aside>`;
   }
   if (state.config && !page && !state.tabAwarenessEnabled) {
-    return `<aside class="supplier-request tab-awareness" aria-labelledby="tab-awareness-title"><span class="supplier-request-mark" aria-hidden="true">${branchIcon()}</span><span class="supplier-request-copy"><strong id="tab-awareness-title">Find invoices on this site</strong><small>Allow Ratatosk to recognize the supplier in your active tab. Chrome will ask once.</small></span><button type="button" class="supplier-request-link" data-action="enable-tab-awareness" ${state.tabAwarenessRequestPending ? "disabled" : ""}>${state.tabAwarenessRequestPending ? "Preparing…" : "Find Invoices"}</button></aside>`;
+    return `<aside class="supplier-request tab-awareness" aria-labelledby="tab-awareness-title"><span class="supplier-request-mark" aria-hidden="true">${branchIcon()}</span><span class="supplier-request-copy"><strong id="tab-awareness-title">Find invoices on this site</strong><small>Chrome will ask once to recognize your active tab.</small></span><span class="discovery-actions"><button type="button" class="supplier-request-link" data-action="enable-tab-awareness" ${state.tabAwarenessRequestPending ? "disabled" : ""}>${state.tabAwarenessRequestPending ? "Preparing…" : "Find Invoices"}</button></span></aside>`;
   }
   const listed = page ? state.sources.find((source) => source.primaryOrigin === page.origin) : undefined;
   if (listed) {
     const connected = Boolean(listed.connection);
-    return `<aside class="supplier-request"><span class="supplier-request-mark letter" aria-hidden="true">${esc(listed.name.charAt(0).toUpperCase())}</span><span class="supplier-request-copy"><strong>${esc(listed.name)} is already listed</strong><small>${connected ? "Collect new invoices from this signed-in session." : `Connect it to collect invoices from ${page!.hostname}.`}</small></span><button type="button" class="supplier-request-link" data-action="${connected ? "sync" : "connect"}" data-id="${esc(listed.id)}">${connected ? "Sync Now" : "Connect"}</button></aside>`;
+    return `<aside class="supplier-request"><span class="supplier-request-mark letter" aria-hidden="true">${esc(listed.name.charAt(0).toUpperCase())}</span><span class="supplier-request-copy"><strong>${esc(listed.name)} is already listed</strong><small>${connected ? "Collect from this signed-in session." : `Connect to collect from ${page!.hostname}.`}</small></span><button type="button" class="supplier-request-link" data-action="${connected ? "sync" : "connect"}" data-id="${esc(listed.id)}">${connected ? "Sync Now" : "Connect"}</button></aside>`;
   }
   const ready = Boolean(state.config && page);
   const detail = !state.config
     ? "Choose a destination first."
-    : page ? `Search ${page.hostname} for billing and invoice pages.` : "Open an HTTPS supplier app first.";
+    : page ? `Search ${page.hostname}.` : "Open an HTTPS supplier app first.";
   return `<aside class="supplier-request" aria-labelledby="supplier-request-title"><span class="supplier-request-mark" aria-hidden="true">${branchIcon()}</span><span class="supplier-request-copy"><strong id="supplier-request-title">Supplier not listed?</strong><small>${esc(detail)}</small></span><button type="button" class="supplier-request-link" data-action="try-discovery" ${ready ? "" : "disabled"}>Find Invoices</button></aside>`;
 }
 
@@ -502,13 +541,13 @@ function renderSettings(): void {
   const destinationFields = filesystemConfig
     ? `<div class="fields"><div class="field"><label for="folder">Folder</label><input id="folder" name="folder" autocomplete="off" maxlength="100" data-field="folder" value="${esc(filesystemConfig.rootFolder)}" /></div><div class="field"><label for="date-mode">Folders By</label><select id="date-mode" name="dateMode" autocomplete="off" data-field="datemode"><option value="extraction" ${filesystemConfig.dateMode === "extraction" ? "selected" : ""}>Date Collected</option><option value="invoice" ${filesystemConfig.dateMode === "invoice" ? "selected" : ""}>Invoice Date</option></select></div></div>`
     : kind === "igdrasil"
-      ? `<div class="callout"><strong>Connected through Igdrasil.</strong> Manage the destination and company from the Igdrasil web app.</div>`
-      : `<div class="callout"><strong>Choose a destination first.</strong> Ratatosk will not fetch or save invoices until you confirm one.</div>`;
+      ? `<div class="callout"><strong>Connected through Igdrasil.</strong> Manage it from the Igdrasil web app.</div>`
+      : `<div class="callout"><strong>Choose a destination first.</strong> Nothing is fetched or saved until you do.</div>`;
   const error = state.inlineError?.scope === "settings"
     ? `<div class="inline-error settings-error" id="settings-error" role="alert" tabindex="-1">${esc(state.inlineError.message)}</div>` : "";
   const tabAwareness = state.tabAwarenessEnabled
-    ? `<div class="context-access"><span><strong>Active-tab switching enabled</strong><small>Ratatosk reads the current tab URL to keep this side panel in context. URLs are not stored as browsing history.</small></span><button type="button" class="btn outline sm" data-action="disable-tab-awareness">Turn Off</button></div>`
-    : `<div class="context-access"><span><strong>Recognize supplier tabs automatically</strong><small>Chrome calls this permission “Read your browsing history.” Ratatosk only reads the current tab URL and does not store browsing history.</small></span><button type="button" class="btn tonal sm" data-action="enable-tab-awareness" ${state.tabAwarenessRequestPending ? "disabled" : ""}>${state.tabAwarenessRequestPending ? "Preparing…" : "Enable"}</button></div>`;
+    ? `<div class="context-access"><span><strong>Recognizing supplier tabs</strong><small>Only the current tab URL is read. Nothing is stored.</small></span><button type="button" class="btn outline sm" data-action="disable-tab-awareness">Turn Off</button></div>`
+    : `<div class="context-access"><span><strong>Recognize supplier tabs</strong><small>Chrome calls this permission “Read your browsing history.” Only the current tab URL is read.</small></span><button type="button" class="btn tonal sm" data-action="enable-tab-awareness" ${state.tabAwarenessRequestPending ? "disabled" : ""}>${state.tabAwarenessRequestPending ? "Preparing…" : "Enable"}</button></div>`;
 
   replaceApp(`${sheetHeader("Settings")}
     <form class="settings-form">
@@ -519,7 +558,7 @@ function renderSettings(): void {
       <fieldset class="grp divider"><legend>Check for New Invoices</legend><div class="seg">${scheduleOption("Off", 0)}${scheduleOption("6h", 360)}${scheduleOption("12h", 720)}${scheduleOption("Daily", 1440)}</div>${period && state.schedule.nextRunAt ? `<p class="schedule-next">Next check ${relTime(state.schedule.nextRunAt)}</p>` : ""}</fieldset>
       <fieldset class="grp divider"><legend>Browser Context</legend>${tabAwareness}</fieldset>
     </form>
-    <p class="foot">Runs while Chrome is open and uses your signed-in vendor sessions. If Chrome is closed, Ratatosk catches up next time.</p>`);
+    <p class="foot">Runs while Chrome is open. If it is closed, Ratatosk catches up next time.</p>`);
 }
 
 // ---- actions --------------------------------------------------------------
@@ -540,6 +579,15 @@ app.addEventListener("click", (event) => {
     return;
   }
   if (action === "try-discovery") {
+    void discoverFromUserGesture();
+    return;
+  }
+  if (action === "discover-here") {
+    // The search reports progress on the vendors screen, so move there before
+    // it renders — and stay inside the click activation Chrome needs to prompt.
+    screen = "vendors";
+    state.attentionOnly = false;
+    persistPanelUiState();
     void discoverFromUserGesture();
     return;
   }

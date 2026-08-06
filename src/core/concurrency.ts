@@ -21,7 +21,10 @@ export interface SafeConcurrencyPolicy {
 }
 
 export const DEFAULT_SAFE_CONCURRENCY = Object.freeze({
-  routeProbes: 2,
+  // Route probes are read-only GETs in disposable inactive tabs, so the width
+  // is bounded by politeness to the supplier rather than by safety. Four keeps
+  // an interactive scan to a few waves; the page budget still caps the total.
+  routeProbes: 4,
   candidatePreviews: 2,
   documentFetches: 3,
   sinkCommits: 1,

@@ -52,12 +52,13 @@ Collector handles only the data required for that purpose:
 
 During Find Invoices, Collector temporarily inspects the active page and up to
 fourteen additional same-origin pages with strong billing or invoice intent, to depth
-three. It uses at most two inactive temporary tabs, performs only page navigation
+three. It uses at most four inactive temporary tabs, performs only page navigation
 and bounded same-origin GET probes, never clicks controls or submits forms, and
 closes the tabs when the search ends. On those temporary pages, a packaged
 exact-origin observer may temporarily inspect bounded JSON fetch/XHR responses
-and the sanitized request structure needed to recognize an explicit read-only
-GraphQL query. It does not initiate the page's POST requests. Bounded rendered-page snapshots and JSON
+and the request structure needed to recognize an explicit read-only
+GraphQL query. Credential-named fields, credential-shaped values, and payment
+instrument data are removed from that evidence before it is read. It does not initiate the page's POST requests. Bounded rendered-page snapshots and JSON
 evidence stay in memory, are not logged or uploaded, and are discarded after the
 packaged adapters produce up to three proof-ranked structural candidates. A
 failed search or verification may retain a redacted diagnostic in session storage

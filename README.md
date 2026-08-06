@@ -35,9 +35,14 @@ Ratatosk snapshots the page you're on without navigating, reloading, or closing
 it, then reopens that exact page once in a hidden tab so it can watch the app
 boot and see the JSON calls the billing UI makes. From there a bounded planner
 follows same-origin, billing-looking routes — read-only `GET` requests in
-disposable inactive tabs, at most 15 pages, depth 3, 30 seconds. It never
+disposable inactive tabs, at most 15 pages, depth 3, 10 seconds. It never
 submits a form, and never follows logout, checkout, purchase, cancellation,
 deletion, or authorization links.
+
+The search stops the moment it has proof rather than when the budget runs out,
+so a portal that answers on its first page costs a second or two, not the whole
+envelope. Only a portal that the interactive pass cannot resolve escalates once
+to a longer, still bounded search.
 
 It ranks routes by path intent *and* by what the page actually says, so an
 opaque route labelled `Invoices` is still found, and `/<tenant>/settings/billing`
