@@ -4,7 +4,9 @@ import type { VendorLifecycleEntry } from "../../../src/vendors/lifecycle";
 import type { CollectorDiagnostic } from "./diagnostics";
 import type { DiscoveryStatusView } from "./discovery-state";
 import type { DiscoveryDiagnosticV1 } from "./discovery-diagnostic";
+import type { SyncSchedule } from "../../../src/core/sync-schedule";
 export type { DiscoveryStatusView } from "./discovery-state";
+export type { SyncSchedule } from "../../../src/core/sync-schedule";
 
 /**
  * The popup ↔ service-worker message contract. One discriminated union in, one
@@ -34,10 +36,12 @@ export type Message =
   | { type: "getVendorDiagnostic"; vendorId: string }
   | { type: "getLedger" }
   | { type: "getSchedule" }
-  | { type: "setSchedule"; periodMinutes: number };
+  | { type: "setSchedule"; schedule: SyncSchedule }
+  | { type: "getRouteMemory" }
+  | { type: "clearRouteMemory" };
 
 export interface ScheduleInfo {
-  periodMinutes: number | null;
+  schedule: SyncSchedule;
   nextRunAt: number | null;
 }
 
@@ -65,6 +69,7 @@ export type Response =
   | { ok: true; config: SinkConfig | null }
   | { ok: true; ledger: LedgerEntry[] }
   | { ok: true; schedule: ScheduleInfo }
+  | { ok: true; rememberedRoutes: number }
   | { ok: true; connectUrl: string }
   | { ok: true; discovery: DiscoveryStatusView }
   | { ok: true; discoveryDiagnostic: DiscoveryDiagnosticV1 }

@@ -58,7 +58,13 @@ closes the tabs when the search ends. On those temporary pages, a packaged
 exact-origin observer may temporarily inspect bounded JSON fetch/XHR responses
 and the request structure needed to recognize an explicit read-only
 GraphQL query. Credential-named fields, credential-shaped values, and payment
-instrument data are removed from that evidence before it is read. It does not initiate the page's POST requests. Bounded rendered-page snapshots and JSON
+instrument data are removed from that evidence before it is read; where one was
+removed, only its field name is kept, so a supplier whose API requires a
+short-lived token can be recognized without the token ever being retained. That
+token is re-requested from your own signed-in session at the start of each
+collection, used only against the site that issued it, and discarded when the
+run ends. It is never written to storage, and the approval card says so before
+you grant access. It does not initiate the page's POST requests. Bounded rendered-page snapshots and JSON
 evidence stay in memory, are not logged or uploaded, and are discarded after the
 packaged adapters produce up to three proof-ranked structural candidates. A
 failed search or verification may retain a redacted diagnostic in session storage
@@ -68,6 +74,15 @@ Those templates keep recognized billing/navigation words while replacing opaque
 tenant, account, workspace, and document segments with `:id` or `:segment`.
 They never contain origins, raw paths, queries, fragments, page content, headers,
 response bodies, tokens, account or invoice identifiers, or financial values.
+
+A failed search, and a supplier whose last run did not succeed, offer a **Report
+Issue** action. It copies that same redacted diagnostic to the clipboard and
+opens a prefilled GitHub issue in a new tab; Settings links to the issue tracker
+for anything else. Nothing is transmitted by the extension: the tab is a draft on
+github.com, and nothing becomes public until the user reviews it and presses
+submit there. The report names the supplier's hostname, which the issue itself
+states, so filing one publicly records which supplier was being collected from.
+Collector still makes no automatic or background report of any kind.
 
 After the user confirms **Connect & Collect**, Collector verifies the ranked
 candidates by fetching and validating an actual PDF, falling through only when a
@@ -133,6 +148,15 @@ creditworthiness or for lending.
   in local extension storage until changed, cleared through extension actions, or
   the extension is uninstalled. Chrome removes extension storage on uninstall,
   subject to Chrome's own sync, backup, and device behavior.
+- After a supplier's invoices are collected, Collector remembers on this device
+  which page of that supplier they were found on — one exact-origin page address
+  per supplier, and nothing about the request, the response, or the invoices. It
+  shortens the next search for the same supplier, is re-checked like any other
+  candidate page, and is dropped after three searches fail to confirm it. It is
+  kept when a supplier is disconnected, because reconnecting is when it is most
+  useful. It is never uploaded or shared. Users can remove every remembered page
+  at any time under **Settings → Remembered billing pages**, and Chrome removes
+  it on uninstall.
 - Locally downloaded files remain until the user deletes them.
 - Documents delivered to Igdrasil are retained under the user's Igdrasil
   agreement and Igdrasil's applicable retention rules.

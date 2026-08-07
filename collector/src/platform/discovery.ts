@@ -6,19 +6,21 @@ import {
   MAX_DISCOVERY_CANDIDATES,
   safeEntryUrl,
   reuseDiscoveredSupplierIdentity,
+  withSupplierDisplayName,
   type DiscoveryAdapterId,
   type DiscoveredSupplierCandidateSetV1,
   type DiscoveredSupplierProfileV1,
+  type SupplierNameObservation,
 } from "../../../src/core/discovery";
 import { extract } from "../../../src/core/extract";
-import { assertAuthenticated } from "../../../src/core/auth";
+import { assertAuthenticated, resolveAuthToken } from "../../../src/core/auth";
 import { AuthExpired, AuthFailure } from "../../../src/core/errors";
 import { getArray } from "../../../src/core/jsonpath";
 import { inferRecipe } from "../../../src/core/recorder/infer";
 import type { CapturedEntry, DraftRecipe } from "../../../src/core/recorder/types";
 import { validateRecipe } from "../../../src/core/schema";
 import type { InvoiceRef, VendorRecipe } from "../../../src/core/types";
-import { DEFAULT_SAFE_CONCURRENCY, mapConcurrentOrdered } from "../../../src/core/concurrency";
+import { DEFAULT_SAFE_CONCURRENCY, mapConcurrentInSettleOrder, mapConcurrentOrdered } from "../../../src/core/concurrency";
 import {
   canonicalDocumentProviderUrl,
   documentProviderForUrl,
@@ -59,6 +61,7 @@ import {
 import { COLLECTOR_RUNTIME_IDENTITY, formatCollectorRuntimeIdentity } from "./collector-runtime-identity";
 import discoveryPageObserverScript from "./discovery-page-observer?script&iife";
 import { getDiscoveredSuppliers } from "./discovered-suppliers";
+import { getRememberedRoute } from "./discovery-route-memory";
 import { DISCOVERY_DOM_POLICY } from "./discovery-dom-policy";
 import { withForegroundTabVisibility } from "./tab-visibility";
 import { DocumentActionController } from "./document-action-controller";
@@ -105,6 +108,12 @@ type ProbedResource = {
   requestHeaders?: Record<string, string>;
   source?: "observed" | "replayed";
   hasLinkNext?: boolean;
+  /** Structural authentication marker only: which scheme the application used,
+   * never the credential it sent. */
+  requestAuthScheme?: "bearer" | "basic" | "custom";
+  /** Response paths whose value was a credential. Field names only — this is
+   * what lets a token exchange be wired without the token ever being held. */
+  credentialPaths?: string[];
 };
 
 export interface PageEvidence {
@@ -156,6 +165,7 @@ class CandidatePreviewError extends Error {
 export function createInitialExplorationTargets(
   entryUrl: string,
   observerReady: boolean,
+  rememberedRoute?: string,
 ): ExplorationTarget[] {
   const targets: ExplorationTarget[] = [{
     url: entryUrl,
@@ -173,8 +183,25 @@ export function createInitialExplorationTargets(
       score: Number.MAX_SAFE_INTEGER - 1,
     });
   }
+  // Where this supplier's invoices were last found. Ranked above every curated
+  // guess but kept out of `exact_entry`, so it is probed in the first explored
+  // wave rather than sharing the trust boundary of the user's own tab — and so
+  // a stale route costs one probe in a wave that was going to run regardless.
+  if (rememberedRoute && rememberedRoute !== entryUrl) {
+    targets.push({
+      url: rememberedRoute,
+      depth: 1,
+      source: "remembered",
+      family: "common_billing_route",
+      score: REMEMBERED_ROUTE_SCORE,
+    });
+  }
   return targets;
 }
+
+/** Above the curated billing paths (which top out near 68) and every observed
+ * link, but far below the entry page. */
+const REMEMBERED_ROUTE_SCORE = 5_000;
 
 export async function discoverSupplierInTab(
   tabId: number,
@@ -200,7 +227,11 @@ export async function discoverSupplierInTab(
   const pageObserver = new DiscoveryPageObserverRegistration(expectedOrigin);
   const observerReady = await pageObserver.start();
   if (observerReady) await pageObserver.adopt(tabId);
-  const queue = createInitialExplorationTargets(firstUrl, observerReady);
+  // Resuming a checkpoint already carries its own frontier, so the shortcut is
+  // only seeded when a search actually starts.
+  const remembered = resumed ? undefined : (await getRememberedRoute(expectedOrigin))?.entryUrl;
+  if (remembered) console.info(`[collector] discovery will try the remembered route ${toDiagnosticRoute(remembered)} first`);
+  const queue = createInitialExplorationTargets(firstUrl, observerReady, remembered);
   const known = new Set([firstUrl]);
   const foregroundProbeBudget = { remaining: 1 };
   const explorers = Array.from(
@@ -216,6 +247,9 @@ export async function discoverSupplierInTab(
   diagnostic.coverage!.attemptedFamilies = [...(resumed?.attemptedFamilies ?? [])];
   diagnostic.coverage!.slicesCompleted = resumed?.slicesCompleted ?? 0;
   let display: ReturnType<typeof deriveSupplierDisplayName> | undefined;
+  const nameObservations: SupplierNameObservation[] = [];
+  /** Whether the entry probe has settled, so its title can no longer be lost. */
+  let entryObserved = false;
   let entryExplored = false;
   let exploredWaves = 0;
   const retained: Array<{ profile: DiscoveredSupplierProfileV1; score: number }> = [];
@@ -279,7 +313,11 @@ export async function discoverSupplierInTab(
           }
         })
         : -1;
-      const probes = await mapConcurrentOrdered(scheduled, {
+      // Settle order, not queue order. A wave is only as useful as its first
+      // sufficient answer, and waiting out the siblings of a page that already
+      // produced a structured invoice source spent seconds on results that
+      // would be discarded.
+      const probes = mapConcurrentInSettleOrder(scheduled, {
         limit: DEFAULT_SAFE_CONCURRENCY.routeProbes,
       }, async ({ target }, index) => {
         const remainingMs = explorationDeadline - Date.now();
@@ -297,8 +335,11 @@ export async function discoverSupplierInTab(
         return runWithinExplorationBudget(probe, remainingMs);
       });
 
-      for (const probe of probes) {
+      for await (const probe of probes) {
         const { target, page, pageStartedAt } = scheduled[probe.index];
+        // Settled either way: whatever this probe was going to contribute to
+        // the supplier's name, it has contributed.
+        if (target.source === "entry") entryObserved = true;
         if (probe.status !== "fulfilled") {
           recordAttempt(diagnostic, page, target.source, undefined, "probe_failed", Date.now() - pageStartedAt, {
             route: target.url,
@@ -320,12 +361,15 @@ export async function discoverSupplierInTab(
         }
 
         const evidence = probe.value;
-        display ??= deriveSupplierDisplayName({
-          origin: evidence.origin,
+        // Every page seen adds a vote. The provisional name is recomputed from
+        // the whole set rather than fixed by whichever page answered first, and
+        // the retained profiles are re-stamped once exploration ends.
+        nameObservations.push({
           applicationName: evidence.applicationName,
           siteName: evidence.siteName,
           title: evidence.title,
         });
+        display = deriveSupplierDisplayName({ origin: evidence.origin, observations: nameObservations });
         const resolvedPage = canonicalPageUrl(evidence.url, expectedOrigin);
         if (resolvedPage && resolvedPage !== target.url) {
           known.add(resolvedPage);
@@ -430,6 +474,21 @@ export async function discoverSupplierInTab(
           enqueueTargets(queue, known, planned, completedTargetKeys);
         }
         completedTargetKeys.add(explorationTargetKey(target));
+
+        // Stop the wave only on evidence that nothing still running could
+        // improve on. A structured invoice source ends the search either way,
+        // so its siblings are already destined to be discarded — whereas a DOM
+        // candidate can be beaten by a JSON one from the very probe that would
+        // be abandoned, and those waves are still played out in full.
+        //
+        // An abandoned probe's page title is abandoned with it, and naming reads
+        // every page seen. The entry page is the one whose title matters most
+        // and the cheapest to wait for — it is the tab already in front of the
+        // person — so it is never the page a shortcut skips.
+        if (structuredProofRetained(retained) && entryObserved) {
+          console.info(`[collector] discovery stopped wave ${exploredWaves + 1} early on structured evidence`);
+          break;
+        }
       }
       await checkpoint();
       if (isEntryWave) entryExplored = true;
@@ -452,7 +511,11 @@ export async function discoverSupplierInTab(
     diagnostic.result = "candidates_found";
     const existing = Object.values(await getDiscoveredSuppliers())
       .find((profile) => profile.primaryOrigin === new URL(expectedOrigin).origin);
-    const profiles = retained.map((candidate) => reuseDiscoveredSupplierIdentity(candidate.profile, existing));
+    // Pages probed after the first candidate compiled still count as evidence
+    // of the supplier's name, so the set is named from the finished run.
+    const finalName = deriveSupplierDisplayName({ origin: expectedOrigin, observations: nameObservations });
+    const profiles = retained.map((candidate) =>
+      reuseDiscoveredSupplierIdentity(withSupplierDisplayName(candidate.profile, finalName), existing));
     return {
       candidates: createDiscoveredSupplierCandidateSet(profiles),
       diagnostic: parseDiscoveryDiagnostic(diagnostic),
@@ -503,6 +566,11 @@ export async function previewCandidate(recipe: VendorRecipe): Promise<number> {
     // document fetches. Non-DOM candidates still require the explicit auth probe.
     if (recipe.invoices.strategy !== "dom") {
       try {
+        // A token exchange is a claim until it is exercised. Minting first means
+        // a candidate that only works with a bearer is proven end to end here,
+        // and one whose inferred exchange is wrong fails now rather than during
+        // the user's first collection.
+        await resolveAuthToken(recipe, ctx);
         await assertAuthenticated(recipe, ctx);
       } catch (error) {
         if (error instanceof AuthExpired) throw new CandidatePreviewError("auth_expired");
@@ -600,6 +668,8 @@ export function compileCandidates(
     contentType: resource.contentType,
     requestBody: resource.requestBody,
     requestHeaders: resource.requestHeaders,
+    ...(resource.requestAuthScheme ? { requestAuth: { scheme: resource.requestAuthScheme } } : {}),
+    ...(resource.credentialPaths?.length ? { redactedResponsePaths: resource.credentialPaths } : {}),
     responseBody: resource.body,
   }));
   const networkDraft = resourceEntries.length
@@ -734,7 +804,9 @@ export function parsePageEvidence(value: unknown, expectedOrigin: string, option
       (resource.requestBody !== undefined && (typeof resource.requestBody !== "string" || resource.requestBody.length > 65_536)) ||
       (resource.requestHeaders !== undefined && !isSafeObservedRequestHeaders(resource.requestHeaders)) ||
       (resource.source !== undefined && resource.source !== "observed" && resource.source !== "replayed") ||
-      (resource.hasLinkNext !== undefined && typeof resource.hasLinkNext !== "boolean")
+      (resource.hasLinkNext !== undefined && typeof resource.hasLinkNext !== "boolean") ||
+      (resource.requestAuthScheme !== undefined && !isAuthScheme(resource.requestAuthScheme)) ||
+      (resource.credentialPaths !== undefined && !isCredentialPathList(resource.credentialPaths))
     ) return invalid();
     let url: URL;
     try { url = new URL(resource.url); } catch { return invalid(); }
@@ -750,6 +822,8 @@ export function parsePageEvidence(value: unknown, expectedOrigin: string, option
       ...(typeof resource.requestBody === "string" ? { requestBody: resource.requestBody } : {}),
       ...(resource.requestHeaders ? { requestHeaders: resource.requestHeaders as Record<string, string> } : {}),
       ...(resource.source ? { source: resource.source } : {}),
+      ...(isAuthScheme(resource.requestAuthScheme) ? { requestAuthScheme: resource.requestAuthScheme } : {}),
+      ...(isCredentialPathList(resource.credentialPaths) ? { credentialPaths: resource.credentialPaths } : {}),
       hasLinkNext: resource.hasLinkNext === true,
     });
   }
@@ -812,6 +886,17 @@ export function parsePageEvidence(value: unknown, expectedOrigin: string, option
       semanticNavigationSteps: Number(stats.semanticNavigationSteps ?? 0),
     },
   };
+}
+
+function isAuthScheme(value: unknown): value is "bearer" | "basic" | "custom" {
+  return value === "bearer" || value === "basic" || value === "custom";
+}
+
+/** Structural field paths only: no values, no separators that could smuggle one. */
+function isCredentialPathList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length <= 40 && value.every((item) =>
+    typeof item === "string" && item.length > 0 && item.length <= 300 &&
+    item.split(".").every((part) => /^[A-Za-z0-9_$-]+$/.test(part)));
 }
 
 function isSafeObservedRequestHeaders(value: unknown): value is Record<string, string> {
@@ -1184,6 +1269,8 @@ async function collectPageEvidenceInPage(
           body: entry.responseBody,
           ...(entry.requestBody !== undefined ? { requestBody: entry.requestBody } : {}),
           ...(contentType === "application/json" ? { requestHeaders: { "content-type": contentType } } : {}),
+          ...(entry.requestAuth && entry.requestAuth.scheme !== "none" ? { requestAuthScheme: entry.requestAuth.scheme } : {}),
+          ...(entry.redactedResponsePaths?.length ? { credentialPaths: entry.redactedResponsePaths.slice(0, 40) } : {}),
           source: "observed",
         });
         total += entry.responseBody.length;
@@ -1666,26 +1753,49 @@ export function hasEnoughStrongCandidates(retained: readonly { score: number }[]
  * condition, which structured evidence alone could never satisfy — meant a
  * portal that answered on its first page still paid the entire budget.
  */
+/**
+ * Whether a retained candidate is backed by structured data.
+ *
+ * This is the one condition `discoveryProofIsSufficient` accepts without regard
+ * to how much of the site has been explored — which is exactly what makes it
+ * safe to act on mid-wave, before the rest of the site has been seen.
+ */
+export function structuredProofRetained(
+  retained: readonly { profile: { adapter: { id: DiscoveryAdapterId } } }[],
+): boolean {
+  return retained.some(({ profile }) =>
+    profile.adapter.id === "network-json" || profile.adapter.id === "embedded-json");
+}
+
 export function discoveryProofIsSufficient(
   retained: readonly { profile: { adapter: { id: DiscoveryAdapterId } } }[],
   progress: { entryExplored: boolean; exploredWaves: number },
 ): boolean {
   const adapters = retained.map((candidate) => candidate.profile.adapter.id);
-  if (adapters.some((adapter) => adapter === "network-json" || adapter === "embedded-json")) return true;
+  if (structuredProofRetained(retained)) return true;
   if (!progress.entryExplored) return false;
   if (adapters.includes("dom-links")) return true;
   return adapters.length > 0 && progress.exploredWaves >= 1;
 }
 
-/** The entry snapshot and its cold replay are the only targets that may share a
- * wave with the user's active tab. */
+/**
+ * Targets that may share a wave with the user's active tab.
+ *
+ * The entry snapshot, its cold replay, and a remembered route. The last two run
+ * in disposable tabs of their own, so none of the three can interfere with
+ * another — and a remembered route only earns its keep by running here. Held
+ * back to the following wave it merely joins probes that were going to happen
+ * anyway, costing a page and saving no time at all.
+ */
+const ENTRY_WAVE_SOURCES: ReadonlySet<ExplorationPageSource> = new Set(["entry", "entry_replay", "remembered"]);
+
 function entryWave(queue: readonly ExplorationTarget[]): boolean {
-  return queue[0]?.source === "entry" || queue[0]?.source === "entry_replay";
+  return queue[0] !== undefined && ENTRY_WAVE_SOURCES.has(queue[0].source);
 }
 
 function entryWaveWidth(queue: readonly ExplorationTarget[]): number {
   let width = 0;
-  while (width < queue.length && width < 2 && (queue[width].source === "entry" || queue[width].source === "entry_replay")) {
+  while (width < queue.length && width < ENTRY_WAVE_SOURCES.size && ENTRY_WAVE_SOURCES.has(queue[width].source)) {
     width += 1;
   }
   return Math.max(1, width);

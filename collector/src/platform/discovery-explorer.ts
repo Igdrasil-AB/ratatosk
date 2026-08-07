@@ -51,7 +51,13 @@ export function explorationBudget(mode: ExplorationMode = "fast"): ExplorationBu
   return EXPLORATION_BUDGETS[mode];
 }
 
-export type ExplorationPageSource = "entry" | "entry_replay" | "linked" | "common_route";
+/**
+ * `remembered` is a route this supplier previously yielded invoices on. It is
+ * a guessed billing route like any other — it just happens to be the best guess
+ * available, so it is scored above the curated list and probed in the first
+ * wave that follows the entry page.
+ */
+export type ExplorationPageSource = "entry" | "entry_replay" | "linked" | "common_route" | "remembered";
 
 /** A family is a path *kind*, never an origin, tenant identifier, or URL. */
 export type ExplorationFamily =

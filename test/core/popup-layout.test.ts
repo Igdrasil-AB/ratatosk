@@ -223,7 +223,10 @@ describe("Collector popup layout regressions", () => {
   });
 
   it("shows the next scheduled run and uses the listed supplier's real action", () => {
-    expect(popupSource).toContain("Next check ${relTime(state.schedule.nextRunAt)}");
+    // The date and time it lands on, not only how far away it is: a weekly or
+    // monthly schedule is chosen by day, so the day is what confirms it.
+    expect(popupSource).toContain("Next check ${esc(nextRunLabel(state.schedule.nextRunAt))}");
+    expect(popupSource).toContain("weekday: \"short\", day: \"numeric\", month: \"short\"");
     expect(popupSource).toContain('${connected ? "Sync Now" : "Connect"}');
   });
 });

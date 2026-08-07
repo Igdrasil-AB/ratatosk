@@ -1,5 +1,6 @@
 import type { FetchedDocument } from "../../../src/core/types";
 import type { IngestResult, IngestSink } from "../../../src/ingest/sink";
+import { folderSegments, pathSegment, rememberDownloadRoot, stripControl } from "./download-path";
 
 /**
  * Saves each invoice to disk as `Downloads/<root>/<supplier>/<date>/<file>`,
@@ -66,30 +67,14 @@ export function buildInvoicePath(
   const filename = isDeliveryIdentity(doc.idempotencyKey)
     ? fileNameWithIdentity(doc.filename, doc.idempotencyKey)
     : fileName(doc.filename);
+  // The one place a path must exist even when the configuration named nothing.
+  const root = folderSegments(cfg.rootFolder);
   return [
-    segment(cfg.rootFolder || "InvoiceCollector"),
-    segment(doc.vendorName || doc.vendorId),
-    segment(dateFolder),
+    ...(root.length ? root : ["InvoiceCollector"]),
+    pathSegment(doc.vendorName || doc.vendorId) || "unknown",
+    pathSegment(dateFolder) || "unknown",
     filename,
   ].join("/");
-}
-
-/** Drop control characters (code point < 0x20) without a fragile control-char regex. */
-function stripControl(s: string): string {
-  let out = "";
-  for (const ch of s) {
-    if ((ch.codePointAt(0) ?? 0) >= 0x20) out += ch;
-  }
-  return out;
-}
-
-/** Sanitize a single path segment (folder name). */
-function segment(s: string): string {
-  const cleaned = stripControl(s.replace(/[/\\:*?"<>|]/g, "-"))
-    .replace(/\s+/g, " ")
-    .replace(/^\.+/, "")
-    .trim();
-  return cleaned || "unknown";
 }
 
 /** Sanitize a filename (keeps the extension dot). */
@@ -220,7 +205,30 @@ function download(
         resolve(id);
       }
     });
-  }).then((id) => waitForCompletedDownload(id));
+  }).then(async (id) => {
+    await waitForCompletedDownload(id);
+    await recordDownloadRoot(id, filename);
+  });
+}
+
+/**
+ * Look up where a completed download actually landed and hand it to
+ * `download-path` to learn the root.
+ *
+ * Knowing the absolute path is a presentation nicety; a save that already
+ * succeeded must never be reported as failed because this lookup did.
+ */
+async function recordDownloadRoot(downloadId: number, relativePath: string): Promise<void> {
+  try {
+    const absolute = await new Promise<string | undefined>((resolve) => {
+      chrome.downloads.search({ id: downloadId }, (items) => {
+        resolve(chrome.runtime.lastError ? undefined : items[0]?.filename);
+      });
+    });
+    if (absolute) await rememberDownloadRoot(absolute, relativePath);
+  } catch {
+    // Deliberately silent, per the note above.
+  }
 }
 
 const DOWNLOAD_COMPLETION_TIMEOUT_MS = 5 * 60 * 1_000;

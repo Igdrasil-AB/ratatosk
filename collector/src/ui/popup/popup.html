@@ -475,6 +475,9 @@
       .supplier-request-copy strong { font-size: 12px; font-weight: 680; }
       .supplier-request-copy small { margin-top: 1px; color: var(--muted); font-size: 10.5px; }
       .supplier-request-copy .discovery-hosts { margin-top: 3px; color: var(--copper); font-size: 9.5px; line-height: 1.25; overflow-wrap: anywhere; }
+      /* Same weight as the origin list beside it: this is the other half of
+         what the person is agreeing to, not a footnote to it. */
+      .supplier-request-copy .discovery-consent { margin-top: 3px; color: var(--copper); font-size: 9.5px; line-height: 1.25; }
       .supplier-request-link {
         min-height: 40px;
         display: inline-flex;
@@ -527,6 +530,10 @@
       .discovery-failed .supplier-request-copy small { margin-top: 3px; line-height: 1.45; }
       .discovery-spinner { width: 18px; height: 18px; margin: 7px; border: 2px solid color-mix(in oklab, var(--primary) 22%, transparent); border-top-color: var(--primary); border-radius: 50%; animation: discovery-spin 800ms linear infinite; }
       @keyframes discovery-spin { to { transform: rotate(360deg); } }
+      /* The success card leaves on its own. The delay tracks SUCCESS_CARD_MS in
+         popup.ts so the fade lands just as the card is removed. */
+      .discovery-complete { animation: discovery-retire 420ms cubic-bezier(0.2, 0, 0, 1) 3580ms both; }
+      @keyframes discovery-retire { to { opacity: 0; transform: translateY(-4px); } }
 
       .settings-form { display: block; }
       .grp { min-width: 0; padding: 12px 14px 14px; border: 0; }
@@ -576,6 +583,11 @@
         color: var(--fg);
         font-size: 12.5px;
       }
+      /* Where the invoices actually land, spelled out under the field that
+         decides it. Long paths scroll rather than widening the panel. */
+      .save-path { margin: 2px 0 4px 98px; color: var(--muted); font-size: 10.5px; line-height: 1.45; }
+      .save-path code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; color: var(--fg); overflow-wrap: anywhere; }
+      .save-path-note { display: block; margin-top: 2px; text-wrap: pretty; }
       .callout { margin-top: 9px; padding: 11px 12px; border-radius: 10px; background: var(--surface); color: var(--muted); font-size: 12px; box-shadow: inset 0 0 0 1px var(--border); }
       .callout strong { color: var(--fg); }
       .context-access {
@@ -601,7 +613,40 @@
       .seg label:active span { scale: 0.96; }
       .seg input:checked + span { background: var(--surface-raised); color: var(--fg); font-weight: 620; box-shadow: 0 1px 2px rgb(0 0 0 / 0.08); }
       .seg input:focus-visible + span { outline: 2px solid var(--ring); outline-offset: 2px; }
-      .schedule-next { margin: 8px 2px 0; color: var(--muted); font-size: 10.5px; }
+      .schedule-next { margin: 8px 2px 0; color: var(--muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+      .schedule-note { margin: 7px 2px 0; color: var(--muted); font-size: 10.5px; text-wrap: pretty; }
+      .schedule-day { margin-top: 9px; display: flex; align-items: center; gap: 9px; }
+      .schedule-day > span { width: 88px; flex: none; color: var(--muted); font-size: 12.5px; }
+
+      /* A listbox in the panel's own type and colour. A native select would
+         render as an OS menu; a date input would offer a calendar for what is a
+         recurring day rather than a date. */
+      .menu-select {
+        position: relative;
+        min-width: 0;
+        flex: 1;
+        border-radius: 9px;
+        background: var(--surface-raised);
+        box-shadow: var(--shadow-border);
+        transition-property: background-color, box-shadow;
+        transition-duration: 140ms;
+        transition-timing-function: ease-out;
+      }
+      .menu-select:hover { background: var(--surface); box-shadow: var(--shadow-border-hover); }
+      .menu-select summary { min-height: 40px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; gap: 6px; list-style: none; color: var(--fg); cursor: pointer; font-size: 12.5px; font-weight: 600; }
+      .menu-select summary::-webkit-details-marker { display: none; }
+      .menu-select summary:active { scale: 0.96; }
+      .menu-select summary:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 9px; }
+      .menu-select summary > svg { width: 12px; height: 12px; flex: none; opacity: 0.58; transition: transform 140ms ease-out; }
+      .menu-select[open] summary > svg { transform: rotate(90deg); }
+      .menu-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      /* Thirty-one days will not fit in a panel, so the list scrolls itself. */
+      .menu-options { position: absolute; z-index: var(--z-menu); top: calc(100% + 6px); left: 0; right: 0; max-height: 232px; padding: 4px; overflow-y: auto; border-radius: 11px; background: var(--surface-raised); box-shadow: 0 12px 28px rgb(44 34 24 / 0.16), var(--shadow-border); }
+      .menu-option { width: 100%; min-height: 40px; padding: 0 8px; display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: center; gap: 6px; border: 0; border-radius: 8px; background: transparent; color: var(--fg); cursor: pointer; font-family: var(--ui); font-size: 12px; font-weight: 560; text-align: left; }
+      .menu-option:hover { background: var(--surface); }
+      .menu-option:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+      .menu-option.selected { color: var(--primary); font-weight: 650; }
+      .menu-option svg { width: 14px; height: 14px; }
 
       .foot { padding: 10px 14px max(10px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; }
       .toast {
@@ -671,6 +716,7 @@
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
         .discovery-spinner { animation: none; border-color: var(--primary); opacity: 0.65; }
+        .discovery-complete { animation: none; }
       }
     </style>
   </head>

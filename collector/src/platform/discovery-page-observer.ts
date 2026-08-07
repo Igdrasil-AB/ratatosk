@@ -253,6 +253,7 @@ function installObserver(): void {
   ): void {
     const state = xhrState.get(this);
     if (state && name.toLowerCase() === "content-type") state.requestHeaders["content-type"] = normalizeContentType(value);
+    if (state && name.toLowerCase() === "authorization") Object.assign(state.requestHeaders, authorizationMarker(value));
     return Reflect.apply(originalXhrSetRequestHeader, this, [name, value]);
   };
 
@@ -458,10 +459,32 @@ function requestHeaders(input: RequestInfo | URL, init: RequestInit | undefined)
   try {
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
     const contentType = normalizeContentType(headers.get("content-type"));
-    return contentType ? { "content-type": contentType } : {};
+    return {
+      ...(contentType ? { "content-type": contentType } : {}),
+      ...authorizationMarker(headers.get("authorization")),
+    };
   } catch {
     return {};
   }
+}
+
+/**
+ * The authentication *scheme*, never the credential.
+ *
+ * Discovery needs to know that an endpoint refused to answer a cookie alone,
+ * because that is the difference between compiling a structured plan and
+ * silently falling back to scraping the rendered page. Only the leading scheme
+ * word is read, and it is matched against a closed set — the credential that
+ * follows it is never examined, copied, or measured.
+ *
+ * `sanitizeHeaders` keeps only `content-type`, so this marker informs
+ * `detectRequestAuth` and is then dropped before any header set is retained.
+ */
+function authorizationMarker(value: string | null): Record<string, string> {
+  if (!value) return {};
+  const scheme = /^([A-Za-z]{1,32})(?:\s|$)/.exec(value.trim())?.[1]?.toLowerCase();
+  if (scheme !== "bearer" && scheme !== "basic") return { authorization: "Custom" };
+  return { authorization: scheme === "bearer" ? "Bearer" : "Basic" };
 }
 
 async function requestBodyText(

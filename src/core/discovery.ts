@@ -224,21 +224,160 @@ export function createDiscoveredSupplierProfile(input: {
   });
 }
 
+/**
+ * Re-name a compiled profile without disturbing anything else about it.
+ *
+ * A candidate is compiled the moment its evidence is sufficient, which is
+ * usually before every page has been seen. The recipe is settled at that point;
+ * the name is not, because naming improves with corroboration. Applying the
+ * finished run's name to the whole set also keeps the candidates in agreement,
+ * which `createDiscoveredSupplierCandidateSet` requires.
+ */
+export function withSupplierDisplayName(
+  profile: DiscoveredSupplierProfileV1,
+  display: { name: string; source: "page" | "domain"; confidence: "medium" | "low" },
+): DiscoveredSupplierProfileV1 {
+  if (profile.displayName === display.name) return profile;
+  return parseDiscoveredSupplierProfile({
+    ...profile,
+    displayName: display.name,
+    nameSource: display.source,
+    nameConfidence: display.confidence,
+    recipe: { ...profile.recipe, name: display.name },
+  });
+}
+
+export interface SupplierNameObservation {
+  title?: string;
+  applicationName?: string;
+  siteName?: string;
+}
+
+const MAX_NAME_OBSERVATIONS = 24;
+
+/**
+ * Name a supplier from what several of its own pages agree on.
+ *
+ * One page title is a weak identifier. An application's billing route is as
+ * likely to be titled "Overview" as anything else, and that word says nothing
+ * about who issued the invoice — `dashboard.clerk.com` was named "Overview" for
+ * exactly this reason. Taking the first page's title also made the name depend
+ * on probe ordering, so the same supplier could be named differently run to run.
+ *
+ * A page-derived name therefore has to be corroborated before it outranks the
+ * domain, which is the one identifier the browser has already verified:
+ *
+ *   1. a name whose opening words are the registrable label ("Clerk" at
+ *      `clerk.com`) — two independent sources naming the same party;
+ *   2. a title fragment that survives across *differing* pages, since the part
+ *      that stays constant is the brand and the part that changes is the route;
+ *   3. `og:site_name` or `application-name`, which a site declares for itself
+ *      rather than for one page;
+ *   4. the domain label.
+ *
+ * An uncorroborated title fragment ranks below the domain and is reached only
+ * when the origin yields no label at all. Nothing here is supplier-specific:
+ * every rule is about how many independent sources agree.
+ */
 export function deriveSupplierDisplayName(input: {
   origin: string;
   applicationName?: string;
   siteName?: string;
   title?: string;
+  observations?: readonly SupplierNameObservation[];
 }): { name: string; source: "page" | "domain"; confidence: "medium" | "low" } {
-  for (const raw of [input.applicationName, input.siteName]) {
-    const name = cleanPageName(raw);
-    if (name) return { name, source: "page", confidence: "medium" };
+  const observations = (input.observations ?? [{
+    title: input.title,
+    applicationName: input.applicationName,
+    siteName: input.siteName,
+  }]).slice(0, MAX_NAME_OBSERVATIONS);
+  const label = domainNameLabel(input.origin);
+
+  const declared: string[] = [];
+  const titles = new Set<string>();
+  for (const observation of observations) {
+    for (const raw of [observation.applicationName, observation.siteName]) {
+      const name = cleanPageName(raw);
+      if (name) declared.push(name);
+    }
+    const title = observation.title?.replace(/\s+/g, " ").trim();
+    if (title) titles.add(title);
   }
-  const titleName = cleanPageName(input.title, true);
-  if (titleName) return { name: titleName, source: "page", confidence: "medium" };
-  const id = deriveVendorId(input.origin);
+  // Distinct titles only: the same page probed twice corroborates nothing.
+  const fragmentsByPage = [...titles].map((title) => pageNameFragments(title));
+
+  for (const candidate of [...declared, ...fragmentsByPage.flat()]) {
+    const corroborated = matchDomainLabel(candidate, label.id);
+    if (corroborated) return { name: corroborated, source: "page", confidence: "medium" };
+  }
+
+  const stable = stableAcrossPages(fragmentsByPage);
+  if (stable) return { name: stable, source: "page", confidence: "medium" };
+
+  if (declared[0]) return { name: declared[0], source: "page", confidence: "medium" };
+  if (label.name) return { name: label.name, source: "domain", confidence: "low" };
+
+  const uncorroborated = fragmentsByPage.flat()[0];
+  return uncorroborated
+    ? { name: uncorroborated, source: "page", confidence: "low" }
+    : { name: "Discovered Supplier", source: "domain", confidence: "low" };
+}
+
+/** The registrable label, as both a comparison key and a display name. */
+function domainNameLabel(origin: string): { id: string; name: string } {
+  try {
+    new URL(origin);
+  } catch {
+    return { id: "", name: "" };
+  }
+  const id = deriveVendorId(origin);
   const name = id.replace(/(^|-)([a-z])/g, (_match, separator: string, letter: string) => `${separator ? " " : ""}${letter.toUpperCase()}`);
-  return { name: name || "Discovered Supplier", source: "domain", confidence: "low" };
+  return { id, name };
+}
+
+/**
+ * Match a page name against the domain label, tolerating the ways a brand gets
+ * spaced or punctuated: "My Vendor" corroborates `my-vendor.com`, "Clerk"
+ * corroborates `clerk.com`. What follows the label is kept — "Example Cloud" is
+ * the supplier's name, not "Example" — except for a trailing page word, which
+ * makes "Clerk Dashboard" resolve to "Clerk".
+ */
+function matchDomainLabel(candidate: string, labelId: string): string | undefined {
+  const target = normalizeNameWord(labelId);
+  if (!target) return undefined;
+  const words = candidate.split(/\s+/).filter(Boolean);
+  let joined = "";
+  for (let index = 0; index < words.length; index += 1) {
+    joined += normalizeNameWord(words[index]);
+    if (joined === target) {
+      let end = words.length;
+      while (end > index + 1 && GENERIC_NAME.test(words[end - 1])) end -= 1;
+      return words.slice(0, end).join(" ").slice(0, MAX_NAME_LENGTH);
+    }
+    if (!target.startsWith(joined)) return undefined;
+  }
+  return undefined;
+}
+
+/** The fragment repeated across the most distinct pages, shortest first — the
+ * part of a title that does not change is the part that names the supplier. */
+function stableAcrossPages(fragmentsByPage: readonly string[][]): string | undefined {
+  if (fragmentsByPage.length < 2) return undefined;
+  const counts = new Map<string, { name: string; pages: number }>();
+  for (const fragments of fragmentsByPage) {
+    for (const fragment of new Set(fragments)) {
+      const entry = counts.get(fragment.toLowerCase()) ?? { name: fragment, pages: 0 };
+      entry.pages += 1;
+      counts.set(fragment.toLowerCase(), entry);
+    }
+  }
+  return [...counts.values()]
+    .filter((entry) => entry.pages >= 2)
+    .sort((left, right) => right.pages - left.pages || left.name.length - right.name.length)[0]?.name;
+}
+
+function normalizeNameWord(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
 export function safeEntryUrl(value: string): string {
@@ -304,7 +443,7 @@ export function assertDiscoveredRecipePolicy(recipe: VendorRecipe, primaryOrigin
   if (new URL(recipe.homepage).origin !== primaryOrigin) throw new Error("recipe homepage must match the primary origin");
   if (recipe.fetchContext !== "page") throw new Error("discovered recipes must use the first-party page transport");
   if (recipe.icon) throw new Error("discovered recipes cannot provide remote or unreviewed logos");
-  if (recipe.auth.token) throw new Error("discovered recipes cannot persist token-exchange instructions");
+  assertSafeDiscoveredTokenExchange(recipe);
   if (recipe.hosts.length > MAX_HOSTS || new Set(recipe.hosts).size !== recipe.hosts.length) {
     throw new Error("discovered recipes have too many or duplicate origins");
   }
@@ -320,6 +459,7 @@ export function assertDiscoveredRecipePolicy(recipe: VendorRecipe, primaryOrigin
   if (!allowedOrigins.has(primaryOrigin)) throw new Error("primary origin is missing from recipe permissions");
 
   const requests: RequestSpec[] = [recipe.auth.check.request];
+  if (recipe.auth.token) requests.push(recipe.auth.token.request);
   for (const option of recipe.config ?? []) assertSafeDiscoveredScope(option, allowedOrigins);
   if (recipe.invoices.strategy === "network") requests.push(recipe.invoices.list.request);
   if (recipe.invoices.strategy === "html") requests.push(recipe.invoices.list.request);
@@ -357,11 +497,89 @@ export function assertDiscoveredRecipePolicy(recipe: VendorRecipe, primaryOrigin
   }
 }
 
+/**
+ * A discovered recipe may exchange the user's own session for the short-lived
+ * bearer that same site issues to itself — and nothing more.
+ *
+ * The credential is never stored: what persists is the *instruction* to fetch it
+ * from an endpoint that rides the cookie, and `resolveAuthToken` re-mints it at
+ * the start of every run and holds it in that run's variables. So the cookie
+ * remains the only thing that proves identity; the token is a derivative with
+ * the lifetime of one collection.
+ *
+ * The risk in automatic discovery was never the token's existence. It was that
+ * a page it observed could influence *which* endpoint mints one and *where* it
+ * is then sent. These rules remove that freedom:
+ *
+ *   - the minting request is a plain same-origin GET with no body and no
+ *     headers, so it can only ever be a read of the site's own session;
+ *   - every request that carries the token is on that same origin, so the token
+ *     can never be forwarded to a second host the evidence named;
+ *   - the token variable is `token`, referenced only from an `authorization`
+ *     header, so it cannot be smuggled into a URL, a query value, or a body
+ *     where it would be logged or persisted by something downstream.
+ *
+ * Admission is still not proof. `previewCandidate` has to mint the token and
+ * come back with real invoices before the candidate is retained at all.
+ */
+function assertSafeDiscoveredTokenExchange(recipe: VendorRecipe): void {
+  const token = recipe.auth.token;
+  if (!token) return;
+  const variable = token.as ?? "token";
+  if (variable !== "token") throw new Error("discovered token exchange must bind the reviewed token variable");
+
+  const method = token.request.method ?? "GET";
+  if (method !== "GET" || token.request.body || Object.keys(token.request.headers ?? {}).length) {
+    throw new Error("discovered token exchange must be a plain GET that rides the existing session");
+  }
+  const source = new URL(token.request.url.replace(TEMPLATE, "x"));
+  if (source.origin !== new URL(recipe.homepage).origin) {
+    throw new Error("discovered token exchange must read the supplier's own origin");
+  }
+  const path = typeof token.value === "string" ? token.value : token.value.path;
+  if (typeof token.value !== "string" && token.value.transforms?.length) {
+    throw new Error("discovered token exchange cannot transform the credential");
+  }
+  if (!/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(path) || path.length > 160) {
+    throw new Error("discovered token exchange must read a named response field");
+  }
+
+  const marker = `{${variable}}`;
+  for (const request of tokenBearingRequests(recipe)) {
+    const carries = Object.values(request.headers ?? {}).some((value) => value.includes(marker));
+    if (!carries) continue;
+    if (Object.entries(request.headers ?? {}).some(([name, value]) =>
+      value.includes(marker) && name.toLowerCase() !== "authorization")) {
+      throw new Error("a discovered token may only be sent as an authorization header");
+    }
+    if (new URL(request.url.replace(TEMPLATE, "x")).origin !== source.origin) {
+      throw new Error("a discovered token may only be sent to the origin that issued it");
+    }
+  }
+  if ([...tokenBearingRequests(recipe)].some((request) =>
+    request.url.includes(marker) || (request.body ?? "").includes(marker))) {
+    throw new Error("a discovered token may not be placed in a URL or request body");
+  }
+}
+
+function* tokenBearingRequests(recipe: VendorRecipe): Generator<RequestSpec> {
+  yield recipe.auth.check.request;
+  for (const option of recipe.config ?? []) yield option.discover.request;
+  if (recipe.invoices.strategy !== "dom") yield recipe.invoices.list.request;
+  if (recipe.invoices.document.request) yield recipe.invoices.document.request;
+}
+
 function assertSafeRequest(request: RequestSpec, allowedOrigins: Set<string>): void {
   const method = request.method ?? "GET";
   if (method === "GET") {
     if (request.body) throw new Error("discovered GET requests cannot persist request bodies");
-    if (request.headers && Object.keys(request.headers).length) throw new Error("discovered GET requests cannot persist request headers");
+    // The one header a GET may carry is the templated authorization the token
+    // exchange fills in at run time. It holds no value at rest, and
+    // `assertSafeDiscoveredTokenExchange` has already bound it to one origin.
+    const headers = Object.entries(request.headers ?? {});
+    if (headers.some(([name, value]) => name.toLowerCase() !== "authorization" || value !== "Bearer {token}")) {
+      throw new Error("discovered GET requests cannot persist request headers");
+    }
   } else if (!isSafeReadOnlyGraphqlRequest(request)) {
     throw new Error("discovered POST requests must be an explicit read-only GraphQL query");
   }
@@ -593,17 +811,27 @@ function isSafeGraphqlStringVariable(key: string, value: string): boolean {
     /^[a-z][a-z0-9_-]{0,31}$/i.test(value);
 }
 
-function cleanPageName(raw: string | undefined, preferLast = false): string | undefined {
-  if (!raw) return undefined;
-  const generic = /^(?:account|billing|billing portal|dashboard|home|invoice|invoices|payments?|receipts?|settings|subscription)$/i;
-  const pieces = raw
+/** Words that name a page rather than the party that issued the invoice. */
+const GENERIC_NAME = /^(?:account|billing|billing portal|dashboard|home|invoice|invoices|payments?|receipts?|settings|subscription)$/i;
+
+/**
+ * Split a title into the parts that could name a supplier. Titles are
+ * conventionally "<page> | <brand>", so every separated piece is a candidate
+ * and the caller decides which one the evidence supports.
+ */
+function pageNameFragments(raw: string): string[] {
+  return raw
     .replace(/\s+/g, " ")
     .split(/\s+[|·–—]\s+|\s+-\s+/)
     .map((piece) => piece.trim())
-    .filter((piece) => piece.length >= 2 && piece.length <= MAX_NAME_LENGTH && !generic.test(piece));
-  const usable = pieces.filter((piece) => !/sign in|log in|customer portal/i.test(piece));
-  const candidate = preferLast ? usable.at(-1) : usable[0];
-  return candidate?.slice(0, MAX_NAME_LENGTH);
+    .filter((piece) =>
+      piece.length >= 2 && piece.length <= MAX_NAME_LENGTH &&
+      !GENERIC_NAME.test(piece) && !/sign in|log in|customer portal/i.test(piece))
+    .map((piece) => piece.slice(0, MAX_NAME_LENGTH));
+}
+
+function cleanPageName(raw: string | undefined): string | undefined {
+  return raw ? pageNameFragments(raw)[0] : undefined;
 }
 
 function discoveredSupplierId(origin: string): string {

@@ -10,7 +10,7 @@ import {
 } from "../../../src/core/errors";
 import type { ExplorationFamily, ExplorationMode, ExplorationPageSource } from "./discovery-explorer";
 
-export const DISCOVERY_DIAGNOSTIC_SCHEMA = "ratatosk.discovery-diagnostic.v9" as const;
+export const DISCOVERY_DIAGNOSTIC_SCHEMA = "ratatosk.discovery-diagnostic.v10" as const;
 const LEGACY_DISCOVERY_DIAGNOSTIC_SCHEMAS = new Set([
   "ratatosk.discovery-diagnostic.v4",
   "ratatosk.discovery-diagnostic.v5",
@@ -433,7 +433,8 @@ function isSafeHostname(value: string): boolean {
 }
 
 function isPageSource(value: unknown): value is ExplorationPageSource {
-  return value === "entry" || value === "entry_replay" || value === "linked" || value === "common_route";
+  return value === "entry" || value === "entry_replay" || value === "linked" ||
+    value === "common_route" || value === "remembered";
 }
 
 function isTermination(value: unknown): value is DiscoveryTermination {
