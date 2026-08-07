@@ -95,13 +95,39 @@ describe("sync schedule", () => {
   });
 
   it("keeps the same wall-clock hour across a daylight-saving change", () => {
-    // Whatever this machine's zone does in March and October, the schedule is a
-    // local hour: it must not drift by the offset.
+    // Both windows straddle a European clock change. The offset assertion is
+    // what makes this test mean anything: in a zone without daylight saving it
+    // would otherwise pass while exercising nothing, which is exactly how it
+    // read on UTC runners before `TZ` was pinned in vitest.config.ts.
     for (const now of [at(2026, 3, 27, 12), at(2026, 10, 23, 12)]) {
+      const offsets = new Set<number>();
       for (let step = 0; step < 8; step += 1) {
-        const next = nextSyncTime({ mode: "daily" }, new Date(now.getTime() + step * 24 * 60 * 60_000))!;
+        const from = new Date(now.getTime() + step * 24 * 60 * 60_000);
+        offsets.add(from.getTimezoneOffset());
+        const next = nextSyncTime({ mode: "daily" }, from)!;
+        // The hour is local, so it must not drift with the offset.
         expect(parts(next).hour).toBe(SYNC_HOUR);
+        expect(next).toBeGreaterThan(from.getTime());
       }
+      expect(offsets.size).toBe(2);
+    }
+  });
+
+  it("does not skip or repeat a day when the clocks change", () => {
+    // A schedule that lands twice on the same date, or steps over one, is the
+    // classic daylight-saving bug: the interval between two runs is a day of
+    // wall-clock time, not a fixed 24 hours.
+    for (const start of [at(2026, 3, 27, 12), at(2026, 10, 23, 12)]) {
+      const seen: number[] = [];
+      let cursor = start;
+      for (let step = 0; step < 6; step += 1) {
+        const next = nextSyncTime({ mode: "daily" }, cursor)!;
+        seen.push(new Date(next).getDate());
+        cursor = new Date(next);
+      }
+      const gaps = seen.slice(1).map((day, index) => day - seen[index]);
+      // Consecutive calendar days, allowing the wrap at a month boundary.
+      expect(gaps.every((gap) => gap === 1 || gap < 0)).toBe(true);
     }
   });
 

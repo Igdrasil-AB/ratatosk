@@ -97,8 +97,13 @@ async function readSchedule(): Promise<SyncSchedule> {
  * Point the alarm at the next occurrence.
  *
  * Without `force`, an alarm already scheduled for a future instant is left
- * alone: a browser restart must not push the next run out, which is how a
- * periodic alarm recreated on every startup could starve indefinitely.
+ * alone: a browser restart must not push the next run out, which is how an
+ * alarm recreated on every startup could starve indefinitely.
+ *
+ * A *periodic* alarm is the exception. It is the interval schedule this
+ * replaced, and it is always in the future by construction — so the guard above
+ * would preserve the very thing the upgrade exists to remove, leaving someone
+ * syncing on their old cadence while the panel reported the new one.
  */
 async function armAlarm(schedule: SyncSchedule, options: { force?: boolean } = {}): Promise<void> {
   const existing = await chrome.alarms.get(SYNC_ALARM);
@@ -107,7 +112,8 @@ async function armAlarm(schedule: SyncSchedule, options: { force?: boolean } = {
     if (existing) await chrome.alarms.clear(SYNC_ALARM);
     return;
   }
-  if (!options.force && existing && existing.scheduledTime > Date.now()) return;
+  const stale = existing?.periodInMinutes !== undefined;
+  if (!options.force && !stale && existing && existing.scheduledTime > Date.now()) return;
   await chrome.alarms.clear(SYNC_ALARM);
   // A `when` in the past fires at once; the computed occurrence is always
   // ahead, and this keeps a clock change from producing an immediate wake.

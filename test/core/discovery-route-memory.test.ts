@@ -197,7 +197,10 @@ describe("discovery route memory", () => {
     expect(privacy).toMatch(/never uploaded or shared/i);
     expect(privacy).toMatch(/Settings → Remembered billing pages/);
     expect(popup).toContain('data-action="forget-routes"');
-    expect(popup).toContain("clearRememberedRoutes()");
+    // The panel asks the worker rather than importing the store, so validation
+    // lives in one place and the side panel does not bundle it.
+    expect(popup).toContain('send({ type: "clearRouteMemory" })');
+    expect(popup).not.toContain("discovery-route-memory");
   });
 
   it("is never cleared by disconnecting in the service worker", () => {

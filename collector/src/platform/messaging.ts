@@ -36,7 +36,9 @@ export type Message =
   | { type: "getVendorDiagnostic"; vendorId: string }
   | { type: "getLedger" }
   | { type: "getSchedule" }
-  | { type: "setSchedule"; schedule: SyncSchedule };
+  | { type: "setSchedule"; schedule: SyncSchedule }
+  | { type: "getRouteMemory" }
+  | { type: "clearRouteMemory" };
 
 export interface ScheduleInfo {
   schedule: SyncSchedule;
@@ -67,6 +69,7 @@ export type Response =
   | { ok: true; config: SinkConfig | null }
   | { ok: true; ledger: LedgerEntry[] }
   | { ok: true; schedule: ScheduleInfo }
+  | { ok: true; rememberedRoutes: number }
   | { ok: true; connectUrl: string }
   | { ok: true; discovery: DiscoveryStatusView }
   | { ok: true; discoveryDiagnostic: DiscoveryDiagnosticV1 }

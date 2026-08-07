@@ -50,8 +50,21 @@ describe("stopping a probe wave early", () => {
     // The break belongs inside the per-probe loop; at the end of the wave it
     // would save nothing, which is the bug this replaced.
     const wave = source.slice(source.indexOf("for await (const probe of probes)"), source.indexOf("await checkpoint();"));
-    expect(wave).toContain("if (structuredProofRetained(retained)) {");
+    expect(wave).toContain("if (structuredProofRetained(retained) && entryObserved) {");
     expect(wave).toContain("break;");
+  });
+
+  it("never skips the entry page, whose title names the supplier", () => {
+    // An abandoned probe's page title is abandoned with it, and naming reads
+    // every page seen. The entry page is the one most likely to carry the brand
+    // and the cheapest to wait for, so it is never what a shortcut skips.
+    const source = readFileSync("collector/src/platform/discovery.ts", "utf8");
+    const wave = source.slice(source.indexOf("for await (const probe of probes)"), source.indexOf("await checkpoint();"));
+
+    expect(wave).toContain("if (structuredProofRetained(retained) && entryObserved) {");
+    // Marked on settle, not on success: a failed entry probe has no title left
+    // to contribute either, and waiting past it would stall the shortcut.
+    expect(wave).toMatch(/if \(target\.source === "entry"\) entryObserved = true;[\s\S]{0,120}if \(probe\.status !== "fulfilled"\)/);
   });
 
   it("still counts the wave it left early", () => {

@@ -59,6 +59,33 @@ describe("collector schedule persistence", () => {
     expect(values.schedulePeriodMinutes).toBeUndefined();
   });
 
+  it("replaces the periodic alarm an upgrading browser is still holding", async () => {
+    // The real upgrade state, which migrating storage alone does not fix: the
+    // old periodic alarm is live and, being periodic, is always in the future —
+    // so a guard that spares future alarms would spare this one forever.
+    values.schedulePeriodMinutes = 360;
+    alarm = { name: "collector-sync", periodInMinutes: 360, scheduledTime: Date.now() + 3 * 3_600_000 };
+
+    await ensureSyncAlarm();
+
+    expect(create).toHaveBeenCalledOnce();
+    expect(alarm!.periodInMinutes).toBeUndefined();
+    // The panel must not report the old cadence's next run beside the new one.
+    await expect(getScheduleInfo()).resolves.toMatchObject({ schedule: { mode: "daily" } });
+    expect((await getScheduleInfo()).nextRunAt).toBe(alarm!.scheduledTime);
+  });
+
+  it("replaces a periodic alarm even when the schedule itself is unchanged", async () => {
+    // Someone already migrated, but a periodic alarm survived from an earlier
+    // session. Storage looks settled, so only the alarm's shape reveals it.
+    values.syncScheduleV1 = { mode: "weekly", weekday: 1 };
+    alarm = { name: "collector-sync", periodInMinutes: 720, scheduledTime: Date.now() + 6 * 3_600_000 };
+
+    await ensureSyncAlarm();
+
+    expect(alarm!.periodInMinutes).toBeUndefined();
+  });
+
   it("keeps auto-sync off for someone who had turned the interval off", async () => {
     values.schedulePeriodMinutes = 0;
 

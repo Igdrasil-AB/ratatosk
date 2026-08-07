@@ -1,5 +1,6 @@
 import type { FetchedDocument } from "../../../src/core/types";
 import type { IngestResult, IngestSink } from "../../../src/ingest/sink";
+import { folderSegments, pathSegment, rememberDownloadRoot, stripControl } from "./download-path";
 
 /**
  * Saves each invoice to disk as `Downloads/<root>/<supplier>/<date>/<file>`,
@@ -66,59 +67,14 @@ export function buildInvoicePath(
   const filename = isDeliveryIdentity(doc.idempotencyKey)
     ? fileNameWithIdentity(doc.filename, doc.idempotencyKey)
     : fileName(doc.filename);
+  // The one place a path must exist even when the configuration named nothing.
+  const root = folderSegments(cfg.rootFolder);
   return [
-    ...folderSegments(cfg.rootFolder),
-    segment(doc.vendorName || doc.vendorId),
-    segment(dateFolder),
+    ...(root.length ? root : ["InvoiceCollector"]),
+    pathSegment(doc.vendorName || doc.vendorId) || "unknown",
+    pathSegment(dateFolder) || "unknown",
     filename,
   ].join("/");
-}
-
-/** Folders a save path may nest before the per-supplier folders are added. */
-export const MAX_ROOT_FOLDER_DEPTH = 6;
-
-/**
- * Split the configured root into folders.
- *
- * A single name forced every invoice into one folder directly under Downloads.
- * Accepting `Accounting/2026/Invoices` lets the tree live where the rest of a
- * person's filing already is. Each part is sanitized on its own, and `.`/`..`
- * are dropped rather than rejected so a stray separator cannot walk upward —
- * `chrome.downloads` refuses such paths outright, which would fail the save.
- */
-export function folderSegments(rootFolder: string): string[] {
-  const parts = rootFolder
-    .split(/[/\\]+/)
-    .map((part) => part.trim())
-    // Dropped before sanitizing, so a navigation segment cannot survive as a
-    // folder literally named after it.
-    .filter((part) => part.length > 0 && !/^\.+$/.test(part))
-    .map((part) => segment(part))
-    .slice(0, MAX_ROOT_FOLDER_DEPTH);
-  return parts.length ? parts : ["InvoiceCollector"];
-}
-
-/** The configured root as one display string: `Accounting/2026/Invoices`. */
-export function folderPath(rootFolder: string): string {
-  return folderSegments(rootFolder).join("/");
-}
-
-/** Drop control characters (code point < 0x20) without a fragile control-char regex. */
-function stripControl(s: string): string {
-  let out = "";
-  for (const ch of s) {
-    if ((ch.codePointAt(0) ?? 0) >= 0x20) out += ch;
-  }
-  return out;
-}
-
-/** Sanitize a single path segment (folder name). */
-function segment(s: string): string {
-  const cleaned = stripControl(s.replace(/[/\\:*?"<>|]/g, "-"))
-    .replace(/\s+/g, " ")
-    .replace(/^\.+/, "")
-    .trim();
-  return cleaned || "unknown";
 }
 
 /** Sanitize a filename (keeps the extension dot). */
@@ -251,49 +207,27 @@ function download(
     });
   }).then(async (id) => {
     await waitForCompletedDownload(id);
-    await rememberDownloadRoot(id, filename);
+    await recordDownloadRoot(id, filename);
   });
 }
 
-const DOWNLOAD_ROOT_KEY = "filesystemDownloadRootV1";
-
 /**
- * Record the directory Chrome resolved the relative save path against.
+ * Look up where a completed download actually landed and hand it to
+ * `download-path` to learn the root.
  *
- * Extensions cannot ask Chrome where downloads go, and `chrome.downloads` only
- * accepts paths relative to that directory. But a completed download reports
- * its absolute location, and the relative path that produced it is known — so
- * the difference between them is the root. Learning it lets the panel name the
- * destination in full rather than calling it "Downloads".
+ * Knowing the absolute path is a presentation nicety; a save that already
+ * succeeded must never be reported as failed because this lookup did.
  */
-async function rememberDownloadRoot(downloadId: number, relativePath: string): Promise<void> {
+async function recordDownloadRoot(downloadId: number, relativePath: string): Promise<void> {
   try {
     const absolute = await new Promise<string | undefined>((resolve) => {
       chrome.downloads.search({ id: downloadId }, (items) => {
         resolve(chrome.runtime.lastError ? undefined : items[0]?.filename);
       });
     });
-    if (!absolute) return;
-    // Windows reports backslashes; separators map one-to-one, so comparing
-    // normalized copies keeps the offset valid in the original string.
-    const normalize = (value: string) => value.replace(/\\/g, "/");
-    const suffix = `/${normalize(relativePath)}`;
-    if (!normalize(absolute).endsWith(suffix)) return;
-    const root = absolute.slice(0, absolute.length - suffix.length);
-    if (root) await chrome.storage.local.set({ [DOWNLOAD_ROOT_KEY]: root });
+    if (absolute) await rememberDownloadRoot(absolute, relativePath);
   } catch {
-    // Knowing the absolute path is a presentation nicety; a save that already
-    // succeeded must not be reported as failed because this lookup did.
-  }
-}
-
-/** The absolute directory saves land in, once a save has revealed it. */
-export async function getDownloadRoot(): Promise<string | undefined> {
-  try {
-    const value = (await chrome.storage.local.get(DOWNLOAD_ROOT_KEY))[DOWNLOAD_ROOT_KEY];
-    return typeof value === "string" && value.length > 0 && value.length <= 4_096 ? value : undefined;
-  } catch {
-    return undefined;
+    // Deliberately silent, per the note above.
   }
 }
 

@@ -248,6 +248,8 @@ export async function discoverSupplierInTab(
   diagnostic.coverage!.slicesCompleted = resumed?.slicesCompleted ?? 0;
   let display: ReturnType<typeof deriveSupplierDisplayName> | undefined;
   const nameObservations: SupplierNameObservation[] = [];
+  /** Whether the entry probe has settled, so its title can no longer be lost. */
+  let entryObserved = false;
   let entryExplored = false;
   let exploredWaves = 0;
   const retained: Array<{ profile: DiscoveredSupplierProfileV1; score: number }> = [];
@@ -335,6 +337,9 @@ export async function discoverSupplierInTab(
 
       for await (const probe of probes) {
         const { target, page, pageStartedAt } = scheduled[probe.index];
+        // Settled either way: whatever this probe was going to contribute to
+        // the supplier's name, it has contributed.
+        if (target.source === "entry") entryObserved = true;
         if (probe.status !== "fulfilled") {
           recordAttempt(diagnostic, page, target.source, undefined, "probe_failed", Date.now() - pageStartedAt, {
             route: target.url,
@@ -475,7 +480,12 @@ export async function discoverSupplierInTab(
         // so its siblings are already destined to be discarded — whereas a DOM
         // candidate can be beaten by a JSON one from the very probe that would
         // be abandoned, and those waves are still played out in full.
-        if (structuredProofRetained(retained)) {
+        //
+        // An abandoned probe's page title is abandoned with it, and naming reads
+        // every page seen. The entry page is the one whose title matters most
+        // and the cheapest to wait for — it is the tab already in front of the
+        // person — so it is never the page a shortcut skips.
+        if (structuredProofRetained(retained) && entryObserved) {
           console.info(`[collector] discovery stopped wave ${exploredWaves + 1} early on structured evidence`);
           break;
         }

@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { buildInvoicePath, folderPath, folderSegments, MAX_ROOT_FOLDER_DEPTH } from "../../collector/src/platform/filesystem-sink";
+import { describe, expect, it, vi } from "vitest";
+import { buildInvoicePath } from "../../collector/src/platform/filesystem-sink";
+import { folderPath, folderSegments, MAX_ROOT_FOLDER_DEPTH } from "../../collector/src/platform/download-path";
 
 /**
  * The destination folder is the one path component a person writes by hand, so
@@ -23,7 +24,9 @@ describe("configured save folder", () => {
     expect(folderSegments("../../etc")).toEqual(["etc"]);
     expect(folderSegments("Accounting/../../..")).toEqual(["Accounting"]);
     expect(folderSegments("./Accounting/.")).toEqual(["Accounting"]);
-    expect(folderPath("..")).toBe("InvoiceCollector");
+    // Empty, not a substitute name: the caller that must produce a path applies
+    // its own fallback, and the one validating what a person typed can refuse.
+    expect(folderPath("..")).toBe("");
   });
 
   it("never yields a segment chrome.downloads would resolve", () => {
@@ -43,6 +46,49 @@ describe("configured save folder", () => {
 
   it("keeps a folder whose name resembles the fallback", () => {
     expect(folderSegments("unknown")).toEqual(["unknown"]);
+  });
+
+  it("reports nothing usable rather than inventing a folder", () => {
+    for (const input of ["..", ".", "/", "   ", "///", "./.."]) {
+      expect(folderSegments(input)).toEqual([]);
+      expect(folderPath(input)).toBe("");
+    }
+  });
+
+  it("is refused at the point a person chose it, not silently renamed", async () => {
+    // Saving is the wrong place to discover that `..` became `InvoiceCollector`:
+    // the invoices would be in a folder nobody named and nothing would say so.
+    const values: Record<string, unknown> = {};
+    vi.stubGlobal("chrome", {
+      storage: { local: {
+        get: vi.fn(async (key: string) => ({ [key]: values[key] })),
+        set: vi.fn(async (next: Record<string, unknown>) => { Object.assign(values, next); }),
+      } },
+    });
+    const { setSinkConfig } = await import("../../collector/src/platform/storage");
+
+    // Validation runs before the write is even started, so this throws rather
+    // than rejecting — nothing reaches storage to be rolled back.
+    for (const rootFolder of ["..", ".", "/", "///"]) {
+      expect(() => setSinkConfig({ kind: "filesystem", rootFolder, dateMode: "extraction" }))
+        .toThrow("invalid download folder");
+    }
+    expect(values.config).toBeUndefined();
+    await setSinkConfig({ kind: "filesystem", rootFolder: "Accounting/2026", dateMode: "extraction" });
+    expect(values.config).toMatchObject({ rootFolder: "Accounting/2026" });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("still writes somewhere when the configuration named nothing", () => {
+    // The save path is the one place a fallback belongs; a delivery cannot be
+    // abandoned because stored configuration turned out to be unusable.
+    const path = buildInvoicePath(
+      { rootFolder: "..", dateMode: "extraction", extractionDate: "2026-08-07" },
+      { vendorId: "acme", vendorName: "Acme", issuedAt: "2026-07-01", filename: "invoice.pdf" },
+    );
+
+    expect(path).toBe("InvoiceCollector/Acme/2026-08-07/invoice.pdf");
   });
 
   it("builds the full invoice path beneath every configured folder", () => {

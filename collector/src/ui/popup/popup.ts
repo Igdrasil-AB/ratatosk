@@ -28,8 +28,7 @@ import {
   type ActiveSupplierTab,
 } from "./active-supplier-tab";
 import { parseConfigResponse, parseInitialBackgroundState, PopupLoadError } from "./load-state";
-import { folderPath, getDownloadRoot } from "../../platform/filesystem-sink";
-import { clearRememberedRoutes, listRememberedRoutes } from "../../platform/discovery-route-memory";
+import { folderPath, getDownloadRoot } from "../../platform/download-path";
 import {
   buildCollectionIssueReport,
   buildDiscoveryIssueReport,
@@ -253,7 +252,7 @@ async function restorePanelUiState(): Promise<void> {
 
 async function load(): Promise<void> {
   try {
-    const [sourceResponse, ledgerResponse, config, scheduleResponse, discoveryResponse, activeSupplierTab, tabAwarenessEnabled, ui] = await Promise.all([
+    const [sourceResponse, ledgerResponse, config, scheduleResponse, discoveryResponse, activeSupplierTab, tabAwarenessEnabled, ui, , routeResponse] = await Promise.all([
       send({ type: "listSources" }),
       send({ type: "getLedger" }),
       getConfig(),
@@ -263,7 +262,7 @@ async function load(): Promise<void> {
       hasTabAwarenessPermission(),
       chrome.storage.local.get(VENDOR_GUIDANCE_SEEN),
       getDownloadRoot().then((root) => { state.downloadRoot = root ?? null; }),
-      listRememberedRoutes().then((routes) => { state.rememberedRouteCount = Object.keys(routes).length; }),
+      send({ type: "getRouteMemory" }),
     ]);
     const background = parseInitialBackgroundState({
       sourceResponse,
@@ -278,6 +277,10 @@ async function load(): Promise<void> {
     state.discovery = background.discovery;
     state.activeSupplierTab = activeSupplierTab;
     state.tabAwarenessEnabled = tabAwarenessEnabled;
+    // A settings counter, so a stale one is not worth failing the whole load for.
+    state.rememberedRouteCount = routeResponse.ok && "rememberedRoutes" in routeResponse
+      ? routeResponse.rememberedRoutes
+      : 0;
     if (state.discovery.stage !== "idle" && screen !== "vendors") {
       screen = "vendors";
       persistPanelUiState();
@@ -1159,7 +1162,11 @@ function scheduleForMode(mode: string): SyncSchedule {
 }
 
 async function forgetRememberedRoutes(): Promise<void> {
-  await clearRememberedRoutes();
+  const response = await send({ type: "clearRouteMemory" });
+  if (!response.ok) {
+    settingsError(response.error);
+    return;
+  }
   state.rememberedRouteCount = 0;
   toast("Remembered Pages Cleared");
   renderSettings();
@@ -1309,6 +1316,10 @@ function destinationLabel(): string {
  */
 function savePath(rootFolder: string): string {
   const folders = folderPath(rootFolder);
+  // Nothing survived sanitizing — `..`, a lone dot, only separators. Saving
+  // will refuse it, so the preview says so instead of showing a bare root that
+  // looks like it would work.
+  if (!folders) return "Enter a folder name";
   return state.downloadRoot ? `${state.downloadRoot}/${folders}` : `Downloads/${folders}`;
 }
 

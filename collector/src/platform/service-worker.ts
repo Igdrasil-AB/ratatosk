@@ -26,7 +26,7 @@ import {
 import { clearHostToken, getHostToken, initializeHostTokenStorage, setHostToken } from "./auth";
 import { clearFilesystemDeliveryJournalForSource } from "./filesystem-sink";
 import { clearPendingConnect, getPendingConnect, setPendingConnect } from "./pending-connect";
-import { recordRouteMiss, rememberSupplierRoute } from "./discovery-route-memory";
+import { clearRememberedRoutes, listRememberedRoutes, recordRouteMiss, rememberSupplierRoute } from "./discovery-route-memory";
 import { configureSidePanelAction } from "./side-panel";
 import {
   consumeIgdrasilConnectIntent,
@@ -367,6 +367,13 @@ async function handle(message: Message): Promise<Response> {
 
     case "getDiscoveryStatus":
       return { ok: true, discovery: await getSupplierDiscoveryStatus() };
+
+    case "getRouteMemory":
+      return { ok: true, rememberedRoutes: Object.keys(await listRememberedRoutes()).length };
+
+    case "clearRouteMemory":
+      await clearRememberedRoutes();
+      return { ok: true, rememberedRoutes: 0 };
 
     case "getDiscoveryDiagnostic": {
       const diagnostic = await getSupplierDiscoveryDiagnostic();

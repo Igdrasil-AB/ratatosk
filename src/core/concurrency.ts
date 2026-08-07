@@ -146,6 +146,11 @@ export async function mapConcurrentOrdered<Input, Output>(
  *
  * Concurrency is bounded like the ordered variant, so a caller passing more
  * items than `limit` still yields in settle order among the running subset.
+ *
+ * Each step races the whole pending set, which attaches `limit` continuations
+ * per yield — fine at the handful of concurrent probes this exists for, and
+ * quadratic in `limit` if that ever grows. Anything wide enough for that to
+ * matter wants a completion queue instead.
  */
 export async function* mapConcurrentInSettleOrder<Input, Output>(
   items: readonly Input[],
