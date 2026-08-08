@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthExpired, DocumentPermissionRequired, RateLimited, UnexpectedResponse } from "../../src/core/errors";
 import type { IngestResult } from "../../src/ingest/sink";
+import { IngestUnauthorized } from "../../src/ingest/http-sink";
 
 const mocks = vi.hoisted(() => ({
   streamVendor: vi.fn(),
@@ -458,6 +459,60 @@ describe("Collector per-vendor run coordinator", () => {
     expect(mocks.recordRun).toHaveBeenCalledWith("vendor-stripe", expect.objectContaining({
       documentOrigins: ["https://stripe-upload-api.s3.eu-north-1.amazonaws.com/*"],
     }));
+  });
+
+  it("row 7: pauses a supplier a company disconnect left unbound, instead of redirecting it", async () => {
+    mocks.getConnections.mockResolvedValue({
+      "vendor-unbound": { vendorId: "vendor-unbound", connectedAt: 1 },
+    });
+
+    await expect(runVendorById("vendor-unbound")).resolves.toMatchObject({
+      status: "error",
+      code: "destination_unbound",
+    });
+    // Nothing was requested from the supplier and nothing was delivered
+    // anywhere: local Downloads is not a fallback for a missing destination.
+    expect(mocks.streamVendor).not.toHaveBeenCalled();
+    expect(mocks.buildSink).not.toHaveBeenCalled();
+  });
+
+  it("row 7: refuses a destination that needs reconnecting rather than falling back", async () => {
+    mocks.getDestination.mockResolvedValue({
+      kind: "unavailable",
+      reason: "connection_expired",
+      companyId: "company-a",
+    });
+
+    await expect(runVendorById("vendor-expired")).resolves.toMatchObject({
+      status: "error",
+      code: "destination_connection_expired",
+    });
+    expect(mocks.buildSink).not.toHaveBeenCalled();
+  });
+
+  it("retires one company and offers reconnection when its credential is refused", async () => {
+    mocks.getDestination.mockResolvedValue({
+      kind: "igdrasil",
+      endpoint: "https://accounting.igdrasil.se",
+      companyId: "company-a",
+      companyName: "Company A",
+      connectedAt: 0,
+    });
+    mocks.streamVendor.mockImplementationOnce(async (_recipe, _ctx, _strategies, emit) => {
+      await emit(document("vendor-revoked"));
+      return { vendorId: "vendor-revoked", documentCount: 1, scopes: scopes() };
+    });
+    sinkSend.mockRejectedValueOnce(new IngestUnauthorized(401));
+
+    await expect(runVendorById("vendor-revoked")).resolves.toMatchObject({
+      status: "error",
+      code: "destination_connection_expired",
+    });
+
+    // The whole company is retired once, not each supplier bound to it, and the
+    // user gets a route back rather than a generic delivery failure.
+    expect(mocks.markDestinationUnavailable).toHaveBeenCalledWith("local", "connection_expired");
+    expect(mocks.notifyDestinationReconnect).toHaveBeenCalledWith("Company A");
   });
 
   it("skips a premature retry without touching the supplier", async () => {

@@ -4,6 +4,7 @@ import {
   type ConnectBridgeRuntime,
   type ConnectBridgeWindow,
 } from "../../collector/src/platform/connect-bridge";
+import { IGDRASIL_CONNECT_MESSAGE_TYPES } from "../../src/ingest/igdrasil-protocol";
 
 const ORIGIN = "https://accounting.igdrasil.se";
 
@@ -25,7 +26,7 @@ describe("Igdrasil connect bridge", () => {
     runtime = { getManifest: () => ({ version: "0.8.30" }), sendMessage };
     installConnectBridge(bridgeWindow, runtime);
     expect(posts).toEqual([{
-      message: { __ic: "invoice-collector", kind: "present", version: "0.8.30" },
+      message: { __ic: "invoice-collector", kind: "present", version: "0.8.30", protocol: 2 },
       origin: ORIGIN,
     }]);
   });
@@ -49,8 +50,8 @@ describe("Igdrasil connect bridge", () => {
 
     expect(sendMessage).not.toHaveBeenCalled();
     expect(posts.slice(1).map(({ message }) => message)).toEqual([
-      { __ic: "invoice-collector", kind: "response", requestId: "ping", result: { ok: true, present: true, version: "0.8.30" } },
-      { __ic: "invoice-collector", kind: "response", requestId: "bad", result: { ok: false, error: "unsupported request" } },
+      { __ic: "invoice-collector", kind: "response", requestId: "ping", result: { ok: true, present: true, version: "0.8.30", protocol: 2 } },
+      { __ic: "invoice-collector", kind: "response", requestId: "bad", result: { ok: false, protocol: 2, code: "invalid_request" } },
     ]);
   });
 
@@ -71,7 +72,18 @@ describe("Igdrasil connect bridge", () => {
     },
   );
 
-  it("returns the runtime error to the originating request", () => {
+  it("relays every protocol v2 message type and no others", () => {
+    for (const type of IGDRASIL_CONNECT_MESSAGE_TYPES) {
+      sendMessage.mockClear();
+      listener(requestEvent({ source: bridgeWindow, origin: ORIGIN, data: payload(`t-${type}`, type) }));
+      // `ping` is answered by the bridge; everything else in the union reaches
+      // the worker, so a new message type cannot be silently unroutable.
+      expect(sendMessage).toHaveBeenCalledTimes(type === "igdrasil:ping" ? 0 : 1);
+    }
+    },
+  );
+
+  it("does not leak a runtime error message into the page", () => {
     runtime = {
       getManifest: () => ({ version: "0.8.30" }),
       get lastError() { return { message: "worker unavailable" }; },
@@ -86,7 +98,9 @@ describe("Igdrasil connect bridge", () => {
       __ic: "invoice-collector",
       kind: "response",
       requestId: "failed",
-      result: { ok: false, error: "worker unavailable" },
+      // The worker being unreachable is reported as a typed refusal, never as
+      // an internal string the page gets to read.
+      result: { ok: false, protocol: 2, code: "invalid_request" },
     });
   });
 });

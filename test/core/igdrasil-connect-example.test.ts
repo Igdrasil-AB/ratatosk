@@ -12,27 +12,53 @@ describe("Igdrasil connect example", () => {
     expect(source).toMatch(/Could not check the Invoice Collector extension/);
     expect(source).toMatch(/Could not complete the secure Collector connection/);
     expect(source).toMatch(/Could not disconnect Invoice Collector/);
-    expect(source.match(/catch \{/g)).toHaveLength(3);
+    // Three flows can reject — the presence check, connect, and disconnect —
+    // and each has to land somewhere the user can retry from.
+    expect(source.match(/catch \{|\.catch\(/g)).toHaveLength(3);
+  });
+
+  it("translates every refusal code, so no failure lands as a bare code", () => {
+    const source = readFileSync("examples/ConnectInvoiceCollector.tsx", "utf8");
+    for (const code of [
+      "intent_missing", "intent_expired", "origin_not_allowed", "token_invalid",
+      "backend_not_allowed", "company_already_connected", "unknown_company",
+      "invalid_request", "revoke_failed", "extension_unavailable",
+    ]) {
+      expect(source).toContain(`${code}:`);
+    }
+  });
+
+  it("renders every connected company rather than whichever one is selected", () => {
+    const source = readFileSync("examples/ConnectInvoiceCollector.tsx", "utf8");
+    // The defect being fixed: the settings view read the extension's connected
+    // company and then printed the ACTIVE company's name.
+    expect(source).toContain("companies.map");
+    expect(source).toContain("connected.companyName");
+    expect(source).toContain("connected.supplierCount");
+    // A company connected in this browser the signed-in user cannot reach.
+    expect(source).toContain("accessibleCompanyIds.includes");
+    // And the 60-day inactivity warning.
+    expect(source).toContain("isCollectorConnectionStale");
   });
 
   it("keeps a retryable connected state when disconnect is refused or times out", () => {
-    expect(disconnectInvoiceCollectorOutcome({ ok: false, error: "extension not responding" })).toEqual({
+    expect(disconnectInvoiceCollectorOutcome({ ok: false, code: "extension_unavailable" })).toEqual({
       state: "connected",
-      error: "extension not responding",
+      code: "extension_unavailable",
     });
     expect(disconnectInvoiceCollectorOutcome({ ok: true })).toEqual({
       state: "disconnected",
-      error: null,
+      code: null,
     });
   });
 
   it("does not mint a Collector credential when extension intent validation fails", async () => {
     const mint = vi.fn(async () => "collector-token");
-    const validate = vi.fn(async () => ({ ok: false as const, error: "connection request expired" }));
+    const validate = vi.fn(async () => ({ ok: false as const, code: "intent_expired" as const }));
 
     await expect(withValidatedInvoiceCollectorIntent("state", mint, validate)).resolves.toEqual({
       ok: false,
-      error: "connection request expired",
+      code: "intent_expired",
     });
     expect(validate).toHaveBeenCalledWith("state");
     expect(mint).not.toHaveBeenCalled();
