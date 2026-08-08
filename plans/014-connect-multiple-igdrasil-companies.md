@@ -466,6 +466,47 @@ first. Against an installed pre-v2 extension:
 Option 1 was deliberately **not** implemented here: the plan says to stop and
 report rather than weaken the invariant, and choosing is a product decision.
 
+## Review round 2 (2026-08-08) — a regression this work introduced
+
+A code review of both PRs found twelve issues; all were real and all are fixed.
+Two were severe and both came from the same mistake, so it is worth naming:
+
+**`igdrasil:connect` was written as a refusal when the server it pairs with is
+an upsert.** `POST …/invoice-collector/token` is
+`ON CONFLICT (company_id) DO UPDATE SET token_hash = …`, so by the time the
+extension sees `igdrasil:connect` the server has ALREADY rotated that company's
+credential. Refusing with `company_already_connected` left the extension holding
+a token the server no longer accepts: every subsequent ingest for that company
+would 401, and the destination would be retired. Worse, the same guard read
+`unavailable` destinations too, so a connection retired that way could never be
+repaired — the notification said "Reconnect it" and the only path was refused.
+
+Connect is now an upsert on both sides, which is the only shape that agrees with
+the mint, and is also the way back from a revoked credential.
+`company_already_connected` is gone from the protocol entirely; there is nothing
+left for it to describe.
+
+Also corrected:
+
+- The inactivity warning read the credential's expiry, which the extension
+  learns once at connect and the server slides silently — so a company
+  collecting daily would have been told it had been idle for 60 days.
+  `igdrasil:status` now carries `lastCollectedAt`, measured from what was
+  actually delivered.
+- The migration replaced the whole token map instead of merging, so a re-run
+  after an interrupted worker would strand a later-connected company's
+  destination with no credential.
+- A pre-v2 extension is now detected and the user is told to update, instead of
+  being shown an empty company list with a Connect button — which was one click
+  from re-minting and rotating the live production credential (see the STOP
+  condition above).
+- The connect route pings (with its retry) before asking for status, keeps its
+  selection inside what it actually offers, and translates thrown mint errors.
+- A transport failure is `extension_unavailable`, not `invalid_request`; the
+  popup renders refusal labels rather than raw codes; the settings view keeps
+  its last known list when a refresh fails rather than reporting nothing
+  connected.
+
 ## Implementation record (2026-08-08)
 
 Ratatosk `feat/multi-company-destinations`; Igdrasil `feat/collector-ingest-surface`.

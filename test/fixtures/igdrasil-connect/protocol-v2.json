@@ -11,10 +11,10 @@
     "origin_not_allowed",
     "token_invalid",
     "backend_not_allowed",
-    "company_already_connected",
     "unknown_company",
     "invalid_request",
-    "revoke_failed"
+    "revoke_failed",
+    "extension_unavailable"
   ],
   "messages": {
     "igdrasil:ping": {
@@ -37,14 +37,14 @@
       "request": ["token", "companyId", "companyName", "apiBaseUrl", "state", "expiresAt"],
       "optionalRequest": ["expiresAt"],
       "response": ["ok", "protocol"],
-      "semantics": "adds a company to the destination set; it never replaces an existing destination"
+      "semantics": "upsert: adds a company, or re-establishes one already held. It MUST be an upsert because the token endpoint is one — minting rotates the company's credential server-side, so refusing here would strand the extension holding a token the server no longer accepts. It is also the only way back from a revoked or expired connection. Supplier bindings are keyed by destination id and are untouched."
     },
     "igdrasil:status": {
       "relayedToWorker": true,
       "request": [],
       "response": ["ok", "protocol", "companies"],
-      "companyFields": ["companyId", "companyName", "supplierCount", "expiresAt"],
-      "optionalCompanyFields": ["expiresAt"]
+      "companyFields": ["companyId", "companyName", "supplierCount", "expiresAt", "lastCollectedAt", "needsReconnect"],
+      "optionalCompanyFields": ["expiresAt", "lastCollectedAt", "needsReconnect"]
     },
     "igdrasil:disconnect": {
       "relayedToWorker": true,
@@ -67,8 +67,9 @@
       "payload": { "type": "igdrasil:disconnect", "companyId": "22222222-2222-4222-8222-222222222222" },
       "result": { "ok": false, "code": "unknown_company", "protocol": 2 }
     },
-    "duplicateCompanyConnect": {
-      "result": { "ok": false, "code": "company_already_connected", "protocol": 2 }
+    "workerUnreachable": {
+      "$comment": "The bridge could not reach the service worker. A transport failure is not a refusal the page earned by sending something wrong.",
+      "result": { "ok": false, "code": "extension_unavailable", "protocol": 2 }
     }
   }
 }

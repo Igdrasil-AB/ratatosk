@@ -19,6 +19,7 @@ import {
   disconnectInvoiceCollectorOutcome,
   getInvoiceCollectorStatus,
   isCollectorConnectionStale,
+  isCollectorProtocolSupported,
   pingInvoiceCollector,
   prepareInvoiceCollectorConnect,
   withValidatedInvoiceCollectorIntent,
@@ -34,7 +35,7 @@ declare function useIgdrasilGetToken(): () => Promise<string>;
 declare function useSelectedCompany(): { id: string; name: string };
 declare function useAccessibleCompanyIds(): readonly string[];
 
-type State = "checking" | "not-installed" | "ready" | "working";
+type State = "checking" | "not-installed" | "needs-update" | "ready" | "working";
 
 /** Every refusal the bridge can produce, mapped to app copy the user can act on. */
 const COPY: Record<InvoiceCollectorErrorCode, string> = {
@@ -43,7 +44,6 @@ const COPY: Record<InvoiceCollectorErrorCode, string> = {
   origin_not_allowed: "Connect from the Igdrasil web app itself.",
   token_invalid: "Igdrasil issued a credential the extension refused. Try again.",
   backend_not_allowed: "The extension will only send invoices to accounting.igdrasil.se.",
-  company_already_connected: "That company is already connected. Disconnect it first to reconnect.",
   unknown_company: "The extension is not connected to that company.",
   invalid_request: "The extension refused this request. Reload and try again.",
   revoke_failed: "The connection could not be revoked. It is still connected — try again.",
@@ -60,13 +60,22 @@ export function ConnectInvoiceCollector() {
 
   const refresh = useCallback(async () => {
     setState("checking");
-    const { present } = await pingInvoiceCollector();
+    const { present, protocol } = await pingInvoiceCollector();
     if (!present) {
       setState("not-installed");
       return;
     }
+    // A pre-v2 extension answers status with `{ connected, companyId }` and no
+    // company list, which would read as "nothing is connected" — and clicking
+    // Connect would re-mint, rotating a credential that was working.
+    if (!isCollectorProtocolSupported(protocol)) {
+      setState("needs-update");
+      return;
+    }
     const status = await getInvoiceCollectorStatus();
-    setCompanies(status.ok ? status.companies ?? [] : []);
+    // Keep what was last known on a failed refresh. Emptying the list would
+    // re-enable Connect for a company that IS connected.
+    if (status.ok) setCompanies(status.companies ?? []);
     setState("ready");
     setError(status.ok ? null : COPY[status.code]);
   }, []);
@@ -158,6 +167,13 @@ export function ConnectInvoiceCollector() {
       <a href={STORE_URL} target="_blank" rel="noreferrer">
         Install Invoice Collector
       </a>
+    );
+  if (state === "needs-update")
+    return (
+      <p role="alert">
+        Your Invoice Collector extension is too old to manage connections here.
+        Update it — collection keeps running in the meantime.
+      </p>
     );
 
   const alreadyConnected = companies.some((connected) => connected.companyId === company.id);

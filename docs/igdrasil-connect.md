@@ -19,7 +19,7 @@ accounting.igdrasil.se (web app)
 connect-bridge.ts  (content script — runs ONLY on accounting.igdrasil.se)
       │  chrome.runtime.sendMessage (internal)
       ▼
-service worker  →  consumes intent, stores that company's token, ADDS a destination
+service worker  →  consumes intent, stores that company's token, upserts a destination
 ```
 
 The web app never needs the extension id, and it can detect whether the
@@ -43,11 +43,17 @@ reviewed API origin.
 5. Engine API mints a 90-day `rat_…` credential that can only upload documents
    for the selected company. Only its SHA-256 hash is stored server-side.
 6. The extension consumes the intent and stores that credential **under its
-   company id**, alongside any companies already connected.
+   company id**, alongside any companies already connected. Connecting a company
+   it already holds re-establishes it rather than being refused: the token
+   endpoint is an upsert, so by that point the server has already rotated the
+   credential, and refusing would strand the extension with a token the server
+   no longer accepts. It is also the way back from a revoked connection.
 7. Suppliers deliver to `/api/documents/ingest`. Engine API creates `documents`
    rows with `import_source = invoice_collector`, which places them in Inbox. A
    successful ingest slides that company's expiry, so an actively used
-   connection does not lapse.
+   connection does not lapse. The renewed expiry is **not** returned, so the
+   extension's stored `expiresAt` is a floor from connect time — the inactivity
+   warning is computed from `lastCollectedAt`, which is what was delivered.
 8. Disconnecting one company calls `DELETE /api/documents/ingest/token` with
    that company's bearer before removing it locally.
 
@@ -62,8 +68,8 @@ Every response carries `protocol: 2`. `payload.type` is one of:
 | `igdrasil:ping` | no (answered by the bridge) | `{ ok, present, version, protocol }` |
 | `igdrasil:prepare` | yes | `{ ok, protocol, state }` — creates a one-use intent |
 | `igdrasil:validate` | yes | `{ ok, protocol }` — checks the intent before token minting |
-| `igdrasil:connect` | yes | `{ ok, protocol }` — **adds** a company; requires `companyName` |
-| `igdrasil:status` | yes | `{ ok, protocol, companies: [{ companyId, companyName, supplierCount, expiresAt }] }` |
+| `igdrasil:connect` | yes | `{ ok, protocol }` — **upserts** a company; requires `companyName` |
+| `igdrasil:status` | yes | `{ ok, protocol, companies: [{ companyId, companyName, supplierCount, expiresAt, lastCollectedAt, needsReconnect }] }` |
 | `igdrasil:disconnect` | yes | `{ ok, protocol }` — requires `companyId` |
 
 On load the bridge also emits `{ __ic, kind: "present", version, protocol }` so
@@ -84,10 +90,10 @@ of pasting Ratatosk's English into an otherwise i18n'd toast.
 | `origin_not_allowed` | The request did not come from the extension's own bridge on the reviewed origin. |
 | `token_invalid` | The credential was not the upload-only `rat_…` shape, or could not be stored. |
 | `backend_not_allowed` | `apiBaseUrl` was not exactly `https://accounting.igdrasil.se`. |
-| `company_already_connected` | That company is already connected; disconnect it before reconnecting. |
 | `unknown_company` | The extension is not connected to the named company. |
 | `invalid_request` | The payload did not narrow — including a protocol v1 connect (session JWT, no state). |
 | `revoke_failed` | Server-side revocation could not be confirmed. The connection is still live. |
+| `extension_unavailable` | The bridge could not reach the service worker. A transport failure, not a refusal. |
 
 Clients must transition to a disconnected state only after `{ ok: true }`.
 A refusal or timeout retains the connected state and presents a retryable error.

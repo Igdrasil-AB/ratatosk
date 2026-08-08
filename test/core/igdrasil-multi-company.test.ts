@@ -294,14 +294,51 @@ describe("Plan 014 acceptance — Ratatosk", () => {
     }
   });
 
-  it("refuses a company the profile already holds instead of silently replacing it", async () => {
-    const { addIgdrasilDestination, getDestination, igdrasilDestinationId } = await storage();
+  it("re-connecting a held company replaces its credential and keeps its suppliers", async () => {
+    const {
+      addIgdrasilDestination,
+      getConnections,
+      getDestination,
+      igdrasilDestinationId,
+      upsertConnection,
+    } = await storage();
+    const { getHostToken, setHostToken } = await auth();
+    const destinationId = igdrasilDestinationId(COMPANY_A);
+    await setHostToken(COMPANY_A, TOKEN_A);
+    await addIgdrasilDestination({ endpoint: ENDPOINT, companyId: COMPANY_A, companyName: "Old Name" });
+    await upsertConnection({ vendorId: "stripe", connectedAt: 1, destinationId });
+
+    // The token endpoint is an upsert: by the time `igdrasil:connect` arrives,
+    // the server has ALREADY rotated this company's credential. Refusing would
+    // leave the extension holding a token the server no longer accepts, and
+    // every ingest for that company would 401.
+    await setHostToken(COMPANY_A, TOKEN_B);
+    await addIgdrasilDestination({ endpoint: ENDPOINT, companyId: COMPANY_A, companyName: "New Name" });
+
+    await expect(getHostToken(COMPANY_A)).resolves.toBe(TOKEN_B);
+    expect(await getDestination(destinationId)).toMatchObject({ kind: "igdrasil", companyName: "New Name" });
+    // The destination id did not change, so nothing was rebound or re-delivered.
+    expect((await getConnections()).stripe.destinationId).toBe(destinationId);
+  });
+
+  it("a retired company can be repaired by connecting it again", async () => {
+    const { addIgdrasilDestination, getDestination, igdrasilDestinationId, markDestinationUnavailable } = await storage();
+    const destinationId = igdrasilDestinationId(COMPANY_A);
+    await connectCompany(COMPANY_A, "Company A", TOKEN_A);
+    await markDestinationUnavailable(destinationId, "connection_expired");
+    expect(await getDestination(destinationId)).toMatchObject({ kind: "unavailable" });
+
     await addIgdrasilDestination({ endpoint: ENDPOINT, companyId: COMPANY_A, companyName: "Company A" });
 
-    // The worker checks for an existing destination before consuming the intent,
-    // so a duplicate connect answers `company_already_connected`.
-    expect(await getDestination(igdrasilDestinationId(COMPANY_A))).toBeDefined();
-    expect(IGDRASIL_CONNECT_ERROR_CODES).toContain("company_already_connected");
+    // Without this, the notification says "Reconnect it" and there is no path.
+    expect(await getDestination(destinationId)).toMatchObject({ kind: "igdrasil" });
+  });
+
+  it("declares the protocol version and no refusal for a repeat connect", () => {
     expect(IGDRASIL_CONNECT_PROTOCOL).toBe(2);
+    // Connect is an upsert, so there is nothing to refuse.
+    expect(IGDRASIL_CONNECT_ERROR_CODES).not.toContain("company_already_connected");
+    // A transport failure is its own fact, not a malformed request.
+    expect(IGDRASIL_CONNECT_ERROR_CODES).toContain("extension_unavailable");
   });
 });

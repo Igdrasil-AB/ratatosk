@@ -100,12 +100,3 @@ export async function clearLegacyHostToken(): Promise<void> {
   await initializeHostTokenStorage();
   await chrome.storage.local.remove(LEGACY_TOKEN_KEY);
 }
-
-/** Replace the whole map in one commit, used by the migration. */
-export async function writeHostTokens(tokens: Record<string, string>): Promise<void> {
-  for (const [companyId, token] of Object.entries(tokens)) {
-    if (!companyId.trim() || !isCollectorToken(token)) throw new Error("invalid backend token");
-  }
-  await initializeHostTokenStorage();
-  await chrome.storage.local.set({ [TOKENS_KEY]: tokens });
-}

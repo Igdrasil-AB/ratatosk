@@ -21,7 +21,7 @@ describe("Igdrasil connect example", () => {
     const source = readFileSync("examples/ConnectInvoiceCollector.tsx", "utf8");
     for (const code of [
       "intent_missing", "intent_expired", "origin_not_allowed", "token_invalid",
-      "backend_not_allowed", "company_already_connected", "unknown_company",
+      "backend_not_allowed", "unknown_company",
       "invalid_request", "revoke_failed", "extension_unavailable",
     ]) {
       expect(source).toContain(`${code}:`);
@@ -39,6 +39,10 @@ describe("Igdrasil connect example", () => {
     expect(source).toContain("accessibleCompanyIds.includes");
     // And the 60-day inactivity warning.
     expect(source).toContain("isCollectorConnectionStale");
+    // A pre-v2 extension must not be told it has nothing connected — that is
+    // one click away from re-minting and rotating a working credential.
+    expect(source).toContain("isCollectorProtocolSupported");
+    expect(source).toContain("needs-update");
   });
 
   it("keeps a retryable connected state when disconnect is refused or times out", () => {

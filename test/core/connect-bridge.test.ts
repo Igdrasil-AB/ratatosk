@@ -98,9 +98,10 @@ describe("Igdrasil connect bridge", () => {
       __ic: "invoice-collector",
       kind: "response",
       requestId: "failed",
-      // The worker being unreachable is reported as a typed refusal, never as
-      // an internal string the page gets to read.
-      result: { ok: false, protocol: 2, code: "invalid_request" },
+      // The worker being unreachable is its own fact — saying `invalid_request`
+      // would tell someone to fix a request that was fine — and its message
+      // must not reach the page as prose either.
+      result: { ok: false, protocol: 2, code: "extension_unavailable" },
     });
   });
 });

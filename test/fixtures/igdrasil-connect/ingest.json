@@ -45,8 +45,9 @@
   },
   "importSource": "invoice_collector",
   "slidingRenewal": {
-    "$comment": "A successful ingest extends the company token. The write is rate-bounded so a bulk collection does not issue one write per invoice.",
+    "$comment": "A successful ingest extends the company token. The write is rate-bounded so a bulk collection does not issue one write per invoice. The renewed expiry is NOT returned to the Collector, so the extension's stored expiresAt is a floor from connect time — inactivity is measured from delivered invoices instead.",
     "lifetimeDays": 90,
-    "minimumAdvanceDays": 1
+    "minimumAdvanceDays": 1,
+    "renewedExpiryReturnedToCollector": false
   }
 }

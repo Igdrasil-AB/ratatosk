@@ -12,7 +12,7 @@
 import {
   clearLegacyHostToken,
   readLegacyHostToken,
-  writeHostTokens,
+  setHostToken,
 } from "./auth";
 import {
   clearLegacySinkConfig,
@@ -66,7 +66,12 @@ export async function migrateLegacyDestination(): Promise<DestinationMigrationRe
 
   const companyId = legacyCompanyId(legacy);
   await writeMigratedDestinations(destinations, bindings);
-  if (legacyToken && companyId) await writeHostTokens({ [companyId]: legacyToken });
+  // Merge, never replace. The migration only stops re-running once
+  // `clearLegacySinkConfig` has committed, so a worker killed between the two
+  // writes runs it again — by which time the user may have connected another
+  // company. Replacing the map would leave that company's destination standing
+  // with no credential, which is a 401 and an unrepairable state.
+  if (legacyToken && companyId) await setHostToken(companyId, legacyToken);
 
   // Only now: the new shape is durable, so removing the old keys cannot strand
   // a profile between the two.

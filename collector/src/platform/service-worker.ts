@@ -38,6 +38,7 @@ import {
 import { migrateLegacyDestination } from "./destination-migration";
 import {
   igdrasilRefusal,
+  igdrasilRefusalLabel,
   igdrasilRequestType,
   parseIgdrasilAppRequest,
   IGDRASIL_CONNECT_PROTOCOL,
@@ -247,11 +248,16 @@ async function handleAppRequest(
     case "igdrasil:connect": {
       const { token, companyId, companyName, apiBaseUrl, state, expiresAt } = request;
       if (!isIgdrasilApiBase(apiBaseUrl)) return igdrasilRefusal("backend_not_allowed");
-      // Adding a company the profile already holds would silently replace its
-      // credential and its display name. Refuse and let the user disconnect it
-      // first, so a rebind is always something they asked for.
-      const destinationId = igdrasilDestinationId(companyId);
-      if (await getDestination(destinationId)) return igdrasilRefusal("company_already_connected");
+      // Connecting a company the profile ALREADY holds re-establishes it, and
+      // must: the token endpoint is an upsert (`ON CONFLICT (company_id) DO
+      // UPDATE SET token_hash = …`), so by the time this message arrives the
+      // server has already rotated the credential. Refusing here would leave
+      // the extension holding a token the server no longer recognizes, and
+      // every ingest for that company would 401. It is also the only way back
+      // from a revoked or expired connection.
+      //
+      // Supplier bindings are keyed by destination id, which does not change,
+      // so nothing is rebound and nothing is re-delivered.
       if (!(await consumeIgdrasilConnectIntent(state))) return igdrasilRefusal("intent_expired");
       await setHostToken(companyId, token);
       try {
@@ -292,13 +298,29 @@ async function connectedCompanies(): Promise<IgdrasilConnectedCompany[]> {
   const held = new Set(companyIds);
   const companies: IgdrasilConnectedCompany[] = [];
   for (const [destinationId, destination] of Object.entries(destinations)) {
-    if (destination?.kind !== "igdrasil" || !held.has(destination.companyId)) continue;
+    if (!destination) continue;
+    // A destination retired by a refused credential is STILL a company this
+    // profile holds. Omitting it left the accounting app unable to show — let
+    // alone repair — the one connection that actually needed attention.
+    if (destination.kind === "filesystem") continue;
+    const needsReconnect = destination.kind === "unavailable";
+    const { companyId } = destination;
+    if (!companyId || !held.has(companyId)) continue;
+    const bound = Object.values(connections).filter((connection) => connection.destinationId === destinationId);
+    // Inactivity is measured from what this profile actually delivered. The
+    // credential's expiry cannot serve: the server slides it on every ingest
+    // and has no channel to tell the extension, so a busy company would look
+    // idle on the day its original 90 days ran out.
+    const lastCollectedAt = bound
+      .map((connection) => connection.lastNewInvoiceAt ?? 0)
+      .reduce((latest, value) => Math.max(latest, value), 0);
     companies.push({
-      companyId: destination.companyId,
-      companyName: destination.companyName,
-      supplierCount: Object.values(connections)
-        .filter((connection) => connection.destinationId === destinationId).length,
-      ...(destination.expiresAt ? { expiresAt: destination.expiresAt } : {}),
+      companyId,
+      companyName: destination.companyName ?? companyId,
+      supplierCount: bound.length,
+      ...(destination.kind === "igdrasil" && destination.expiresAt ? { expiresAt: destination.expiresAt } : {}),
+      ...(lastCollectedAt > 0 ? { lastCollectedAt } : {}),
+      ...(needsReconnect ? { needsReconnect: true as const } : {}),
     });
   }
   return companies.sort((left, right) => left.companyName.localeCompare(right.companyName));
@@ -349,7 +371,9 @@ async function handle(message: Message): Promise<Response> {
 
     case "disconnectCompany": {
       const result = await disconnectIgdrasil(message.companyId);
-      if (!result.ok) return { ok: false, error: result.code };
+      // A protocol code is for the accounting app to translate; the popup is a
+      // user surface and must not print `revoke_failed` at somebody.
+      if (!result.ok) return { ok: false, error: igdrasilRefusalLabel(result.code) };
       return { ok: true, unboundVendorIds: result.unboundVendorIds ?? [] };
     }
 

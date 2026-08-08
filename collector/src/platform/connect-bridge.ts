@@ -76,10 +76,11 @@ export function installConnectBridge(
     }
 
     runtime.sendMessage(payload, (res) => {
-      // A runtime error is the extension being unreachable, not a refusal the
-      // page said anything wrong to earn — and its message must not reach the
-      // page as prose either.
-      reply(runtime.lastError ? igdrasilRefusal("invalid_request") : res);
+      // A runtime error is the worker being unreachable, not a refusal the page
+      // earned by sending something wrong — and its message must not reach the
+      // page as prose either. Saying `invalid_request` here would tell someone
+      // to fix a request that was fine.
+      reply(runtime.lastError ? igdrasilRefusal("extension_unavailable") : res);
     });
   });
 }

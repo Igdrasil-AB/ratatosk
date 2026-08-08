@@ -30,10 +30,12 @@ export const IGDRASIL_CONNECT_ERROR_CODES = [
   "origin_not_allowed",
   "token_invalid",
   "backend_not_allowed",
-  "company_already_connected",
   "unknown_company",
   "invalid_request",
   "revoke_failed",
+  /** The bridge could not reach the service worker — a transport failure, not
+   * a refusal of anything the page said. */
+  "extension_unavailable",
 ] as const;
 
 export type IgdrasilConnectErrorCode = typeof IGDRASIL_CONNECT_ERROR_CODES[number];
@@ -72,7 +74,7 @@ export interface IgdrasilConnectRequest {
   companyName: string;
   apiBaseUrl: string;
   state: string;
-  /** ISO-8601 expiry echoed from the mint response, so the panel can warn. */
+  /** ISO-8601 expiry echoed from the mint response. */
   expiresAt?: string;
 }
 export interface IgdrasilStatusRequest { type: "igdrasil:status" }
@@ -89,8 +91,23 @@ export interface IgdrasilConnectedCompany {
   companyId: string;
   companyName: string;
   supplierCount: number;
-  /** Absent when the extension never learned the credential's expiry. */
+  /**
+   * The credential's expiry AS THE EXTENSION LAST LEARNED IT — at connect time.
+   * The server slides it on every successful ingest and has no channel to tell
+   * the extension, so this is a floor, never a current value. Do not compute
+   * inactivity from it; use `lastCollectedAt`.
+   */
   expiresAt?: string;
+  /**
+   * When this company last received an invoice, across every supplier bound to
+   * it. Absent means nothing has been delivered yet.
+   */
+  lastCollectedAt?: number;
+  /**
+   * The credential was revoked, expired, or refused. The company is still held
+   * and still labelled, and connecting it again repairs it.
+   */
+  needsReconnect?: true;
 }
 
 export type IgdrasilAppResponse =
@@ -99,6 +116,26 @@ export type IgdrasilAppResponse =
 
 export function igdrasilRefusal(code: IgdrasilConnectErrorCode): IgdrasilAppResponse {
   return { ok: false, protocol: IGDRASIL_CONNECT_PROTOCOL, code };
+}
+
+/**
+ * A refusal as a sentence, for Ratatosk's OWN surfaces.
+ *
+ * The accounting app translates these codes itself; the extension panel has no
+ * i18n and must not print `revoke_failed` at somebody.
+ */
+export function igdrasilRefusalLabel(code: IgdrasilConnectErrorCode): string {
+  switch (code) {
+    case "intent_missing": return "Start the connection again from Ratatosk.";
+    case "intent_expired": return "That connection request expired. Start again from Ratatosk.";
+    case "origin_not_allowed": return "Connect from the Igdrasil web app itself.";
+    case "token_invalid": return "Igdrasil issued a credential Ratatosk refused. Try again.";
+    case "backend_not_allowed": return "Ratatosk only sends invoices to accounting.igdrasil.se.";
+    case "unknown_company": return "Ratatosk is not connected to that company.";
+    case "invalid_request": return "Ratatosk refused that request. Reopen the panel and try again.";
+    case "revoke_failed": return "The connection could not be revoked. It is still connected — try again.";
+    case "extension_unavailable": return "Ratatosk's background service did not respond. Try again.";
+  }
 }
 
 export function isIgdrasilConnectErrorCode(value: unknown): value is IgdrasilConnectErrorCode {
