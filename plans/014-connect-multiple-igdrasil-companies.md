@@ -26,7 +26,7 @@
 - **Depends on**: none for the contract work; live acceptance depends on Plan 013
 - **Category**: integration, architecture, security, UX, tests
 - **Planned at**: Ratatosk `ac9ba5a`; Igdrasil `0ffca701e`; 2026-08-07
-- **Status**: IN PROGRESS — see "Implementation record" at the end
+- **Status**: BLOCKED — STOP condition 6 fired; see "Implementation record" at the end
 
 ## Why this matters
 
@@ -414,6 +414,57 @@ Stop and report the exact failed invariant rather than weakening it if:
    `examples/igdrasil-connect-client.ts` matches the shipped Igdrasil client exactly,
    with a test that fails if they drift.
 6. The status row in `plans/README.md` is updated with sanitized evidence.
+
+## STOP CONDITION 6 FIRED (2026-08-08) — Ratatosk must not ship until decided
+
+> **The no-installed-population assumption is false.** Production holds a live
+> Collector connection, so an installed build IS speaking the pre-v2 protocol
+> against production. Per this plan, that needs an explicit compatibility
+> decision before Ratatosk ships.
+
+Read from the production database on 2026-08-08:
+
+| fact | value |
+|---|---|
+| `invoice_collector_tokens` rows | 1 |
+| company | `Igruppen Lindström AB` (`de49d017-c0f9-40ea-9f6e-b10d1f10abee`) |
+| connected at | 2026-08-03 20:34 UTC |
+| documents with `import_source = 'invoice_collector'` | 16 |
+| delivered | 2026-08-04 06:29 UTC |
+| token last used / expires | 2026-08-04 06:29 UTC / 2026-11-01 UTC |
+
+### What actually breaks, and what does not
+
+The web app is deployed independently of the extension, so the app reaches v2
+first. Against an installed pre-v2 extension:
+
+- **Collection keeps working.** `/api/documents/ingest` is unchanged apart from
+  the sliding renewal and duplicate-on-replay, both backward-compatible, and the
+  stored token is valid until 2026-11-01. Invoices keep flowing. ✅
+- **The settings view reports "not connected".** It reads `result.companies`;
+  a pre-v2 extension answers `{ ok, connected, companyId }` with no list. The
+  one user who has this working would be told they have no connection while 16
+  invoices already arrived. ❌ **This is the regression.**
+- **Disconnect still works**, because a pre-v2 handler ignores the `companyId`
+  it is now sent and clears its single destination. ✅ (accidentally)
+- **Re-connect still works**, because a pre-v2 handler destructures only the
+  four fields it knows and ignores `companyName`/`expiresAt`. ✅
+- **A refusal renders a fallback sentence**, not `undefined`: pre-v2 answers
+  carry prose and no `code`, which `collectorErrorMessage` now handles. ✅
+
+### The decision to make (not made here)
+
+1. **Have the app tolerate a v1 status reply** — treat `{connected, companyId}`
+   as a one-company list labelled by id, and prompt to update the extension. Costs
+   a compatibility branch in the app; nobody is told a lie in the meantime.
+2. **Ship Ratatosk first and require the update** — the window is only wrong for
+   as long as the user has not updated, but they are told "not connected" during it.
+3. **Reconnect the one affected user deliberately** — one company, one browser
+   profile, and the plan already says an unlisted pilot install must be
+   reconnected rather than migrated.
+
+Option 1 was deliberately **not** implemented here: the plan says to stop and
+report rather than weaken the invariant, and choosing is a product decision.
 
 ## Implementation record (2026-08-08)
 
