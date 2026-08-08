@@ -10,7 +10,13 @@ scalable self-healing architecture for unknown suppliers.
 Plan 013 was added on 2026-07-27 against Ratatosk commit `b7082c8` after live
 Supabase acceptance proved that semantic list actions could create page-owned
 Chrome downloads before identity reservation, validation, sink acceptance, or
-deduplication.
+deduplication. Plan 014 was added on 2026-08-07 against Ratatosk commit `ac9ba5a`
+and `igdrasil-accounting` commit `0ffca701e` after review found the Igdrasil
+connection non-functional in both directions and its whole server side unbuilt.
+That last premise was already stale: `igdrasil-accounting` PR #1575 had landed
+the token, revoke, and ingest surface, and the web app was already minting a
+scoped `rat_` credential against the exact reviewed origin. Plan 014 therefore
+corrected the shipped surface instead of rebuilding it — see its status row.
 
 Read each plan fully before editing. Use clean feature worktrees, run every gate,
 honor STOP conditions, and update the status here after review. Do not place real
@@ -34,6 +40,7 @@ public repository.
 | [011](011-cold-replay-and-semantic-download-parity.md) | Unknown SPA invoice routes are captured through exact-entry cold replay and semantic candidates reproduce during verification | P1 | L | — | IN PROGRESS — automated implementation and gates complete; live Supabase structure recognizes 8 invoice actions; end-to-end Supabase/ClickUp delivery and duplicate acceptance remains |
 | [012](012-build-adaptive-supplier-acquisition-fabric.md) | Proven supplier paths repair locally through a packaged capability grammar, diverse fallbacks, shadow proof, atomic promotion, and rollback | P1 | L | 011, 013 | TODO |
 | [013](013-enforce-transactional-dom-acquisition.md) | Every click-capable DOM document path runs after stable identity reservation and cannot leave a page-owned browser download | P0 | L | — | IN PROGRESS — shared transaction/controller, synthetic gates, CI, audit, build, package, and artifact verification pass; exact-build Chrome load and first/second/cadence live acceptance remain |
+| [014](014-connect-multiple-igdrasil-companies.md) | Ratatosk holds several connected Igdrasil companies, each supplier feeds exactly one, and the Igdrasil token/ingest surface exists | P0 | L | — | IN PROGRESS — all 16 acceptance rows automated and passing on both sides; the plan's "server side unbuilt" premise was one PR stale, so the shipped surface was corrected rather than rebuilt; live two-company acceptance remains |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or
 `REJECTED — <reason>`.
@@ -94,6 +101,8 @@ Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or
                                       |
                                       ├─> 011 live acceptance
                                       └─> 012 adaptive acquisition fabric
+
+014 multi-company Igdrasil destinations (independent; spans Ratatosk + Igdrasil)
 ```
 
 Plans 001–003 may run in parallel. Plan 006 is deliberately gated on the local
@@ -104,7 +113,10 @@ Temporal TypeScript foundation; it must not create another SDK stack. Plan 013
 is the P0 corrective prerequisite for Plan 011's remaining live duplicate
 acceptance. Plan 012 depends on both Plans 011 and 013 because repair cannot be
 trusted until cold observation, semantic search/verification, and document
-actions are reproducible and idempotent.
+actions are reproducible and idempotent. Plan 014 spans Ratatosk and the
+`igdrasil-accounting` repository and must use separate clean worktrees and PRs
+per repository; it is independent of the acquisition track and may run in
+parallel with Plans 011–013.
 
 ## Program invariants
 
@@ -124,6 +136,10 @@ actions are reproducible and idempotent.
 - Document listing is observational. A page action that can produce a document
   runs only after stable identity reservation through one shared, action-scoped
   controller; a browser-owned download is never delivery proof.
+- A supplier connection delivers to exactly one destination. Several Igdrasil
+  companies may be connected at once, but a supplier is never split across two
+  of them, and no surface may display a company that is not that supplier's
+  actual destination.
 
 ## Verification baselines
 

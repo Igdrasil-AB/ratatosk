@@ -14,7 +14,10 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   contractFileHashes,
+  sharedClientRegion,
+  CONTRACT_CLIENT_FILE,
   CONTRACT_FIXTURE_DIR,
+  DROP_IN_CLIENT_FILE,
   readContractManifest,
 } from "../../scripts/build-contract-manifest";
 import {
@@ -107,8 +110,7 @@ describe("Igdrasil shared contract fixtures", () => {
   });
 
   it("keeps the drop-in web-app client on the same protocol", () => {
-    const client = readFileSync("examples/igdrasil-connect-client.ts", "utf8");
-    const shared = sharedClientRegion(client);
+    const shared = sharedClientRegion(readFileSync(DROP_IN_CLIENT_FILE, "utf8"));
     expect(shared).toContain(`export const INVOICE_COLLECTOR_PROTOCOL = ${IGDRASIL_CONNECT_PROTOCOL};`);
     expect(shared).toContain(protocol.origin);
     // Every refusal code has to be expressible by the client, or the app has
@@ -119,20 +121,14 @@ describe("Igdrasil shared contract fixtures", () => {
     expect(shared).toContain("disconnectInvoiceCollector(companyId: string)");
   });
 
-  it("exposes the shared client region the Igdrasil client is checked against", () => {
-    // The Igdrasil repository extracts the SAME delimited region from its own
-    // `invoiceCollectorApi.ts` and compares it to this one's checksum, so the
-    // two clients cannot drift the way they did before.
-    const shared = sharedClientRegion(readFileSync("examples/igdrasil-connect-client.ts", "utf8"));
-    expect(shared.length).toBeGreaterThan(1_000);
+  it("keeps the committed shared-client fixture identical to the drop-in client", () => {
+    // The Igdrasil repository cannot read this one, so the canonical region is
+    // committed as a fixture and hashed into the manifest. Igdrasil extracts
+    // the SAME region from the client it actually ships and compares it to
+    // this file — which is what makes a silent divergence impossible.
+    const shared = sharedClientRegion(readFileSync(DROP_IN_CLIENT_FILE, "utf8"));
+    expect(readFileSync(`${CONTRACT_FIXTURE_DIR}/${CONTRACT_CLIENT_FILE}`, "utf8")).toBe(shared);
     expect(shared).not.toContain("---8<---");
+    expect(shared.length).toBeGreaterThan(1_000);
   });
 });
-
-/** The mirrored region of the drop-in client, between its explicit markers. */
-export function sharedClientRegion(source: string): string {
-  const start = source.indexOf("// ---8<--- shared:");
-  const end = source.indexOf("// ---8<--- end shared ---8<---");
-  if (start < 0 || end < 0) throw new Error("shared client region markers are missing");
-  return source.slice(source.indexOf("\n", start) + 1, end).trim();
-}

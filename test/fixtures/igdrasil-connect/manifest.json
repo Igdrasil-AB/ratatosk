@@ -5,6 +5,7 @@
   "files": {
     "ingest.json": "e4552676c82378bb82b12e979ac4c56892ee309438a9865ce418ef5c3f2092cb",
     "protocol-v2.json": "b72a99519314760e2db7ecb2fe6e8d71d931448bc7bb58ca91f9272ee3e37ded",
+    "shared-client.ts.txt": "3dd85743250b8d673b75b274fdc3e1555c7c409413aaf740a23486070c09ae99",
     "token.json": "d49bc9c9057e38c42b9a88ed3a37a559a7db5d30cc1761afe434616b9548ed6a"
   }
 }
