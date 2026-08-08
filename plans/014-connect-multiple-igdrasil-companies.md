@@ -26,7 +26,7 @@
 - **Depends on**: none for the contract work; live acceptance depends on Plan 013
 - **Category**: integration, architecture, security, UX, tests
 - **Planned at**: Ratatosk `ac9ba5a`; Igdrasil `0ffca701e`; 2026-08-07
-- **Status**: BLOCKED — STOP condition 6 fired; see "Implementation record" at the end
+- **Status**: IN PROGRESS — STOP condition 6 fired and was RESOLVED (no user population); live acceptance remains
 
 ## Why this matters
 
@@ -415,12 +415,20 @@ Stop and report the exact failed invariant rather than weakening it if:
    with a test that fails if they drift.
 6. The status row in `plans/README.md` is updated with sanitized evidence.
 
-## STOP CONDITION 6 FIRED (2026-08-08) — Ratatosk must not ship until decided
+## STOP CONDITION 6 — fired 2026-08-08, RESOLVED 2026-08-09
 
-> **The no-installed-population assumption is false.** Production holds a live
-> Collector connection, so an installed build IS speaking the pre-v2 protocol
-> against production. Per this plan, that needs an explicit compatibility
-> decision before Ratatosk ships.
+> **The no-installed-population assumption is false in letter, true in
+> substance.** Production holds a live Collector connection, so an installed
+> build IS speaking the pre-v2 protocol against production — but the owner
+> confirmed on 2026-08-09 that **no users depend on it**. It is a test
+> connection in an owned company. There is no population to protect, so no
+> compatibility support is owed and Ratatosk is free to ship.
+>
+> **Decision: no v1 compatibility shim.** The protocol check stays, because it
+> costs nothing and stops a stale build from being told it has no connection —
+> which was one click from re-minting and rotating a working credential. That is
+> refusing to lie, not supporting v1. Nothing in the app or the extension
+> tolerates protocol v1 semantics.
 
 Read from the production database on 2026-08-08:
 
@@ -452,19 +460,22 @@ first. Against an installed pre-v2 extension:
 - **A refusal renders a fallback sentence**, not `undefined`: pre-v2 answers
   carry prose and no `code`, which `collectorErrorMessage` now handles. ✅
 
-### The decision to make (not made here)
+### The decision, and why
 
-1. **Have the app tolerate a v1 status reply** — treat `{connected, companyId}`
-   as a one-company list labelled by id, and prompt to update the extension. Costs
-   a compatibility branch in the app; nobody is told a lie in the meantime.
-2. **Ship Ratatosk first and require the update** — the window is only wrong for
-   as long as the user has not updated, but they are told "not connected" during it.
-3. **Reconnect the one affected user deliberately** — one company, one browser
-   profile, and the plan already says an unlisted pilot install must be
-   reconnected rather than migrated.
+Three options were put to the owner: tolerate a v1 status reply in the app,
+require the extension update, or reconnect the affected connection deliberately.
+The Collector is not in the Chrome Web Store (Plan 006 forbids a listing), so
+there is no auto-update channel and "require the update" means hand-delivering a
+build.
 
-Option 1 was deliberately **not** implemented here: the plan says to stop and
-report rather than weaken the invariant, and choosing is a product decision.
+**Chosen: require the update, with no compatibility shim.** With no users on the
+connection there is nobody to keep working in the meantime, so a v1 branch would
+be code carried for a case that has no claimant. The stale test credential can
+be revoked whenever convenient; it lapses on its own on 2026-11-01.
+
+Residual note: that test token is upload-capable and sits in a browser profile
+until then. Revoking it is one `DELETE /api/documents/ingest/token`, or simply
+disconnecting from the extension panel.
 
 ## Review round 2 (2026-08-08) — a regression this work introduced
 
