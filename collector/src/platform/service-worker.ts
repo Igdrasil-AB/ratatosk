@@ -14,16 +14,36 @@ import { ensureSyncAlarm, getScheduleInfo, isSyncAlarm, isSyncCatchUpDue, rearmS
 import { hasHostPermissions, missingHostPermissions, revokeHostPermissions, vendorPermissionOrigins } from "./permissions";
 import { notifyReconnect, openLoginFor } from "./notifications";
 import {
+  addIgdrasilDestination,
   clearSeenForSource,
   clearLedgerForVendor,
   getConnections,
+  getDestination,
+  getDestinations,
   getLedger,
-  getSinkConfig,
+  hasAnyDestination,
+  igdrasilDestinationId,
   removeConnection,
-  setSinkConfig,
+  setConnectionDestination,
+  setLocalDestination,
   upsertConnection,
+  type DestinationId,
 } from "./storage";
-import { clearHostToken, getHostToken, initializeHostTokenStorage, setHostToken } from "./auth";
+import {
+  clearHostToken,
+  connectedCompanyIds,
+  initializeHostTokenStorage,
+  setHostToken,
+} from "./auth";
+import { migrateLegacyDestination } from "./destination-migration";
+import {
+  igdrasilRefusal,
+  igdrasilRequestType,
+  parseIgdrasilAppRequest,
+  IGDRASIL_CONNECT_PROTOCOL,
+  type IgdrasilAppResponse,
+  type IgdrasilConnectedCompany,
+} from "../../../src/ingest/igdrasil-protocol";
 import { clearFilesystemDeliveryJournalForSource } from "./filesystem-sink";
 import { clearPendingConnect, getPendingConnect, setPendingConnect } from "./pending-connect";
 import { clearRememberedRoutes, listRememberedRoutes, recordRouteMiss, rememberSupplierRoute } from "./discovery-route-memory";
@@ -83,6 +103,18 @@ void initializeHostTokenStorage().catch((error: unknown) => {
 void removeStaleNativeDownloadGuards().catch((error: unknown) => {
   console.error("[collector] native download guard recovery failed", error instanceof Error ? error.name : "error");
 });
+// One-time and idempotent. A profile that cannot be migrated keeps its
+// connections and shows a destination that needs reconnecting; it must never
+// take the worker down with it.
+void migrateLegacyDestination()
+  .then((result) => {
+    if (result.migrated) {
+      console.info(`[collector] migrated ${result.boundVendorIds.length} supplier binding(s) to the destination map`);
+    }
+  })
+  .catch((error: unknown) => {
+    console.error("[collector] destination migration failed", error instanceof Error ? error.name : "error");
+  });
 
 const collectionRuns = new CollectionRunCoordinator();
 
@@ -148,12 +180,13 @@ chrome.permissions.onAdded.addListener((permissions) => {
 });
 
 chrome.runtime.onMessage.addListener(
-  (message: Message | AppRequest, sender, sendResponse) => {
+  (message: Message | unknown, sender, sendResponse) => {
     // Connect handshake relayed by the bridge content script on the Igdrasil origin.
-    if (isAppRequest(message)) {
+    if (igdrasilRequestType(message)) {
       handleAppRequest(message, sender)
         .then(sendResponse)
-        .catch((err) => sendResponse({ ok: false, error: String(err) }));
+        // A thrown error must not leak internals into a page-visible string.
+        .catch(() => sendResponse(igdrasilRefusal("invalid_request")));
       return true;
     }
     // Consumer commands are accepted only from an extension page (the popup),
@@ -180,62 +213,95 @@ function isTrustedExtensionPage(sender: chrome.runtime.MessageSender): boolean {
 // allow-listed origin before touching a token — defense in depth.
 const ALLOWED_CONNECT_ORIGINS = new Set(["https://accounting.igdrasil.se"]);
 
-type AppRequest =
-  | { type: "igdrasil:prepare" }
-  | { type: "igdrasil:validate"; state: string }
-  | { type: "igdrasil:connect"; token: string; companyId: string; apiBaseUrl: string; state: string }
-  | { type: "igdrasil:status" }
-  | { type: "igdrasil:disconnect" };
-
-type AppResponse = { ok: true; connected?: boolean; companyId?: string; state?: string } | { ok: false; error: string };
-
-function isAppRequest(m: unknown): m is AppRequest {
-  const t = (m as { type?: unknown } | null)?.type;
-  return t === "igdrasil:prepare" || t === "igdrasil:validate" || t === "igdrasil:connect" || t === "igdrasil:status" || t === "igdrasil:disconnect";
-}
-
-async function handleAppRequest(message: AppRequest, sender: chrome.runtime.MessageSender): Promise<AppResponse> {
+/**
+ * Every page-supplied message is narrowed field by field before it is used.
+ *
+ * The v1 predicate checked `.type` and then asserted the whole union, so the
+ * compiler believed attacker-supplied page data was `string`; the runtime
+ * `typeof` checks that made that safe were convention, not enforcement. A
+ * payload that does not narrow is refused with `invalid_request` — which is
+ * also how a v1-shaped connect (session JWT, no state) is turned away.
+ */
+async function handleAppRequest(
+  message: unknown,
+  sender: chrome.runtime.MessageSender,
+): Promise<IgdrasilAppResponse> {
   // It must be OUR own content script, running on an allow-listed page origin.
-  if (sender.id !== chrome.runtime.id) return { ok: false, error: "bad sender" };
-  if (!sender.origin || !ALLOWED_CONNECT_ORIGINS.has(sender.origin)) return { ok: false, error: "origin not allowed" };
+  if (sender.id !== chrome.runtime.id) return igdrasilRefusal("origin_not_allowed");
+  if (!sender.origin || !ALLOWED_CONNECT_ORIGINS.has(sender.origin)) return igdrasilRefusal("origin_not_allowed");
 
-  switch (message.type) {
+  const request = parseIgdrasilAppRequest(message);
+  if (!request) return igdrasilRefusal("invalid_request");
+
+  switch (request.type) {
     case "igdrasil:prepare": {
       const intent = await createIgdrasilConnectIntent();
-      return { ok: true, state: intent.state };
+      return { ok: true, protocol: IGDRASIL_CONNECT_PROTOCOL, state: intent.state };
     }
     case "igdrasil:validate": {
-      if (typeof message.state !== "string") return { ok: false, error: "invalid connection request" };
-      const valid = await validateIgdrasilConnectIntent(message.state);
-      return valid ? { ok: true } : { ok: false, error: "connection request expired; start again from Ratatosk" };
+      const valid = await validateIgdrasilConnectIntent(request.state);
+      return valid
+        ? { ok: true, protocol: IGDRASIL_CONNECT_PROTOCOL }
+        : igdrasilRefusal("intent_expired");
     }
     case "igdrasil:connect": {
-      const { token, companyId, apiBaseUrl, state } = message;
-      if (typeof token !== "string" || typeof companyId !== "string" || typeof apiBaseUrl !== "string" || typeof state !== "string") {
-        return { ok: false, error: "invalid connect payload" };
-      }
-      if (!isIgdrasilApiBase(apiBaseUrl)) return { ok: false, error: "backend host not allowed" };
-      if (!(await consumeIgdrasilConnectIntent(state))) {
-        return { ok: false, error: "connection request expired; start again from Ratatosk" };
-      }
-      await setHostToken(token);
+      const { token, companyId, companyName, apiBaseUrl, state, expiresAt } = request;
+      if (!isIgdrasilApiBase(apiBaseUrl)) return igdrasilRefusal("backend_not_allowed");
+      // Adding a company the profile already holds would silently replace its
+      // credential and its display name. Refuse and let the user disconnect it
+      // first, so a rebind is always something they asked for.
+      const destinationId = igdrasilDestinationId(companyId);
+      if (await getDestination(destinationId)) return igdrasilRefusal("company_already_connected");
+      if (!(await consumeIgdrasilConnectIntent(state))) return igdrasilRefusal("intent_expired");
+      await setHostToken(companyId, token);
       try {
-        await setSinkConfig({ kind: "igdrasil", endpoint: apiBaseUrl, companyId });
-      } catch (error) {
-        await clearHostToken();
-        throw error;
+        await addIgdrasilDestination({
+          endpoint: apiBaseUrl,
+          companyId,
+          companyName,
+          ...(expiresAt === undefined ? {} : { expiresAt }),
+        });
+      } catch {
+        // A credential with no destination can neither be used nor managed.
+        await clearHostToken(companyId);
+        return igdrasilRefusal("token_invalid");
       }
-      return { ok: true };
+      return { ok: true, protocol: IGDRASIL_CONNECT_PROTOCOL };
     }
     case "igdrasil:status": {
-      const cfg = await getSinkConfig();
-      const connected = cfg?.kind === "igdrasil" && !!(await getHostToken());
-      return { ok: true, connected, companyId: cfg?.kind === "igdrasil" ? cfg.companyId : undefined };
+      return { ok: true, protocol: IGDRASIL_CONNECT_PROTOCOL, companies: await connectedCompanies() };
     }
     case "igdrasil:disconnect": {
-      return disconnectIgdrasil();
+      const { unboundVendorIds: _unbound, ...result } = await disconnectIgdrasil(request.companyId);
+      return result;
     }
   }
+}
+
+/**
+ * The companies this profile can actually deliver to, with what each one is
+ * carrying. A destination without its credential is not reported as connected:
+ * the web app would otherwise show a working connection that cannot upload.
+ */
+async function connectedCompanies(): Promise<IgdrasilConnectedCompany[]> {
+  const [destinations, connections, companyIds] = await Promise.all([
+    getDestinations(),
+    getConnections(),
+    connectedCompanyIds(),
+  ]);
+  const held = new Set(companyIds);
+  const companies: IgdrasilConnectedCompany[] = [];
+  for (const [destinationId, destination] of Object.entries(destinations)) {
+    if (destination?.kind !== "igdrasil" || !held.has(destination.companyId)) continue;
+    companies.push({
+      companyId: destination.companyId,
+      companyName: destination.companyName,
+      supplierCount: Object.values(connections)
+        .filter((connection) => connection.destinationId === destinationId).length,
+      ...(destination.expiresAt ? { expiresAt: destination.expiresAt } : {}),
+    });
+  }
+  return companies.sort((left, right) => left.companyName.localeCompare(right.companyName));
 }
 
 async function handle(message: Message): Promise<Response> {
@@ -262,12 +328,30 @@ async function handle(message: Message): Promise<Response> {
       return { ok: true, sources };
     }
 
-    case "getConfig":
-      return { ok: true, config: (await getSinkConfig()) ?? null };
+    case "getDestinations":
+      return { ok: true, destinations: await getDestinations() };
 
-    case "setConfig":
-      await setSinkConfig(message.config);
+    case "setLocalDestination":
+      await setLocalDestination(message.destination);
       return { ok: true };
+
+    case "bindSupplier": {
+      const destination = await getDestination(message.destinationId);
+      if (!destination) return { ok: false, error: "That destination is no longer available." };
+      // A run in flight carries the destination it started with. Queue the
+      // rebind behind it so one run can never be split across two companies.
+      return collectionRuns.runInteractive(async () => {
+        if (!(await getConnections())[message.vendorId]) return { ok: false, error: "That supplier is not connected." };
+        await setConnectionDestination(message.vendorId, message.destinationId);
+        return { ok: true };
+      });
+    }
+
+    case "disconnectCompany": {
+      const result = await disconnectIgdrasil(message.companyId);
+      if (!result.ok) return { ok: false, error: result.code };
+      return { ok: true, unboundVendorIds: result.unboundVendorIds ?? [] };
+    }
 
     case "beginIgdrasilConnect": {
       const intent = await createIgdrasilConnectIntent();
@@ -277,9 +361,11 @@ async function handle(message: Message): Promise<Response> {
     case "beginConnect": {
       const recipe = (await resolveCollectorSource(message.vendorId))?.recipe;
       if (!recipe) return { ok: false, error: "Unknown vendor." };
-      if (!(await getSinkConfig())) return { ok: false, error: "Choose a destination before connecting a vendor." };
+      if (!(await getDestination(message.destinationId))) {
+        return { ok: false, error: "Choose a destination before connecting a vendor." };
+      }
       const connection = (await getConnections())[recipe.id];
-      await setPendingConnect(recipe.id, vendorPermissionOrigins(recipe, connection));
+      await setPendingConnect(recipe.id, vendorPermissionOrigins(recipe, connection), message.destinationId);
       return { ok: true };
     }
 
@@ -300,7 +386,8 @@ async function handle(message: Message): Promise<Response> {
 
     case "connect": {
       // Kept for compatible callers; new popup flows use begin/complete so the
-      // browser may safely destroy the popup during its permission prompt.
+      // browser may safely destroy the popup during its permission prompt. It
+      // can only re-run a supplier that already has a destination.
       return completeVendorConnect(message.vendorId);
     }
 
@@ -383,7 +470,7 @@ async function handle(message: Message): Promise<Response> {
     }
 
     case "beginDiscovery": {
-      if (!(await getSinkConfig())) return { ok: false, error: "Choose a destination before trying this supplier." };
+      if (!(await hasAnyDestination())) return { ok: false, error: "Choose a destination before trying this supplier." };
       if ((await listCollectorSources()).some((source) => source.primaryOrigin === message.origin)) {
         await failSupplierDiscovery(undefined, DISCOVERY_FAILURE_MESSAGES.alreadySupported, [`${message.origin}/*`]);
         return { ok: false, error: DISCOVERY_FAILURE_MESSAGES.alreadySupported };
@@ -415,7 +502,10 @@ async function handle(message: Message): Promise<Response> {
       if (message.fromMonth && !isSyncMonth(message.fromMonth)) {
         return { ok: false, error: "Choose a valid starting month that is not in the future." };
       }
-      const pending = await beginSupplierDiscoveryConnect(message.vendorId, message.fromMonth);
+      if (!(await getDestination(message.destinationId))) {
+        return { ok: false, error: "Choose a destination before collecting." };
+      }
+      const pending = await beginSupplierDiscoveryConnect(message.vendorId, message.fromMonth, message.destinationId);
       if (pending && await hasHostPermissions(requiredCandidateOrigins(pending.candidates))) void completeDiscoveredConnect(pending.candidates.id, pending.runId);
       return pending ? { ok: true } : { ok: false, error: "The discovery preview expired. Try the supplier again." };
     }
@@ -454,19 +544,26 @@ async function completePendingConnect(addedOrigins: readonly string[]): Promise<
     return false;
   }
   if (!(await hasHostPermissions(expectedOrigins))) return false;
-  await completeVendorConnect(recipe.id);
+  await completeVendorConnect(recipe.id, pending.destinationId as DestinationId);
   return true;
 }
 
-function completeVendorConnect(vendorId: string): Promise<Response> {
+function completeVendorConnect(vendorId: string, destinationId?: DestinationId): Promise<Response> {
   const existing = connectionInFlight.get(vendorId);
   if (existing) return existing;
 
   const task = collectionRuns.runInteractive(async (): Promise<Response> => {
     const recipe = (await resolveCollectorSource(vendorId))?.recipe;
     if (!recipe) return { ok: false, error: "Unknown vendor." };
-    if (!(await getSinkConfig())) return { ok: false, error: "Choose a destination before connecting a vendor." };
     const existingConnection = (await getConnections())[recipe.id];
+    // The destination the user picked for THIS connection, or the one this
+    // supplier already had. A supplier is never admitted with no destination,
+    // because a connected supplier that delivers nowhere looks like a bug in
+    // collection rather than an unfinished setup.
+    const boundDestinationId = destinationId ?? existingConnection?.destinationId;
+    if (!boundDestinationId || !(await getDestination(boundDestinationId))) {
+      return { ok: false, error: "Choose a destination before connecting a vendor." };
+    }
     const requiredOrigins = vendorPermissionOrigins(recipe, existingConnection);
     if (!(await hasHostPermissions(requiredOrigins))) return { ok: false, error: "Vendor access was not granted." };
 
@@ -474,6 +571,7 @@ function completeVendorConnect(vendorId: string): Promise<Response> {
     await upsertConnection({
       ...existingConnection,
       vendorId: recipe.id,
+      destinationId: boundDestinationId,
       connectedAt: existingConnection?.connectedAt ?? Date.now(),
     });
 
@@ -599,7 +697,10 @@ function completeDiscoveredConnect(vendorId: string, expectedRunId?: string): Pr
         ? { ok: true, summaries: [] }
         : { ok: false, error: "The discovery preview expired. Try the supplier again." };
     }
-    if (!(await getSinkConfig())) {
+    // The destination chosen before Chrome's permission prompt, re-checked now
+    // that the run is about to start: it may have been disconnected in between.
+    const destinationId = pending.destinationId;
+    if (!destinationId || !(await getDestination(destinationId))) {
       await restoreSupplierDiscoveryPreview(pending.runId);
       return { ok: false, error: "Choose a destination before collecting." };
     }
@@ -614,9 +715,9 @@ function completeDiscoveredConnect(vendorId: string, expectedRunId?: string): Pr
       await assertDiscoveredSupplierCapacity(candidates.id);
       const result = await collectFirstWorkingCandidate(candidates, async (profile, index) => {
         let committed = false;
-        const summary = await runDiscoveredCandidate(profile.recipe, async () => {
+        const summary = await runDiscoveredCandidate(profile.recipe, destinationId, async () => {
           await upsertDiscoveredSupplier(profile);
-          await upsertConnection({ vendorId: profile.id, connectedAt: Date.now() });
+          await upsertConnection({ vendorId: profile.id, destinationId, connectedAt: Date.now() });
           committed = true;
         }, pending.fromMonth);
         const proof = summary.retrievalProof;

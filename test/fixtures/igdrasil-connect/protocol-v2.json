@@ -1,0 +1,74 @@
+{
+  "$comment": "Frozen shared contract for the Ratatosk <-> Igdrasil connect bridge. This file is mirrored byte-for-byte into the Igdrasil repository under services/engine-api/tests/fixtures/igdrasil-connect/. Neither side may hand-roll its own copy of these shapes; both assert against these bytes and against manifest.json.",
+  "protocol": 2,
+  "tag": "invoice-collector",
+  "origin": "https://accounting.igdrasil.se",
+  "tokenPattern": "^rat_[a-f0-9]{64}$",
+  "statePattern": "^[a-f0-9]{64}$",
+  "errorCodes": [
+    "intent_missing",
+    "intent_expired",
+    "origin_not_allowed",
+    "token_invalid",
+    "backend_not_allowed",
+    "company_already_connected",
+    "unknown_company",
+    "invalid_request",
+    "revoke_failed"
+  ],
+  "messages": {
+    "igdrasil:ping": {
+      "relayedToWorker": false,
+      "request": [],
+      "response": ["ok", "present", "version", "protocol"]
+    },
+    "igdrasil:prepare": {
+      "relayedToWorker": true,
+      "request": [],
+      "response": ["ok", "protocol", "state"]
+    },
+    "igdrasil:validate": {
+      "relayedToWorker": true,
+      "request": ["state"],
+      "response": ["ok", "protocol"]
+    },
+    "igdrasil:connect": {
+      "relayedToWorker": true,
+      "request": ["token", "companyId", "companyName", "apiBaseUrl", "state", "expiresAt"],
+      "optionalRequest": ["expiresAt"],
+      "response": ["ok", "protocol"],
+      "semantics": "adds a company to the destination set; it never replaces an existing destination"
+    },
+    "igdrasil:status": {
+      "relayedToWorker": true,
+      "request": [],
+      "response": ["ok", "protocol", "companies"],
+      "companyFields": ["companyId", "companyName", "supplierCount", "expiresAt"],
+      "optionalCompanyFields": ["expiresAt"]
+    },
+    "igdrasil:disconnect": {
+      "relayedToWorker": true,
+      "request": ["companyId"],
+      "response": ["ok", "protocol"]
+    }
+  },
+  "presentAnnouncement": ["__ic", "kind", "version", "protocol"],
+  "envelope": {
+    "request": ["__ic", "kind", "requestId", "payload"],
+    "response": ["__ic", "kind", "requestId", "result"]
+  },
+  "refusals": {
+    "protocolV1Connect": {
+      "$comment": "A v1-shaped connect carries a session JWT and no state. It must be refused with a typed code, never accepted.",
+      "payload": { "type": "igdrasil:connect", "token": "eyJhbGciOiJSUzI1NiJ9.session.jwt", "companyId": "11111111-1111-4111-8111-111111111111", "apiBaseUrl": "https://accounting.igdrasil.se/api" },
+      "result": { "ok": false, "code": "invalid_request", "protocol": 2 }
+    },
+    "unknownCompanyDisconnect": {
+      "payload": { "type": "igdrasil:disconnect", "companyId": "22222222-2222-4222-8222-222222222222" },
+      "result": { "ok": false, "code": "unknown_company", "protocol": 2 }
+    },
+    "duplicateCompanyConnect": {
+      "result": { "ok": false, "code": "company_already_connected", "protocol": 2 }
+    }
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "$comment": "Frozen shared contract for POST /api/documents/ingest. Mirrored byte-for-byte into the Igdrasil repository. HttpSink builds exactly this body; engine-api accepts exactly this body.",
+  "method": "POST",
+  "path": "/api/documents/ingest",
+  "contentType": "multipart/form-data",
+  "headers": {
+    "required": ["Authorization", "Idempotency-Key", "X-Company-Id"],
+    "sent": ["Authorization", "Idempotency-Key", "X-Company-Id", "X-Collector"],
+    "authorization": "Bearer rat_<64 hex>",
+    "collector": "invoice-collector-extension"
+  },
+  "fields": {
+    "required": ["file", "source", "vendor_id", "vendor_invoice_id", "idempotency_key"],
+    "optional": ["issued_at", "amount_gross", "currency", "company_id"],
+    "alwaysSentByCollector": ["file", "source", "vendor_id", "vendor_invoice_id", "idempotency_key", "company_id"]
+  },
+  "tenantAuthority": {
+    "$comment": "The token record is the only source of tenant truth. The header and the form field are cross-checks that can only cause rejection.",
+    "source": "token_record",
+    "crossChecks": ["X-Company-Id", "company_id"],
+    "onDisagreement": 401
+  },
+  "responses": {
+    "accepted": {
+      "status": 200,
+      "body": { "accepted": true, "duplicate": false, "document_id": "00000000-0000-4000-8000-000000000000" }
+    },
+    "duplicateContent": {
+      "$comment": "A new idempotency key whose bytes were already ingested for this company.",
+      "status": 200,
+      "body": { "accepted": true, "duplicate": true, "document_id": "00000000-0000-4000-8000-000000000000" }
+    },
+    "replayedKey": {
+      "$comment": "A repeat Idempotency-Key. Reported as a duplicate delivery so the Collector does not count it as newly collected. HttpSink treats duplicate:true as deduped on any 2xx and on 409.",
+      "status": 200,
+      "headers": { "Idempotent-Replayed": "true" },
+      "body": { "accepted": true, "duplicate": true, "document_id": "00000000-0000-4000-8000-000000000000" }
+    },
+    "inFlight": {
+      "$comment": "A conflict that is NOT a duplicate must stay a delivery failure: HttpSink only accepts a 409 when duplicate === true.",
+      "status": 409,
+      "bodyHasDuplicateTrue": false
+    },
+    "unauthorized": { "status": 401 }
+  },
+  "importSource": "invoice_collector",
+  "slidingRenewal": {
+    "$comment": "A successful ingest extends the company token. The write is rate-bounded so a bulk collection does not issue one write per invoice.",
+    "lifetimeDays": 90,
+    "minimumAdvanceDays": 1
+  }
+}

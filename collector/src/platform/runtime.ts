@@ -5,12 +5,11 @@ import { networkStrategy } from "../../../src/core/strategies/network";
 import { htmlStrategy } from "../../../src/core/strategies/html";
 import { makeDomStrategy, unavailableDomStrategy } from "../../../src/core/strategies/dom";
 import type { IngestSink } from "../../../src/ingest/sink";
-import { HttpSink } from "../../../src/ingest/http-sink";
 import { createIgdrasilSink } from "../../../src/ingest/igdrasil-sink";
 import { PageFetcher } from "./page-fetch";
 import { FilesystemSink } from "./filesystem-sink";
 import { getHostToken } from "./auth";
-import { type SinkConfig, seenStore } from "./storage";
+import { type Destination, seenStore } from "./storage";
 import { BrowserDomDriver } from "./browser-dom-driver";
 import { render } from "../../../src/core/template";
 import { createDocumentProviderFetch } from "./document-provider-fetch";
@@ -100,15 +99,33 @@ export function recipeAllowsUrl(recipe: VendorRecipe, value: string): boolean {
   }
 }
 
-export function buildSink(cfg: SinkConfig): IngestSink {
-  switch (cfg.kind) {
+/**
+ * Build the delivery path for ONE destination.
+ *
+ * The token provider is closed over the destination's own company, so a sink
+ * can only ever attach the credential belonging to the company id it also
+ * sends. There is no ambient "current token" a later configuration change
+ * could redirect.
+ */
+export function buildSink(destination: Destination): IngestSink {
+  switch (destination.kind) {
     case "filesystem":
-      return new FilesystemSink({ rootFolder: cfg.rootFolder, dateMode: cfg.dateMode });
+      return new FilesystemSink({ rootFolder: destination.rootFolder, dateMode: destination.dateMode });
     case "igdrasil":
-      return createIgdrasilSink({ baseUrl: cfg.endpoint, companyId: cfg.companyId, getToken: getHostToken });
-    case "http":
-      // Generic destinations are deliberately token-less. The Igdrasil session
-      // token must never follow a later configuration change to an arbitrary host.
-      return new HttpSink({ endpoint: cfg.endpoint, companyId: cfg.companyId });
+      return createIgdrasilSink({
+        baseUrl: destination.endpoint,
+        companyId: destination.companyId,
+        getToken: () => getHostToken(destination.companyId),
+      });
+    case "unavailable":
+      throw new DestinationNeedsReconnect(destination.reason);
+  }
+}
+
+/** A destination that exists but cannot be delivered to until it is repaired. */
+export class DestinationNeedsReconnect extends Error {
+  constructor(readonly reason: "invalid_stored_destination" | "connection_expired") {
+    super("invoice destination needs reconnection");
+    this.name = "DestinationNeedsReconnect";
   }
 }

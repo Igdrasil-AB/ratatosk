@@ -24,17 +24,18 @@ describe("pending vendor connection handoff", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("survives the popup closing long enough for the service worker to finish", async () => {
-    await setPendingConnect("anthropic", ["https://claude.ai/*"], 1_000);
+    await setPendingConnect("anthropic", ["https://claude.ai/*"], "local", 1_000);
 
     await expect(getPendingConnect(1_001)).resolves.toEqual({
       vendorId: "anthropic",
       origins: ["https://claude.ai/*"],
+      destinationId: "local",
       startedAt: 1_000,
     });
   });
 
   it("rejects and clears stale handoffs", async () => {
-    await setPendingConnect("anthropic", ["https://claude.ai/*"], 1_000);
+    await setPendingConnect("anthropic", ["https://claude.ai/*"], "local", 1_000);
 
     await expect(getPendingConnect(1_000 + 5 * 60_000 + 1)).resolves.toBeNull();
     expect(chrome.storage.session.remove).toHaveBeenCalledOnce();
@@ -42,7 +43,7 @@ describe("pending vendor connection handoff", () => {
 
   it("does not let one vendor clear another vendor's handoff", async () => {
     const now = Date.now();
-    await setPendingConnect("anthropic", ["https://claude.ai/*"], now);
+    await setPendingConnect("anthropic", ["https://claude.ai/*"], "local", now);
 
     await clearPendingConnect("railway");
     await expect(getPendingConnect(now + 1)).resolves.toMatchObject({ vendorId: "anthropic" });
@@ -50,7 +51,7 @@ describe("pending vendor connection handoff", () => {
 
   it("serializes a replacement handoff behind a vendor-scoped clear", async () => {
     const now = Date.now();
-    await setPendingConnect("anthropic", ["https://claude.ai/*"], now);
+    await setPendingConnect("anthropic", ["https://claude.ai/*"], "local", now);
     let releaseRead: (() => void) | undefined;
     const readBarrier = new Promise<void>((resolve) => { releaseRead = resolve; });
     (chrome.storage.session.get as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(async (key: string) => {
@@ -61,7 +62,7 @@ describe("pending vendor connection handoff", () => {
 
     const clearing = clearPendingConnect("anthropic");
     await vi.waitFor(() => expect(chrome.storage.session.get).toHaveBeenCalled());
-    const replacing = setPendingConnect("railway", ["https://railway.com/*"], now + 1);
+    const replacing = setPendingConnect("railway", ["https://railway.com/*"], "local", now + 1);
     releaseRead?.();
     await Promise.all([clearing, replacing]);
 
@@ -69,7 +70,7 @@ describe("pending vendor connection handoff", () => {
   });
 
   it("serializes a replacement handoff behind stale-record cleanup", async () => {
-    await setPendingConnect("anthropic", ["https://claude.ai/*"], 1_000);
+    await setPendingConnect("anthropic", ["https://claude.ai/*"], "local", 1_000);
     let releaseRead: (() => void) | undefined;
     const readBarrier = new Promise<void>((resolve) => { releaseRead = resolve; });
     (chrome.storage.session.get as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(async (key: string) => {
@@ -80,7 +81,7 @@ describe("pending vendor connection handoff", () => {
 
     const expiring = getPendingConnect(1_000 + 5 * 60_000 + 1);
     await vi.waitFor(() => expect(chrome.storage.session.get).toHaveBeenCalled());
-    const replacing = setPendingConnect("railway", ["https://railway.com/*"], 1_000 + 5 * 60_000 + 2);
+    const replacing = setPendingConnect("railway", ["https://railway.com/*"], "local", 1_000 + 5 * 60_000 + 2);
     releaseRead?.();
     await expect(expiring).resolves.toBeNull();
     await replacing;

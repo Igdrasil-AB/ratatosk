@@ -588,6 +588,23 @@
       .save-path { margin: 2px 0 4px 98px; color: var(--muted); font-size: 10.5px; line-height: 1.45; }
       .save-path code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; color: var(--fg); overflow-wrap: anywhere; }
       .save-path-note { display: block; margin-top: 2px; text-wrap: pretty; }
+      /* Destinations are a list because there is more than one of them. */
+      .destination-list { display: grid; gap: 8px; margin-top: 9px; }
+      .destination-row {
+        display: flex; align-items: center; justify-content: space-between; gap: 10px;
+        min-height: 48px; padding: 9px 12px; border-radius: 11px;
+        background: var(--card); box-shadow: inset 0 0 0 1px var(--border);
+      }
+      .destination-row.needs-reconnect { box-shadow: inset 0 0 0 1px var(--warn-border, var(--border)); }
+      .destination-copy { min-width: 0; display: grid; gap: 2px; }
+      .destination-copy strong { font-size: 12.5px; font-weight: 620; }
+      .destination-copy small { color: var(--muted); font-size: 10.5px; line-height: 1.4; overflow-wrap: anywhere; }
+      .destination-actions { flex: none; display: flex; align-items: center; gap: 6px; }
+      .settings-form .btn.block { margin-top: 9px; }
+      /* The destination a supplier actually delivers to, on the supplier's row. */
+      .vrow .vdest { margin-top: 2px; color: var(--copper); font-size: 10.5px; font-weight: 620; overflow-wrap: anywhere; }
+      .actions .menu-select.connect-select { min-width: 132px; }
+      .actions .menu-select.connect-select summary { min-height: 30px; font-size: 11.5px; }
       .callout { margin-top: 9px; padding: 11px 12px; border-radius: 10px; background: var(--surface); color: var(--muted); font-size: 12px; box-shadow: inset 0 0 0 1px var(--border); }
       .callout strong { color: var(--fg); }
       .context-access {
@@ -735,6 +752,14 @@
     <dialog id="history-dialog" role="alertdialog" aria-labelledby="history-title" aria-describedby="history-description">
       <div class="dialog-body"><h2 id="history-title">Forget <span id="history-name"></span> history?</h2><p id="history-description">Ratatosk will forget which invoices it delivered and remove them from this list. Existing files are not deleted, and the next sync may download them again.</p></div>
       <div class="dialog-actions"><button type="button" class="btn outline" id="cancel-history">Cancel</button><button type="button" class="btn danger" id="confirm-history">Forget History</button></div>
+    </dialog>
+    <dialog id="rebind-dialog" role="alertdialog" aria-labelledby="rebind-title" aria-describedby="rebind-description">
+      <div class="dialog-body"><h2 id="rebind-title">Move <span id="rebind-name"></span> to another destination?</h2><p id="rebind-description">Moving <span id="rebind-target"></span> starts a fresh collection: every invoice Ratatosk can still reach is delivered again to the new destination. Invoices already delivered to the old one stay there and cannot be taken back.</p></div>
+      <div class="dialog-actions"><button type="button" class="btn outline" id="cancel-rebind">Cancel</button><button type="button" class="btn" id="confirm-rebind">Move &amp; Collect</button></div>
+    </dialog>
+    <dialog id="company-dialog" role="alertdialog" aria-labelledby="company-title" aria-describedby="company-description">
+      <div class="dialog-body"><h2 id="company-title">Disconnect <span id="company-name"></span>?</h2><p id="company-description">Ratatosk revokes this company's upload credential. <span id="company-suppliers"></span> Nothing is sent anywhere else in the meantime.</p></div>
+      <div class="dialog-actions"><button type="button" class="btn outline" id="cancel-company">Cancel</button><button type="button" class="btn danger" id="confirm-company">Disconnect Company</button></div>
     </dialog>
     <dialog id="sync-dialog" aria-labelledby="sync-title" aria-describedby="sync-description">
       <div class="dialog-body">

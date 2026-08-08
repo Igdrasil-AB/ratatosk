@@ -288,6 +288,8 @@ export const OPERATIONAL_OUTCOME_CODES = [
   "retrieval_incomplete",
   "month_range_fallback_all",
   "destination_unavailable",
+  "destination_connection_expired",
+  "destination_unbound",
   "connection_persistence_failed",
   "partial_scope_failure",
   "unknown",
@@ -332,6 +334,11 @@ export function operationalOutcomeLabel(code: OperationalOutcomeCode): string {
     case "retrieval_incomplete": return "Invoice retrieval was incomplete";
     case "month_range_fallback_all": return "Invoice dates were unavailable, so all history was checked";
     case "destination_unavailable": return "Invoice destination unavailable";
+    // Distinct from the generic destination failure on purpose: an expired or
+    // revoked company credential has a specific route back — reconnect that one
+    // company — and collapsing it into "unavailable" left no way to offer it.
+    case "destination_connection_expired": return "Igdrasil connection expired — reconnect this company";
+    case "destination_unbound": return "No destination is selected for this supplier";
     case "connection_persistence_failed": return "Supplier connection could not be saved";
     case "partial_scope_failure": return "Some account scopes need attention";
     case "unknown": return "Collection failed";

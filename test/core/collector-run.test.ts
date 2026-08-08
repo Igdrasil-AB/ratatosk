@@ -5,7 +5,8 @@ import type { IngestResult } from "../../src/ingest/sink";
 const mocks = vi.hoisted(() => ({
   streamVendor: vi.fn(),
   resolveCollectorSource: vi.fn(),
-  getSinkConfig: vi.fn(),
+  getDestination: vi.fn(),
+  markDestinationUnavailable: vi.fn(async () => undefined),
   buildRunContext: vi.fn(),
   buildStrategies: vi.fn((
     _recipe?: unknown,
@@ -15,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   recordCollected: vi.fn(async () => undefined),
   recordRun: vi.fn(async () => undefined),
   notifyReconnect: vi.fn(),
+  notifyDestinationReconnect: vi.fn(),
   getNextEligibleRunAt: vi.fn(),
   boundedNextEligibleRunAt: vi.fn(() => 1_800_000),
   getConnections: vi.fn(async () => ({})),
@@ -22,21 +24,26 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../../src/core/engine", () => ({ streamVendor: mocks.streamVendor }));
 vi.mock("../../collector/src/platform/source-catalog", () => ({ resolveCollectorSource: mocks.resolveCollectorSource }));
-vi.mock("../../collector/src/platform/runtime", () => ({
+vi.mock("../../collector/src/platform/runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../collector/src/platform/runtime")>()),
   buildRunContext: mocks.buildRunContext,
   buildStrategies: mocks.buildStrategies,
   buildSink: mocks.buildSink,
 }));
 vi.mock("../../collector/src/platform/storage", () => ({
   getConnections: mocks.getConnections,
-  getSinkConfig: mocks.getSinkConfig,
+  getDestination: mocks.getDestination,
+  markDestinationUnavailable: mocks.markDestinationUnavailable,
   recordCollected: mocks.recordCollected,
   recordRun: mocks.recordRun,
   sinkCompanyId: vi.fn(() => "company"),
   getNextEligibleRunAt: mocks.getNextEligibleRunAt,
   boundedNextEligibleRunAt: mocks.boundedNextEligibleRunAt,
 }));
-vi.mock("../../collector/src/platform/notifications", () => ({ notifyReconnect: mocks.notifyReconnect }));
+vi.mock("../../collector/src/platform/notifications", () => ({
+  notifyReconnect: mocks.notifyReconnect,
+  notifyDestinationReconnect: mocks.notifyDestinationReconnect,
+}));
 
 import { runAllConnected, runDiscoveredCandidate, runVendorById } from "../../collector/src/platform/collector";
 
@@ -44,6 +51,14 @@ describe("Collector per-vendor run coordinator", () => {
   const seenAdd = vi.fn(async () => undefined);
   const sinkSend = vi.fn(async (): Promise<IngestResult> => ({ accepted: true }));
   const dispose = vi.fn(async () => undefined);
+  /** Bindings the run loop reads. A Proxy answers for any vendor id a test uses. */
+  const connections = new Proxy({} as Record<string, unknown>, {
+    get: (target, vendorId: string) => vendorId in target
+      ? target[vendorId]
+      : { vendorId, connectedAt: 0, destinationId: "local" },
+    has: () => true,
+    ownKeys: (target) => Reflect.ownKeys(target),
+  });
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -52,9 +67,11 @@ describe("Collector per-vendor run coordinator", () => {
       recipe: { id, name: id },
       primaryOrigin: "https://example.test",
     }));
-    mocks.getSinkConfig.mockResolvedValue({ kind: "filesystem", rootFolder: "Invoices", dateMode: "invoice" });
+    mocks.getDestination.mockResolvedValue({ kind: "filesystem", rootFolder: "Invoices", dateMode: "invoice" });
     mocks.getNextEligibleRunAt.mockResolvedValue(null);
-    mocks.getConnections.mockResolvedValue({});
+    // Every supplier is bound to the local destination unless a test says
+    // otherwise; a run now resolves the destination from the connection.
+    mocks.getConnections.mockImplementation(async () => connections);
     mocks.buildRunContext.mockReturnValue({ ctx: { seen: { add: seenAdd } }, dispose });
     mocks.buildSink.mockResolvedValue({ send: sinkSend });
   });
@@ -85,8 +102,8 @@ describe("Collector per-vendor run coordinator", () => {
 
   it("does not schedule orphaned retired recipe connections", async () => {
     mocks.getConnections.mockResolvedValue({
-      chatgpt: { vendorId: "chatgpt", connectedAt: 1 },
-      railway: { vendorId: "railway", connectedAt: 2 },
+      chatgpt: { vendorId: "chatgpt", connectedAt: 1, destinationId: "local" },
+      railway: { vendorId: "railway", connectedAt: 2, destinationId: "local" },
     });
     mocks.resolveCollectorSource.mockImplementation(async (id: string) => id === "railway"
       ? { kind: "official", recipe: { id, name: id }, primaryOrigin: "https://railway.com" }
@@ -106,7 +123,7 @@ describe("Collector per-vendor run coordinator", () => {
 
   it("uses the same destination snapshot for the run context and sink", async () => {
     const config = { kind: "filesystem" as const, rootFolder: "Invoices", dateMode: "invoice" as const };
-    mocks.getSinkConfig.mockResolvedValue(config);
+    mocks.getDestination.mockResolvedValue(config);
     mocks.streamVendor.mockImplementationOnce(async (_recipe, _ctx, _strategies, emit) => {
       await emit(document("vendor-destination-snapshot"));
       return { vendorId: "vendor-destination-snapshot", documentCount: 1, scopes: scopes() };
@@ -296,7 +313,7 @@ describe("Collector per-vendor run coordinator", () => {
     });
 
     const recipe = { id: "discovered-vendor", name: "Discovered" } as never;
-    await runDiscoveredCandidate(recipe, async () => {
+    await runDiscoveredCandidate(recipe, "local", async () => {
       order.push("admit");
     }, "2026-03");
 
@@ -319,6 +336,7 @@ describe("Collector per-vendor run coordinator", () => {
 
     await expect(runDiscoveredCandidate(
       { id: "discovered-durable", name: "Discovered" } as never,
+      "local",
       async () => {
         order.push("admit");
         throw new Error("storage unavailable");
@@ -356,6 +374,7 @@ describe("Collector per-vendor run coordinator", () => {
 
     await expect(runDiscoveredCandidate(
       { id: "discovered-trace", name: "Discovered" } as never,
+      "local",
       async () => undefined,
     )).resolves.toMatchObject({
       status: "error",
@@ -424,8 +443,8 @@ describe("Collector per-vendor run coordinator", () => {
   });
 
   it("persists only the exact provider origin when Stripe moves a document", async () => {
-    mocks.getConnections.mockResolvedValueOnce({
-      "vendor-stripe": { vendorId: "vendor-stripe", connectedAt: 1 },
+    mocks.getConnections.mockResolvedValue({
+      "vendor-stripe": { vendorId: "vendor-stripe", connectedAt: 1, destinationId: "local" },
     });
     mocks.streamVendor.mockRejectedValueOnce(new DocumentPermissionRequired("stripe", [
       "https://stripe-upload-api.s3.eu-north-1.amazonaws.com/*",

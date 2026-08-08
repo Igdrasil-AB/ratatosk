@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseConfigResponse, parseInitialBackgroundState } from "../../collector/src/ui/popup/load-state";
+import { parseDestinationsResponse, parseInitialBackgroundState } from "../../collector/src/ui/popup/load-state";
 
 const successful = {
   sourceResponse: { ok: true as const, sources: [] },
@@ -16,7 +16,7 @@ describe("collector popup background snapshot", () => {
       schedule: { periodMinutes: null, nextRunAt: null },
       discovery: { stage: "idle" },
     });
-    expect(parseConfigResponse({ ok: true, config: null })).toBeNull();
+    expect(parseDestinationsResponse({ ok: true, destinations: {} })).toEqual({});
   });
 
   it("rejects a resolved background error instead of converting it to empty state", () => {
@@ -26,8 +26,8 @@ describe("collector popup background snapshot", () => {
     })).toThrow("couldn’t load saved vendors from the background service");
   });
 
-  it("rejects a failed config read instead of treating it as missing setup", () => {
-    expect(() => parseConfigResponse({ ok: false, error: "unavailable" }))
+  it("rejects a failed destination read instead of treating it as missing setup", () => {
+    expect(() => parseDestinationsResponse({ ok: false, error: "unavailable" }))
       .toThrow("couldn’t load destination settings from the background service");
   });
 });
