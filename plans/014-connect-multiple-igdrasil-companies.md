@@ -575,14 +575,45 @@ Igdrasil: `cargo clippy -p engine-api --all-targets -- -D warnings` — pass;
 `staged_operations/executor.rs`, and `bank_reconciliation_projection_drift.rs`,
 which are untouched by this work and were already unformatted on `origin/main`.
 
-### What remains
+### What remains: step 9 live acceptance
 
-Step 9's **live acceptance is not done** — it needs a real browser, two real
-companies, and the deployed engine-api. Specifically: two companies connected
-from one profile; suppliers bound to different companies delivering to the
-correct inboxes; a rebind re-delivering into the new company; disconnecting one
-company leaving the other collecting; and a revoked token producing the
-per-company reconnect state.
+**Not done, and it can only run against production.** There is no staging
+environment, and the extension is bound to exactly
+`https://accounting.igdrasil.se` (`igdrasil-sink.ts:14`) — Fixed architecture
+item 5. Pointing it anywhere else would weaken the origin invariant this plan
+lists as a security invariant, so a local dry run is not available by design.
+
+Its two prerequisites are decisions, not work:
+
+1. **Merge both PRs and publish the frontend.** Only the frontend deploy is
+   strictly required — all five assertions ride on already-live engine-api
+   routes. (The engine-api changes still want deploying for the sliding renewal
+   and duplicate-on-replay to hold in production, but rows 12 and 14 are covered
+   by automated tests either way.)
+2. **Load the extension.** `artifacts/ratatosk-collector-v0.8.49.zip` is built
+   and packaged from this branch. It is not in the Chrome Web Store (Plan 006),
+   so it is loaded unpacked via `chrome://extensions` → Developer mode → Load
+   unpacked → `dist/collector`.
+
+#### The procedure
+
+Two companies the signed-in user owns; call them **A** and **B**. Two suppliers
+with live sessions in the same browser profile; the bundled set is GitHub,
+Railway, Slack, Vercel.
+
+| # | Step | Passes when |
+|---|---|---|
+| 1 | Panel → Settings → Connect another company → pick A. Repeat for B. | Settings lists A and B, each with its own Disconnect. Igdrasil Settings → Invoice Collector lists both with supplier counts. |
+| 2 | Connect supplier 1, choosing A. Connect supplier 2, choosing B. | Each supplier row reads `→ A` / `→ B`. No row names a company it does not feed. |
+| 3 | Collect All. | Supplier 1's invoices appear in A's Inbox, supplier 2's in B's. Verify per company: `SELECT company_id, count(*) FROM documents WHERE import_source='invoice_collector' GROUP BY company_id;` |
+| 4 | Supplier 1 menu → Send to B → confirm the warning. | The dialog states that invoices already delivered to A stay in A. After the run, supplier 1's history is delivered again **into B**; A's rows are unchanged. |
+| 5 | Settings → Disconnect A. | The dialog names the suppliers bound to A. Afterwards they read "Paused · no destination" and are never moved to Downloads. B keeps collecting. |
+| 6 | Revoke B's token server-side (`DELETE /api/documents/ingest/token` with B's bearer, or Disconnect from the Igdrasil app), then Collect All. | B's destination shows "connection expired" with a per-company Reconnect, the notification fires once for the company rather than once per supplier, and the outcome code is `destination_connection_expired` — not the generic `destination_unavailable`. |
+| 7 | Reconnect B from the app. | It repairs in place: same destination id, suppliers still bound, nothing re-delivered. |
+
+Step 7 is the one the review round added. It is not in the plan's original
+matrix and would not have been exercised by it, which is how the refusal-versus-
+upsert defect survived to review.
 
 ### Follow-up worth doing, deliberately not done here
 
