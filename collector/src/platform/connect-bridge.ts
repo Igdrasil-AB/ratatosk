@@ -10,21 +10,21 @@
  * Wire protocol (window.postMessage, same-origin only):
  *   page → bridge:  { __ic: "invoice-collector", kind: "request", requestId, payload }
  *   bridge → page:  { __ic: "invoice-collector", kind: "response", requestId, result }
- *   bridge → page:  { __ic: "invoice-collector", kind: "present", version }   (on load)
+ *   bridge → page:  { __ic: "invoice-collector", kind: "present", version, protocol }  (on load)
  *
  * `payload.type` is one of: "igdrasil:ping" (answered locally), or the fixed
  * prepare/validate/connect/status/disconnect requests relayed to the worker.
  */
+import {
+  igdrasilRefusal,
+  IGDRASIL_CONNECT_PROTOCOL,
+  IGDRASIL_RELAYED_MESSAGE_TYPES,
+} from "../../../src/ingest/igdrasil-protocol";
+
 const TAG = "invoice-collector";
 
 /** Requests forwarded to the service worker (everything else is rejected). */
-const RELAYED = new Set([
-  "igdrasil:prepare",
-  "igdrasil:validate",
-  "igdrasil:connect",
-  "igdrasil:status",
-  "igdrasil:disconnect",
-]);
+const RELAYED = new Set<string>(IGDRASIL_RELAYED_MESSAGE_TYPES);
 
 export interface ConnectBridgeWindow {
   readonly location: { readonly origin: string };
@@ -49,7 +49,7 @@ export function installConnectBridge(
 
   // Announce presence so the app can render "Connect" without polling. The app
   // can also ping at any time, which is reliable if it loads later.
-  bridgeWindow.postMessage({ __ic: TAG, kind: "present", version }, appOrigin);
+  bridgeWindow.postMessage({ __ic: TAG, kind: "present", version, protocol: IGDRASIL_CONNECT_PROTOCOL }, appOrigin);
 
   bridgeWindow.addEventListener("message", (event: MessageEvent) => {
     if (event.source !== bridgeWindow || event.origin !== appOrigin) return;
@@ -67,16 +67,20 @@ export function installConnectBridge(
 
     // Presence check is answered locally — no need to wake the worker.
     if (type === "igdrasil:ping") {
-      reply({ ok: true, present: true, version });
+      reply({ ok: true, present: true, version, protocol: IGDRASIL_CONNECT_PROTOCOL });
       return;
     }
     if (!RELAYED.has(type)) {
-      reply({ ok: false, error: "unsupported request" });
+      reply(igdrasilRefusal("invalid_request"));
       return;
     }
 
     runtime.sendMessage(payload, (res) => {
-      reply(runtime.lastError ? { ok: false, error: runtime.lastError.message } : res);
+      // A runtime error is the worker being unreachable, not a refusal the page
+      // earned by sending something wrong — and its message must not reach the
+      // page as prose either. Saying `invalid_request` here would tell someone
+      // to fix a request that was fine.
+      reply(runtime.lastError ? igdrasilRefusal("extension_unavailable") : res);
     });
   });
 }

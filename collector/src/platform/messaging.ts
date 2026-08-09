@@ -1,4 +1,4 @@
-import type { Connection, LedgerEntry, SinkConfig } from "./storage";
+import type { Connection, Destination, DestinationId, DestinationMap, LedgerEntry } from "./storage";
 import type { VendorRunSummary } from "./collector";
 import type { VendorLifecycleEntry } from "../../../src/vendors/lifecycle";
 import type { CollectorDiagnostic } from "./diagnostics";
@@ -14,10 +14,12 @@ export type { SyncSchedule } from "../../../src/core/sync-schedule";
  */
 export type Message =
   | { type: "listSources" }
-  | { type: "getConfig" }
-  | { type: "setConfig"; config: SinkConfig }
+  | { type: "getDestinations" }
+  | { type: "setLocalDestination"; destination: Extract<Destination, { kind: "filesystem" }> }
+  | { type: "bindSupplier"; vendorId: string; destinationId: DestinationId }
+  | { type: "disconnectCompany"; companyId: string }
   | { type: "beginIgdrasilConnect" }
-  | { type: "beginConnect"; vendorId: string }
+  | { type: "beginConnect"; vendorId: string; destinationId: DestinationId }
   | { type: "completeConnect"; vendorId: string }
   | { type: "cancelConnect"; vendorId: string }
   | { type: "getDiscoveryStatus" }
@@ -25,7 +27,7 @@ export type Message =
   | { type: "beginDiscovery"; tabId: number; origin: string }
   | { type: "completeDiscovery" }
   | { type: "cancelDiscovery" }
-  | { type: "beginDiscoveryConnect"; vendorId: string; fromMonth?: string }
+  | { type: "beginDiscoveryConnect"; vendorId: string; destinationId: DestinationId; fromMonth?: string }
   | { type: "completeDiscoveryConnect"; vendorId: string }
   | { type: "cancelDiscoveryConnect" }
   | { type: "dismissDiscovery" }
@@ -66,7 +68,8 @@ export type Response =
   | { ok: true; sources: SourceView[] }
   | { ok: true; summaries: VendorRunSummary[] }
   | { ok: true; diagnostic: CollectorDiagnostic }
-  | { ok: true; config: SinkConfig | null }
+  | { ok: true; destinations: DestinationMap }
+  | { ok: true; unboundVendorIds: string[] }
   | { ok: true; ledger: LedgerEntry[] }
   | { ok: true; schedule: ScheduleInfo }
   | { ok: true; rememberedRoutes: number }

@@ -1,29 +1,3 @@
-/**
- * Igdrasil ↔ Invoice Collector connect client — protocol v2.
- *
- * The region between the `shared:` markers below is the CANONICAL bridge
- * client. It is mirrored verbatim into the Igdrasil web app at
- * `frontend/src/lib/invoiceCollectorApi.ts`, and both repositories hash it
- * against `test/fixtures/igdrasil-connect/manifest.json`. That gate exists
- * because the previous "copy this file into Igdrasil" instruction produced a
- * client that diverged for three weeks with nothing able to notice: no build
- * and no test spanned the two repositories.
- *
- * Keep the region dependency-free. It talks to the extension's content bridge
- * over `window.postMessage` — no extension id required — and only works on the
- * Igdrasil origin (`https://accounting.igdrasil.se`), the only origin the
- * extension trusts.
- *
- *   const { present } = await pingInvoiceCollector();
- *   if (present) {
- *     const prepared = await prepareInvoiceCollectorConnect();
- *     if (!prepared.ok || !prepared.state) throw new Error("No connection intent");
- *     const token = await mintScopedCollectorToken(prepared.state); // Igdrasil backend
- *     await connectInvoiceCollector({ token, companyId, companyName, apiBaseUrl, state: prepared.state });
- *   }
- */
-
-// ---8<--- shared: igdrasil-connect-client (mirrored; edit in Ratatosk) ---8<---
 const TAG = "invoice-collector";
 export const INVOICE_COLLECTOR_PROTOCOL = 2;
 export const IGDRASIL_COLLECTOR_ORIGIN = "https://accounting.igdrasil.se";
@@ -215,4 +189,3 @@ export function isCollectorConnectionStale(company: ConnectedCompany, now = Date
 export function isCollectorProtocolSupported(protocol: number | undefined): boolean {
   return typeof protocol === "number" && protocol >= INVOICE_COLLECTOR_PROTOCOL;
 }
-// ---8<--- end shared ---8<---

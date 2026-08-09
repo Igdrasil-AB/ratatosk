@@ -1,6 +1,14 @@
 import type { FetchedDocument } from "../core/types";
 import type { IngestResult, IngestSink } from "./sink";
 
+/** The destination refused the credential — it needs reconnecting, not retrying. */
+export class IngestUnauthorized extends Error {
+  constructor(readonly status: number) {
+    super(`ingest credential refused: HTTP ${status}`);
+    this.name = "IngestUnauthorized";
+  }
+}
+
 export interface HttpSinkConfig {
   /** Full URL to POST documents to. */
   endpoint: string;
@@ -102,6 +110,10 @@ export class HttpSink implements IngestSink {
       duplicate?: boolean;
     };
     if (res.status === 409 && body.duplicate === true) return { accepted: true, deduped: true };
+    // A refused credential is a different fact from an unreachable destination:
+    // it is fixed by reconnecting one company, not by retrying. Collapsing the
+    // two left an expired connection stopping collection with no route back.
+    if (res.status === 401 || res.status === 403) throw new IngestUnauthorized(res.status);
     if (!res.ok) throw new Error(`ingest failed: HTTP ${res.status}`);
     return { accepted: true, deduped: body.duplicate, id: body.document_id ?? body.id };
   }

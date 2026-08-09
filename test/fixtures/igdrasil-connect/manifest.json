@@ -1,0 +1,11 @@
+{
+  "$comment": "Checksums of the frozen shared contract. This file is mirrored byte-for-byte into the Igdrasil repository; each side recomputes these hashes over its own copy, so a change made on one side and not the other fails BOTH suites. Regenerate with `npm run gen:contract-manifest`.",
+  "version": 1,
+  "protocol": 2,
+  "files": {
+    "ingest.json": "6bc9b9e7587d5bfe1f215d52f294358a0f0a205e56bcf81fd2ecfaa4a693ea8f",
+    "protocol-v2.json": "629ddacf5301b22592ce253801754bed7e4743f1de0150db7b3d2184af4b15fc",
+    "shared-client.ts.txt": "a782dc03d93f8e85fb4f497d9f7ad78bf0bb0c3ccdafb9ab982ea6556e32120d",
+    "token.json": "0e50ef757a47d26bb870e61ec0d6354aad19d8d11e38f2da7f775d2438d5ee68"
+  }
+}

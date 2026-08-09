@@ -1,25 +1,30 @@
 /**
- * The upload-only token for authenticating to the *host backend* (not to vendors
- * — vendor auth rides cookies and never touches this).
+ * The upload-only tokens for authenticating to the *host backend* (not to
+ * vendors — vendor auth rides cookies and never touches these).
  *
- * SECURITY. The token is the crown jewel, so it is handled defensively:
- *   - stores only an Igdrasil-issued, upload-only Collector token — never the
+ * SECURITY. A token is the crown jewel, so it is handled defensively:
+ *   - stores only Igdrasil-issued, upload-only Collector tokens — never the
  *     user's general Clerk session JWT;
  *   - stored in extension-local storage so scheduled collection survives a
  *     browser restart; content scripts cannot access extension storage directly;
- *   - it is treated as a bearer secret: never logged, never written into a
+ *   - treated as a bearer secret: never logged, never written into a
  *     recipe/report/fixture, and only ever sent to an allow-listed backend host
  *     (see `http-sink.ts` `allowTokenHosts`).
  *
- * The web-app connect handshake sets this after minting it from an authenticated,
- * tenant-scoped backend route; the sink reads it per request.
+ * There is one token PER COMPANY, keyed by company id. Company A's token must
+ * never travel with company B's id, and the only way to ask for a token is to
+ * name the company it belongs to.
+ *
+ * The web-app connect handshake sets one after minting it from an
+ * authenticated, tenant-scoped backend route; the sink reads the one belonging
+ * to the destination it was built for.
  */
-const TOKEN_KEY = "hostToken";
-let hostTokenStorageAccess: Promise<void> | undefined;
+import { isCollectorToken } from "../../../src/ingest/igdrasil-protocol";
 
-function isCollectorToken(value: unknown): value is string {
-  return typeof value === "string" && /^rat_[a-f0-9]{64}$/.test(value);
-}
+const TOKENS_KEY = "hostTokens";
+/** Pre-multi-company single token. Read once by the migration, then removed. */
+const LEGACY_TOKEN_KEY = "hostToken";
+let hostTokenStorageAccess: Promise<void> | undefined;
 
 /** Restrict local storage before any upload credential is read or written. The
  * extension service worker is a trusted context; content scripts are not. */
@@ -35,25 +40,63 @@ export function initializeHostTokenStorage(): Promise<void> {
   return hostTokenStorageAccess;
 }
 
-export async function getHostToken(): Promise<string | undefined> {
+/**
+ * Read the whole map, discarding anything that is not a Collector token.
+ *
+ * Stored data is untrusted across extension upgrades and external mutation, and
+ * that discipline has to survive going from one token to many: a map is a
+ * larger surface, not a smaller one.
+ */
+async function readHostTokens(): Promise<Record<string, string>> {
   await initializeHostTokenStorage();
-  const values = await chrome.storage.local.get(TOKEN_KEY);
-  const token = values[TOKEN_KEY];
-  if (token === undefined) return undefined;
-  if (isCollectorToken(token)) return token;
-  // Stored data is untrusted across extension upgrades and external mutation.
-  // Never turn an arbitrary persisted value into an authorization header.
-  await chrome.storage.local.remove(TOKEN_KEY);
-  return undefined;
+  const values = await chrome.storage.local.get(TOKENS_KEY);
+  const stored = values[TOKENS_KEY];
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return {};
+  const tokens: Record<string, string> = {};
+  let discarded = false;
+  for (const [companyId, token] of Object.entries(stored as Record<string, unknown>)) {
+    if (typeof companyId === "string" && companyId.length > 0 && isCollectorToken(token)) tokens[companyId] = token;
+    else discarded = true;
+  }
+  // Never turn an arbitrary persisted value into an authorization header, and
+  // do not leave one sitting in storage either.
+  if (discarded) await chrome.storage.local.set({ [TOKENS_KEY]: tokens });
+  return tokens;
 }
 
-export async function setHostToken(token: string): Promise<void> {
+export async function getHostToken(companyId: string): Promise<string | undefined> {
+  return (await readHostTokens())[companyId];
+}
+
+export async function setHostToken(companyId: string, token: string): Promise<void> {
+  if (!companyId.trim()) throw new Error("invalid company id");
   if (!isCollectorToken(token)) throw new Error("invalid backend token");
-  await initializeHostTokenStorage();
-  await chrome.storage.local.set({ [TOKEN_KEY]: token });
+  const tokens = await readHostTokens();
+  tokens[companyId] = token;
+  await chrome.storage.local.set({ [TOKENS_KEY]: tokens });
 }
 
-export async function clearHostToken(): Promise<void> {
+export async function clearHostToken(companyId: string): Promise<void> {
+  const tokens = await readHostTokens();
+  if (!(companyId in tokens)) return;
+  delete tokens[companyId];
+  await chrome.storage.local.set({ [TOKENS_KEY]: tokens });
+}
+
+/** Companies this browser profile currently holds a credential for. */
+export async function connectedCompanyIds(): Promise<string[]> {
+  return Object.keys(await readHostTokens());
+}
+
+/** The pre-multi-company token, for the one-time migration only. */
+export async function readLegacyHostToken(): Promise<string | undefined> {
   await initializeHostTokenStorage();
-  await chrome.storage.local.remove(TOKEN_KEY);
+  const values = await chrome.storage.local.get(LEGACY_TOKEN_KEY);
+  const token = values[LEGACY_TOKEN_KEY];
+  return isCollectorToken(token) ? token : undefined;
+}
+
+export async function clearLegacyHostToken(): Promise<void> {
+  await initializeHostTokenStorage();
+  await chrome.storage.local.remove(LEGACY_TOKEN_KEY);
 }

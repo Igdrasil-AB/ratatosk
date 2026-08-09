@@ -4,7 +4,8 @@
  */
 import { send, type DiscoveryStatusView, type ScheduleInfo, type SourceView } from "../../platform/messaging";
 import type { VendorRunSummary } from "../../platform/collector";
-import type { LedgerEntry } from "../../platform/storage";
+import type { Destination, DestinationId, LedgerEntry } from "../../platform/storage";
+import { LOCAL_DESTINATION_ID } from "../../platform/storage";
 import { vendorLifecycleLabel } from "../../../../src/vendors/lifecycle";
 import {
   hasTabAwarenessPermission,
@@ -27,7 +28,7 @@ import {
   watchActiveSupplierTab,
   type ActiveSupplierTab,
 } from "./active-supplier-tab";
-import { parseConfigResponse, parseInitialBackgroundState, PopupLoadError } from "./load-state";
+import { parseDestinationsResponse, parseInitialBackgroundState, PopupLoadError } from "./load-state";
 import { folderPath, getDownloadRoot } from "../../platform/download-path";
 import {
   buildCollectionIssueReport,
@@ -55,6 +56,16 @@ const historyName = document.getElementById("history-name") as HTMLElement;
 const confirmHistory = document.getElementById("confirm-history") as HTMLButtonElement;
 const cancelHistory = document.getElementById("cancel-history") as HTMLButtonElement;
 const syncDialog = document.getElementById("sync-dialog") as HTMLDialogElement;
+const rebindDialog = document.getElementById("rebind-dialog") as HTMLDialogElement;
+const rebindName = document.getElementById("rebind-name") as HTMLElement;
+const rebindTarget = document.getElementById("rebind-target") as HTMLElement;
+const confirmRebind = document.getElementById("confirm-rebind") as HTMLButtonElement;
+const cancelRebind = document.getElementById("cancel-rebind") as HTMLButtonElement;
+const companyDialog = document.getElementById("company-dialog") as HTMLDialogElement;
+const companyName = document.getElementById("company-name") as HTMLElement;
+const companySuppliers = document.getElementById("company-suppliers") as HTMLElement;
+const confirmCompany = document.getElementById("confirm-company") as HTMLButtonElement;
+const cancelCompany = document.getElementById("cancel-company") as HTMLButtonElement;
 const syncFromMonth = document.getElementById("sync-from-month") as HTMLInputElement;
 const confirmSync = document.getElementById("confirm-sync") as HTMLButtonElement;
 const cancelSync = document.getElementById("cancel-sync") as HTMLButtonElement;
@@ -68,6 +79,8 @@ type CollectionTarget =
   | { kind: "connected"; vendorId?: string }
   | { kind: "discovery"; vendorId: string };
 let pendingSyncTarget: CollectionTarget | null = null;
+let pendingRebind: { vendorId: string; destinationId: DestinationId } | null = null;
+let pendingCompanyDisconnect: string | null = null;
 let hasLoadedBackgroundState = false;
 /** How long the discovery success card stays before retiring itself. Matches
  * the `discovery-retire` fade in popup.html so it leaves rather than blinks. */
@@ -78,7 +91,7 @@ const expandedSupplierIds = new Set<string>();
 const state = {
   sources: [] as SourceView[],
   ledger: [] as LedgerEntry[],
-  config: null as Awaited<ReturnType<typeof getConfig>>,
+  destinations: {} as Awaited<ReturnType<typeof getDestinations>>,
   schedule: { schedule: { mode: "daily" }, nextRunAt: null } as ScheduleInfo,
   vendorGuidanceSeen: false,
   forceGuidance: false,
@@ -180,7 +193,7 @@ function categoryLabel(category?: string): string {
   return category.charAt(0).toUpperCase() + category.slice(1);
 }
 
-const getConfig = () => send({ type: "getConfig" }).then(parseConfigResponse);
+const getDestinations = () => send({ type: "getDestinations" }).then(parseDestinationsResponse);
 
 function toast(message: string): void {
   if (toastTimer) clearTimeout(toastTimer);
@@ -252,10 +265,10 @@ async function restorePanelUiState(): Promise<void> {
 
 async function load(): Promise<void> {
   try {
-    const [sourceResponse, ledgerResponse, config, scheduleResponse, discoveryResponse, activeSupplierTab, tabAwarenessEnabled, ui, , routeResponse] = await Promise.all([
+    const [sourceResponse, ledgerResponse, destinations, scheduleResponse, discoveryResponse, activeSupplierTab, tabAwarenessEnabled, ui, , routeResponse] = await Promise.all([
       send({ type: "listSources" }),
       send({ type: "getLedger" }),
-      getConfig(),
+      getDestinations(),
       send({ type: "getSchedule" }),
       send({ type: "getDiscoveryStatus" }),
       queryActiveSupplierTab(),
@@ -272,7 +285,7 @@ async function load(): Promise<void> {
     });
     state.sources = background.sources;
     state.ledger = background.ledger;
-    state.config = config;
+    state.destinations = destinations;
     state.schedule = background.schedule;
     state.discovery = background.discovery;
     state.activeSupplierTab = activeSupplierTab;
@@ -324,7 +337,7 @@ function renderHome(): void {
   const needsAttention = connected.filter(sourceNeedsAttention);
 
   let status = "";
-  if (!state.config) {
+  if (!hasAnyDestination()) {
     // The button below is this screen's action; repeating it here as a link
     // only makes a person choose between two identical things.
     status = `<div class="status"><span class="dot warn" aria-hidden="true"></span><strong>Setup Required</strong></div>`;
@@ -385,7 +398,7 @@ function renderHome(): void {
       </div>
     </section>`;
   } else {
-    const hasDestination = Boolean(state.config);
+    const hasDestination = hasAnyDestination();
     body = `<section class="home-editorial" aria-labelledby="setup-title">
       <h1 id="setup-title">Every invoice, in one place.</h1>
       <ol class="setup-ledger">
@@ -407,7 +420,7 @@ function renderHome(): void {
  */
 function discoverableTab(): ActiveSupplierTab | null {
   const page = state.activeSupplierTab;
-  if (!state.config || !page) return null;
+  if (!hasAnyDestination() || !page) return null;
   return state.sources.some((source) => source.primaryOrigin === page.origin) ? null : page;
 }
 
@@ -440,9 +453,9 @@ function sheetHeader(title: string, trailing = ""): string {
 }
 
 function renderVendors(): void {
-  const destination = state.config?.kind === "filesystem"
-    ? "your local Downloads folder"
-    : state.config?.kind === "igdrasil" ? "your connected Igdrasil company" : "the destination you select";
+  const destination = destinationEntries().length === 1
+    ? (destinationEntries()[0].id === LOCAL_DESTINATION_ID ? "your local Downloads folder" : `${destinationName(destinationEntries()[0])} in Igdrasil`)
+    : "the destination each supplier is bound to";
   const showGuidance = !state.vendorGuidanceSeen || state.forceGuidance;
   // Collapsed by default. It answers a question a person may not have yet, and
   // expanded it pushed the vendors — and their buttons — below the fold.
@@ -463,6 +476,19 @@ function renderVendors(): void {
       ? `<button type="button" class="btn tonal sm" data-action="connect" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}" ${isBusy ? "disabled" : ""}>${isBusy ? "Connecting…" : "Connect"}</button>`
       : `<button type="button" class="btn tonal sm" disabled aria-describedby="vendor-status-${esc(source.id)}">Unavailable</button>`;
     let secondaryAction = `<span class="action-spacer" aria-hidden="true"></span>`;
+    const bound = findDestination(connection?.destinationId ?? undefined);
+    // With more than one destination the Connect button becomes the choice
+    // itself, so a supplier can never be admitted before its destination is
+    // known — and picking an option is still the click Chrome needs to prompt.
+    if (!connection && source.runnable && bindableDestinations().length > 1) {
+      action = destinationMenu({
+        label: `Destination for ${source.name}`,
+        action: "connect",
+        vendorId: source.id,
+        summary: isBusy ? "Connecting…" : "Connect to…",
+        className: "connect-select",
+      });
+    }
     // A row is a status plus a button. The button says what to do, so the status
     // only has to say what is true — not repeat the instruction.
     if (connection && source.missingHosts.length > 0) {
@@ -484,6 +510,25 @@ function renderVendors(): void {
         ? connection.lastError ? `Sync failed — ${connection.lastError}` : "Sync failed"
         : count > 0 ? `${count} collected · ${synced}` : `Connected · ${synced}`;
       action = `<button type="button" class="btn outline sm" data-action="sync" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}">Sync</button>`;
+      if (!bound) {
+        // Left behind by a company disconnect. Paused, never redirected: the
+        // one thing worse than not collecting is collecting somewhere else.
+        sub = "Paused · no destination";
+        action = bindableDestinations().length
+          ? destinationMenu({
+            label: `Destination for ${source.name}`,
+            action: "rebind",
+            vendorId: source.id,
+            summary: "Choose destination",
+            className: "connect-select",
+          })
+          : `<button type="button" class="btn warn sm" data-action="open-settings">Add Destination</button>`;
+      } else if (bound.destination.kind === "unavailable") {
+        sub = bound.destination.reason === "connection_expired"
+          ? `${destinationName(bound)} · connection expired`
+          : `${destinationName(bound)} · needs reconnecting`;
+        action = `<button type="button" class="btn warn sm" data-action="connect-igdrasil">Reconnect</button>`;
+      }
     }
     const error = state.inlineError?.scope === "vendor" && state.inlineError.vendorId === source.id
       ? `<div class="inline-error" id="vendor-error-${esc(source.id)}" role="alert" tabindex="-1">${esc(state.inlineError.message)}</div>` : "";
@@ -491,14 +536,23 @@ function renderVendors(): void {
       const diagnostic = connection.lastStatus && connection.lastStatus !== "ok"
         ? `<button type="button" data-action="report-vendor" data-id="${esc(source.id)}">Report issue</button>`
         : "";
-      secondaryAction = `<details class="vendor-menu"><summary aria-label="More actions for ${esc(source.name)}">${moreIcon()}</summary><div class="vendor-menu-items">${diagnostic}<button type="button" data-action="forget-history" data-id="${esc(source.id)}">Forget history</button><button type="button" class="danger" data-action="disconnect" data-id="${esc(source.id)}">Disconnect</button></div></details>`;
+      const rebind = bindableDestinations()
+        .filter((entry) => entry.id !== connection.destinationId)
+        .map((entry) => `<button type="button" data-action="rebind" data-id="${esc(source.id)}" data-destination="${esc(entry.id)}">Send to ${esc(destinationName(entry))}</button>`)
+        .join("");
+      secondaryAction = `<details class="vendor-menu"><summary aria-label="More actions for ${esc(source.name)}">${moreIcon()}</summary><div class="vendor-menu-items">${rebind}${diagnostic}<button type="button" data-action="forget-history" data-id="${esc(source.id)}">Forget history</button><button type="button" class="danger" data-action="disconnect" data-id="${esc(source.id)}">Disconnect</button></div></details>`;
     }
     const lifecycle = source.kind === "discovered"
       ? `<div class="vlifecycle"><span class="local-badge">Discovered · this browser</span></div>`
       : source.lifecycle?.stage === "pilot"
         ? ""
       : `<div class="vlifecycle">${esc(source.lifecycle ? vendorLifecycleLabel(source.lifecycle) : "Unavailable")}</div>`;
-    return `<li class="vrow">${logo(source.icon, source.name)}<div class="mid"><div class="vn">${esc(source.name)}</div>${lifecycle}<div class="vs" id="vendor-status-${esc(source.id)}">${esc(sub)}</div>${error}</div><div class="actions">${action}${secondaryAction}</div></li>`;
+    // Stated on the row itself. No Ratatosk surface may show a company that is
+    // not this supplier's actual destination.
+    const destinationLine = connection && bound
+      ? `<div class="vdest">→ ${esc(destinationName(bound))}</div>`
+      : "";
+    return `<li class="vrow">${logo(source.icon, source.name)}<div class="mid"><div class="vn">${esc(source.name)}</div>${lifecycle}<div class="vs" id="vendor-status-${esc(source.id)}">${esc(sub)}</div>${destinationLine}${error}</div><div class="actions">${action}${secondaryAction}</div></li>`;
   }).join("");
 
   const infoButton = state.vendorGuidanceSeen && !showGuidance
@@ -553,7 +607,7 @@ function discoveryCard(): string {
       : "";
     return `<aside class="supplier-request discovery-failed" role="${emptyResult ? "status" : "alert"}"><span class="supplier-request-mark" aria-hidden="true">${emptyResult ? "–" : "!"}</span><span class="supplier-request-copy"><strong>${title}</strong><small>${esc(detail)}</small></span><span class="discovery-actions"><button type="button" class="supplier-request-link" data-action="retry-discovery">${emptyResult ? "Search Again" : "Try Again"}</button>${diagnostic}</span></aside>`;
   }
-  if (state.config && !page && !state.tabAwarenessEnabled) {
+  if (hasAnyDestination() && !page && !state.tabAwarenessEnabled) {
     return `<aside class="supplier-request tab-awareness" aria-labelledby="tab-awareness-title"><span class="supplier-request-mark" aria-hidden="true">${branchIcon()}</span><span class="supplier-request-copy"><strong id="tab-awareness-title">Find invoices on this site</strong><small>Chrome will ask once to recognize your active tab.</small></span><span class="discovery-actions"><button type="button" class="supplier-request-link" data-action="enable-tab-awareness" ${state.tabAwarenessRequestPending ? "disabled" : ""}>${state.tabAwarenessRequestPending ? "Preparing…" : "Find Invoices"}</button></span></aside>`;
   }
   const listed = page ? state.sources.find((source) => source.primaryOrigin === page.origin) : undefined;
@@ -561,8 +615,8 @@ function discoveryCard(): string {
     const connected = Boolean(listed.connection);
     return `<aside class="supplier-request"><span class="supplier-request-mark letter" aria-hidden="true">${esc(listed.name.charAt(0).toUpperCase())}</span><span class="supplier-request-copy"><strong>${esc(listed.name)} is already listed</strong><small>${connected ? "Collect from this signed-in session." : `Connect to collect from ${page!.hostname}.`}</small></span><button type="button" class="supplier-request-link" data-action="${connected ? "sync" : "connect"}" data-id="${esc(listed.id)}">${connected ? "Sync Now" : "Connect"}</button></aside>`;
   }
-  const ready = Boolean(state.config && page);
-  const detail = !state.config
+  const ready = Boolean(hasAnyDestination() && page);
+  const detail = !hasAnyDestination()
     ? "Choose a destination first."
     : page ? `Search ${page.hostname}.` : "Open an HTTPS supplier app first.";
   return `<aside class="supplier-request" aria-labelledby="supplier-request-title"><span class="supplier-request-mark" aria-hidden="true">${branchIcon()}</span><span class="supplier-request-copy"><strong id="supplier-request-title">Supplier not listed?</strong><small>${esc(detail)}</small></span><button type="button" class="supplier-request-link" data-action="try-discovery" ${ready ? "" : "disabled"}>Find Invoices</button></aside>`;
@@ -599,17 +653,41 @@ function scheduleSuccessDismiss(): void {
   }, SUCCESS_CARD_MS);
 }
 
+/**
+ * Settings lists every destination, because there is more than one.
+ *
+ * There is deliberately no "active company" selector: a supplier's destination
+ * is a property of that supplier, chosen on its own row. A global selector is
+ * how the accounting app came to tell a bureau user their invoices went to the
+ * company they happened to be looking at.
+ */
 function renderSettings(): void {
-  const config = state.config;
-  const kind = config?.kind ?? "unconfigured";
-  const filesystemConfig = config?.kind === "filesystem" ? config : null;
-  const filesystemChecked = kind === "filesystem" ? "checked" : "";
+  const local = localDestination();
+  const filesystem = local?.destination.kind === "filesystem" ? local.destination : null;
 
-  const destinationFields = filesystemConfig
-    ? `<div class="fields"><div class="field wide"><label for="folder">Folder</label><input id="folder" name="folder" autocomplete="off" spellcheck="false" maxlength="200" placeholder="Accounting/Invoices" data-field="folder" value="${esc(filesystemConfig.rootFolder)}" aria-describedby="folder-path" /></div><p class="save-path" id="folder-path">Saves to <code>${esc(savePath(filesystemConfig.rootFolder))}</code>/supplier/date<span class="save-path-note">Use <code>/</code> to nest. Chrome only lets extensions write inside Downloads.</span></p><div class="field"><label for="date-mode">Folders By</label><select id="date-mode" name="dateMode" autocomplete="off" data-field="datemode"><option value="extraction" ${filesystemConfig.dateMode === "extraction" ? "selected" : ""}>Date Collected</option><option value="invoice" ${filesystemConfig.dateMode === "invoice" ? "selected" : ""}>Invoice Date</option></select></div></div>`
-    : kind === "igdrasil"
-      ? `<div class="callout"><strong>Connected through Igdrasil.</strong> Manage it from the Igdrasil web app.</div>`
-      : `<div class="callout"><strong>Choose a destination first.</strong> Nothing is fetched or saved until you do.</div>`;
+  const folderFields = filesystem
+    ? `<div class="fields"><div class="field wide"><label for="folder">Folder</label><input id="folder" name="folder" autocomplete="off" spellcheck="false" maxlength="200" placeholder="Accounting/Invoices" data-field="folder" value="${esc(filesystem.rootFolder)}" aria-describedby="folder-path" /></div><p class="save-path" id="folder-path">Saves to <code>${esc(savePath(filesystem.rootFolder))}</code>/supplier/date<span class="save-path-note">Use <code>/</code> to nest. Chrome only lets extensions write inside Downloads. One folder setting is shared by every supplier saved here.</span></p><div class="field"><label for="date-mode">Folders By</label><select id="date-mode" name="dateMode" autocomplete="off" data-field="datemode"><option value="extraction" ${filesystem.dateMode === "extraction" ? "selected" : ""}>Date Collected</option><option value="invoice" ${filesystem.dateMode === "invoice" ? "selected" : ""}>Invoice Date</option></select></div></div>`
+    : "";
+
+  const localRow = local
+    ? `<div class="destination-row"><span class="destination-copy"><strong>This Computer</strong><small>${esc(destinationDetail(local))} · ${supplierLabel(supplierCountFor(LOCAL_DESTINATION_ID))}</small></span></div>`
+    : `<button type="button" class="opt opt-link" data-action="enable-local-destination"><span class="radio" aria-hidden="true"></span><span><strong>This Computer</strong><small>Downloads folder</small></span><span class="open-label">Use</span></button>`;
+
+  const companyRows = destinationEntries()
+    .filter((entry) => entry.id !== LOCAL_DESTINATION_ID)
+    .map((entry) => {
+      const needsReconnect = entry.destination.kind === "unavailable";
+      const companyId = destinationCompanyId(entry) ?? "";
+      const reconnect = needsReconnect
+        ? `<button type="button" class="btn warn sm" data-action="connect-igdrasil">Reconnect</button>`
+        : "";
+      return `<div class="destination-row${needsReconnect ? " needs-reconnect" : ""}"><span class="destination-copy"><strong>${esc(destinationName(entry))}</strong><small>${esc(destinationDetail(entry))} · ${supplierLabel(supplierCountFor(entry.id))}</small></span><span class="destination-actions">${reconnect}<button type="button" class="btn outline sm" data-action="disconnect-company" data-company="${esc(companyId)}">Disconnect</button></span></div>`;
+    }).join("");
+
+  const empty = destinationEntries().length
+    ? ""
+    : `<div class="callout"><strong>Choose a destination first.</strong> Nothing is fetched or saved until you do.</div>`;
+
   const error = state.inlineError?.scope === "settings"
     ? `<div class="inline-error settings-error" id="settings-error" role="alert" tabindex="-1">${esc(state.inlineError.message)}</div>` : "";
   const tabAwareness = state.tabAwarenessEnabled
@@ -618,15 +696,21 @@ function renderSettings(): void {
 
   replaceApp(`${sheetHeader("Settings")}
     <form class="settings-form">
-      <fieldset class="grp"><legend>Save Invoices To</legend><div class="opts">
-        <label class="opt"><input type="radio" name="destination" value="filesystem" ${filesystemChecked} /><span class="radio" aria-hidden="true"></span><span><strong>This Computer</strong><small>Downloads folder</small></span></label>
-        <button type="button" class="opt opt-link ${kind === "igdrasil" ? "selected" : ""}" data-action="${kind === "igdrasil" ? "manage-igdrasil" : "connect-igdrasil"}"><span class="radio" aria-hidden="true"></span><span><strong>Igdrasil Accounting</strong><small>${kind === "igdrasil" ? "Connected · invoices go to your inbox" : "Connect or create an Igdrasil account"}</small></span><span class="open-label">${kind === "igdrasil" ? "Manage" : "Connect"}</span></button>
-      </div>${destinationFields}${error}</fieldset>
+      <fieldset class="grp"><legend>Save Invoices To</legend>
+        <div class="destination-list">${localRow}${companyRows}</div>
+        ${folderFields}
+        <button type="button" class="btn tonal sm block" data-action="connect-igdrasil">Connect another company</button>
+        ${empty}${error}
+      </fieldset>
       <fieldset class="grp divider"><legend>Check for New Invoices</legend>${scheduleControls()}</fieldset>
       <fieldset class="grp divider"><legend>Browser Context</legend>${tabAwareness}${rememberedRoutes()}</fieldset>
       <fieldset class="grp divider"><legend>Help</legend><div class="context-access"><span><strong>Report a problem</strong><small>Open an issue on GitHub. A failed search offers a prefilled report with its own details attached.</small></span><button type="button" class="btn outline sm" data-action="open-issues">Open GitHub</button></div></fieldset>
     </form>
     <p class="foot">Runs while Chrome is open. If it is closed, Ratatosk catches up next time.</p>`);
+}
+
+function supplierLabel(count: number): string {
+  return count === 1 ? "1 supplier" : `${count} suppliers`;
 }
 
 /**
@@ -735,10 +819,22 @@ app.addEventListener("click", (event) => {
   if (!element) return;
   const action = element.dataset.action!;
   const vendorId = element.dataset.id;
+  const destinationId = element.dataset.destination as DestinationId | undefined;
   if (action === "connect" && vendorId) {
     // Both calls start before the first await. The browser API therefore keeps
-    // the click activation while the worker prepares a popup-independent handoff.
-    void connectFromUserGesture(vendorId);
+    // the click activation while the worker prepares a popup-independent
+    // handoff — including when the click was a destination choice in a menu.
+    closeMenuSelect();
+    void connectFromUserGesture(vendorId, destinationId);
+    return;
+  }
+  if (action === "rebind" && vendorId && destinationId) {
+    closeMenuSelect();
+    openRebindDialog(vendorId, destinationId);
+    return;
+  }
+  if (action === "disconnect-company") {
+    openCompanyDisconnectDialog(element.dataset.company ?? "");
     return;
   }
   if (action === "enable-tab-awareness") {
@@ -800,8 +896,6 @@ app.addEventListener("change", (event) => {
     const mode = element.value;
     void updateSchedule(scheduleForMode(mode))
       .then(() => restoreFocusTo(`input[name="schedule-mode"][value="${CSS.escape(mode)}"]`));
-  } else if (element instanceof HTMLInputElement && element.name === "destination" && element.value === "filesystem") {
-    void switchToFilesystem();
   }
 });
 
@@ -824,8 +918,9 @@ app.addEventListener("toggle", (event) => {
   persistPanelUiState();
 }, true);
 
-async function connectFromUserGesture(vendorId: string): Promise<void> {
-  if (!state.config) {
+async function connectFromUserGesture(vendorId: string, chosen?: DestinationId): Promise<void> {
+  const bindable = bindableDestinations();
+  if (!bindable.length) {
     screen = "settings";
     persistPanelUiState();
     settingsError("Choose where invoices should be saved, then connect a vendor.");
@@ -836,8 +931,16 @@ async function connectFromUserGesture(vendorId: string): Promise<void> {
     sourceError(vendorId, "That vendor is no longer available. Reopen Ratatosk and try again.");
     return;
   }
+  // The supplier's existing binding, then the one just picked, then the only
+  // one there is. Never a silent default when the user has real choices.
+  const destinationId = chosen ?? source.connection?.destinationId
+    ?? (bindable.length === 1 ? bindable[0].id : undefined);
+  if (!destinationId) {
+    sourceError(vendorId, "Choose where this supplier's invoices should go.");
+    return;
+  }
 
-  const prepared = send({ type: "beginConnect", vendorId });
+  const prepared = send({ type: "beginConnect", vendorId, destinationId });
   const permission = requestHostPermissions(source.missingHosts.length ? source.missingHosts : source.hosts);
   state.busyVendorId = vendorId;
   state.inlineError = null;
@@ -876,7 +979,7 @@ async function connectFromUserGesture(vendorId: string): Promise<void> {
 
 async function discoverFromUserGesture(): Promise<void> {
   const page = state.activeSupplierTab;
-  if (!state.config) {
+  if (!hasAnyDestination()) {
     screen = "settings";
     persistPanelUiState();
     settingsError("Choose where invoices should be saved, then try the supplier again.");
@@ -918,12 +1021,26 @@ async function discoverFromUserGesture(): Promise<void> {
   }
 }
 
-async function connectDiscoveryFromUserGesture(vendorId: string, fromMonth?: string): Promise<void> {
+async function connectDiscoveryFromUserGesture(
+  vendorId: string,
+  fromMonth?: string,
+  chosen?: DestinationId,
+): Promise<void> {
   const discovery = state.discovery;
   if (discovery.stage !== "preview" || discovery.vendorId !== vendorId) return;
+  const bindable = bindableDestinations();
+  const destinationId = chosen ?? (bindable.length === 1 ? bindable[0].id : undefined);
+  if (!destinationId) {
+    toast("Choose where this supplier's invoices should go.");
+    screen = "settings";
+    persistPanelUiState();
+    render();
+    return;
+  }
   const prepared = send({
     type: "beginDiscoveryConnect",
     vendorId,
+    destinationId,
     ...(fromMonth ? { fromMonth } : {}),
   });
   const permission = requestHostPermissions(discovery.requiredOrigins);
@@ -975,6 +1092,7 @@ async function handle(action: string, vendorId?: string): Promise<void> {
     case "report-discovery": await reportDiscoveryIssue(); return;
     case "open-issues": await chrome.tabs.create({ url: generalIssueUrl() }); return;
     case "connect-igdrasil": await openIgdrasilConnect(); return;
+    case "enable-local-destination": await enableLocalDestination(); return;
     case "manage-igdrasil": await chrome.tabs.create({ url: "https://accounting.igdrasil.se/integrations/invoice-collector" }); return;
     case "cancel-discovery":
       await send({ type: "cancelDiscovery" });
@@ -1128,14 +1246,16 @@ async function reportDiscoveryIssue(): Promise<void> {
   await openIssueReport(buildDiscoveryIssueReport(response.discoveryDiagnostic), toast);
 }
 
-async function switchToFilesystem(): Promise<void> {
-  const config = state.config;
+/** Add "This Computer" as one destination among the others, never as a fallback. */
+async function enableLocalDestination(): Promise<void> {
+  const local = localDestination();
+  const filesystem = local?.destination.kind === "filesystem" ? local.destination : null;
   const response = await send({
-    type: "setConfig",
-    config: {
+    type: "setLocalDestination",
+    destination: {
       kind: "filesystem",
-      rootFolder: config?.kind === "filesystem" ? config.rootFolder : "Ratatosk",
-      dateMode: config?.kind === "filesystem" ? config.dateMode : "extraction",
+      rootFolder: filesystem?.rootFolder ?? "Ratatosk",
+      dateMode: filesystem?.dateMode ?? "extraction",
     },
   });
   if (!response.ok) {
@@ -1223,14 +1343,15 @@ async function refreshTabAwareness(): Promise<void> {
 }
 
 async function saveField(field: string, value: string): Promise<void> {
-  const config = state.config;
-  if (config?.kind !== "filesystem") return;
+  const local = localDestination();
+  if (local?.destination.kind !== "filesystem") return;
+  const current = local.destination;
   const next = field === "folder"
-    ? { ...config, rootFolder: value || "Ratatosk" }
-    : field === "datemode" ? { ...config, dateMode: value as "extraction" | "invoice" } : config;
-  const response = await send({ type: "setConfig", config: next });
+    ? { ...current, rootFolder: value || "Ratatosk" }
+    : field === "datemode" ? { ...current, dateMode: value as "extraction" | "invoice" } : current;
+  const response = await send({ type: "setLocalDestination", destination: next });
   if (!response.ok) settingsError(response.error);
-  else state.config = await getConfig();
+  else state.destinations = await getDestinations();
 }
 
 function openDisconnectDialog(vendorId: string): void {
@@ -1295,16 +1416,193 @@ async function disconnectVendor(vendorId: string): Promise<void> {
   }
 }
 
+// ---- destinations ---------------------------------------------------------
+
+interface DestinationEntry {
+  id: DestinationId;
+  destination: Destination;
+}
+
+function destinationEntries(): DestinationEntry[] {
+  return Object.entries(state.destinations)
+    .flatMap(([id, destination]) => destination ? [{ id: id as DestinationId, destination }] : [])
+    // "This Computer" first, then companies by name: a stable order so the same
+    // choice is in the same place every time the panel is opened.
+    .sort((left, right) => {
+      if (left.id === LOCAL_DESTINATION_ID) return -1;
+      if (right.id === LOCAL_DESTINATION_ID) return 1;
+      return destinationName(left).localeCompare(destinationName(right));
+    });
+}
+
+/** Destinations a supplier can actually be bound to right now. */
+function bindableDestinations(): DestinationEntry[] {
+  return destinationEntries().filter((entry) => entry.destination.kind !== "unavailable");
+}
+
+function hasAnyDestination(): boolean {
+  return destinationEntries().length > 0;
+}
+
+function destinationName(entry: DestinationEntry): string {
+  const { id, destination } = entry;
+  if (destination.kind === "filesystem") return "This Computer";
+  if (destination.kind === "igdrasil") return destination.companyName;
+  return destination.companyName ?? (id === LOCAL_DESTINATION_ID ? "This Computer" : "Igdrasil company");
+}
+
+function destinationDetail(entry: DestinationEntry): string {
+  const { destination } = entry;
+  if (destination.kind === "filesystem") return savePath(destination.rootFolder);
+  if (destination.kind === "igdrasil") return "Igdrasil · invoices go to your inbox";
+  return destination.reason === "connection_expired"
+    ? "Connection expired — reconnect to resume"
+    : "Saved settings could not be read — reconnect";
+}
+
+/** The company a destination belongs to, if it belongs to one at all. */
+function destinationCompanyId(entry: DestinationEntry): string | undefined {
+  const { destination } = entry;
+  if (destination.kind === "filesystem") return undefined;
+  return destination.companyId;
+}
+
+function findDestination(id: DestinationId | undefined): DestinationEntry | null {
+  if (!id) return null;
+  const destination = state.destinations[id];
+  return destination ? { id, destination } : null;
+}
+
+function localDestination(): DestinationEntry | null {
+  return findDestination(LOCAL_DESTINATION_ID);
+}
+
+/** How many suppliers currently deliver to one destination. */
+function supplierCountFor(id: DestinationId): number {
+  return state.sources.filter((source) => source.connection?.destinationId === id).length;
+}
+
+function supplierNamesFor(id: DestinationId): string[] {
+  return state.sources.filter((source) => source.connection?.destinationId === id).map((source) => source.name);
+}
+
+/**
+ * One destination, named where it is chosen.
+ *
+ * A supplier's row states the company its invoices actually go to, never the
+ * company that happens to be selected somewhere else — an active-versus-bound
+ * divergence is the defect this whole shape exists to remove.
+ */
+function destinationMenu(input: {
+  label: string;
+  action: string;
+  vendorId: string;
+  current?: DestinationId;
+  summary: string;
+  className?: string;
+}): string {
+  const options = bindableDestinations().map((entry) => {
+    const selected = entry.id === input.current;
+    return `<button type="button" role="option" aria-selected="${selected}" class="menu-option${selected ? " selected" : ""}" data-action="${esc(input.action)}" data-id="${esc(input.vendorId)}" data-destination="${esc(entry.id)}"><span class="menu-check" aria-hidden="true">${selected ? checkIcon() : ""}</span>${esc(destinationName(entry))}</button>`;
+  }).join("");
+  return `<details class="menu-select${input.className ? ` ${input.className}` : ""}"><summary aria-label="${esc(input.label)}"><span class="menu-value">${esc(input.summary)}</span>${chevronIcon()}</summary><div class="menu-options" role="listbox" aria-label="${esc(input.label)}">${options}</div></details>`;
+}
+
+/**
+ * Rebinding is not a preference change; it is a re-collection.
+ *
+ * Idempotency keys are tenant-scoped, so moving a supplier to another company
+ * is a fresh namespace and everything reachable is collected again. Invoices
+ * already delivered to the old company stay there and cannot be retracted —
+ * which the person doing it has to be told before, not after.
+ */
+function openRebindDialog(vendorId: string, destinationId: DestinationId): void {
+  const source = state.sources.find((candidate) => candidate.id === vendorId);
+  const target = findDestination(destinationId);
+  if (!source || !target) return;
+  const current = findDestination(source.connection?.destinationId ?? undefined);
+  if (current?.id === destinationId) return;
+  // Nothing was delivered anywhere yet, so there is nothing to warn about.
+  if (!current) {
+    void rebindSupplier(vendorId, destinationId);
+    return;
+  }
+  pendingRebind = { vendorId, destinationId };
+  rebindName.textContent = source.name;
+  rebindTarget.textContent = `${destinationName(current)} to ${destinationName(target)}`;
+  rebindDialog.showModal();
+}
+
+confirmRebind.addEventListener("click", () => {
+  const pending = pendingRebind;
+  rebindDialog.close();
+  pendingRebind = null;
+  if (pending) void rebindSupplier(pending.vendorId, pending.destinationId);
+});
+cancelRebind.addEventListener("click", () => rebindDialog.close());
+rebindDialog.addEventListener("close", () => { pendingRebind = null; });
+
+async function rebindSupplier(vendorId: string, destinationId: DestinationId): Promise<void> {
+  const response = await send({ type: "bindSupplier", vendorId, destinationId });
+  if (!response.ok) {
+    sourceError(vendorId, `${response.error} Try again.`);
+    return;
+  }
+  const target = findDestination(destinationId);
+  toast(target ? `Now sending to ${destinationName(target)}` : "Destination updated");
+  await load();
+}
+
+function openCompanyDisconnectDialog(companyId: string): void {
+  const entry = destinationEntries().find((candidate) => destinationCompanyId(candidate) === companyId);
+  if (!entry || !companyId) return;
+  pendingCompanyDisconnect = companyId;
+  companyName.textContent = destinationName(entry);
+  const names = supplierNamesFor(entry.id);
+  // Naming them is the point: they stop collecting, and the user is the only
+  // one who may decide where they go instead.
+  companySuppliers.textContent = names.length
+    ? `${names.join(", ")} will stop collecting until you choose a new destination for ${names.length === 1 ? "it" : "them"}.`
+    : "No suppliers are sending to this company.";
+  companyDialog.showModal();
+}
+
+confirmCompany.addEventListener("click", () => {
+  const companyId = pendingCompanyDisconnect;
+  companyDialog.close();
+  pendingCompanyDisconnect = null;
+  if (companyId) void disconnectCompany(companyId);
+});
+cancelCompany.addEventListener("click", () => companyDialog.close());
+companyDialog.addEventListener("close", () => { pendingCompanyDisconnect = null; });
+
+async function disconnectCompany(companyId: string): Promise<void> {
+  toast("Disconnecting…");
+  const response = await send({ type: "disconnectCompany", companyId });
+  if (!response.ok) {
+    settingsError("Ratatosk could not revoke this connection. Try again.");
+    return;
+  }
+  const unbound = "unboundVendorIds" in response ? response.unboundVendorIds.length : 0;
+  toast(unbound
+    ? `Company Disconnected · ${supplierLabel(unbound)} paused`
+    : "Company Disconnected");
+  await load();
+}
+
 function iconFor(vendorId: string): string | undefined {
   return state.sources.find((source) => source.id === vendorId)?.icon;
 }
 
+/** The home screen's one-line summary of where invoices are going. */
 function destinationLabel(): string {
-  const config = state.config;
-  if (config?.kind === "filesystem") return savePath(config.rootFolder);
-  if (config?.kind === "igdrasil") return "Igdrasil Accounting";
-  if (config?.kind === "http") return "Connected Accounting App";
-  return "Not Selected";
+  const entries = destinationEntries();
+  if (!entries.length) return "Not Selected";
+  if (entries.length === 1) return destinationName(entries[0]);
+  const companies = entries.filter((entry) => entry.id !== LOCAL_DESTINATION_ID).length;
+  const local = entries.some((entry) => entry.id === LOCAL_DESTINATION_ID);
+  const companyLabel = `${companies} compan${companies === 1 ? "y" : "ies"}`;
+  return local ? `${companyLabel} + This Computer` : companyLabel;
 }
 
 /**

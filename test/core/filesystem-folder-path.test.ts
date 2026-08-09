@@ -65,17 +65,17 @@ describe("configured save folder", () => {
         set: vi.fn(async (next: Record<string, unknown>) => { Object.assign(values, next); }),
       } },
     });
-    const { setSinkConfig } = await import("../../collector/src/platform/storage");
+    const { setLocalDestination } = await import("../../collector/src/platform/storage");
 
-    // Validation runs before the write is even started, so this throws rather
-    // than rejecting — nothing reaches storage to be rolled back.
+    // Validation runs before anything is written, so the rejection arrives with
+    // storage untouched — there is nothing to roll back.
     for (const rootFolder of ["..", ".", "/", "///"]) {
-      expect(() => setSinkConfig({ kind: "filesystem", rootFolder, dateMode: "extraction" }))
-        .toThrow("invalid download folder");
+      await expect(setLocalDestination({ kind: "filesystem", rootFolder, dateMode: "extraction" }))
+        .rejects.toThrow("invalid download folder");
     }
-    expect(values.config).toBeUndefined();
-    await setSinkConfig({ kind: "filesystem", rootFolder: "Accounting/2026", dateMode: "extraction" });
-    expect(values.config).toMatchObject({ rootFolder: "Accounting/2026" });
+    expect(values.destinations).toBeUndefined();
+    await setLocalDestination({ kind: "filesystem", rootFolder: "Accounting/2026", dateMode: "extraction" });
+    expect(values.destinations).toMatchObject({ local: { rootFolder: "Accounting/2026" } });
 
     vi.unstubAllGlobals();
   });

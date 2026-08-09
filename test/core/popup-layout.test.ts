@@ -204,7 +204,7 @@ describe("Collector popup layout regressions", () => {
     expect(popupSource).toContain('openSyncDialog({ kind: "discovery", vendorId })');
     expect(popupSource).toContain("...(fromMonth ? { fromMonth } : {})");
     expect(serviceWorkerSource).toContain("isSyncMonth(message.fromMonth)");
-    expect(serviceWorkerSource).toContain("beginSupplierDiscoveryConnect(message.vendorId, message.fromMonth)");
+    expect(serviceWorkerSource).toContain("beginSupplierDiscoveryConnect(message.vendorId, message.fromMonth, message.destinationId)");
     expect(serviceWorkerSource).toContain("}, pending.fromMonth)");
     expect(serviceWorkerSource).toContain("DISCOVERY_FAILURE_MESSAGES.monthRangeEmpty");
     expect(popupSource).toContain('connection.lastCode === "month_range_fallback_all"');

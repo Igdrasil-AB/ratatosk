@@ -1,5 +1,5 @@
 import type { DiscoveryStatusView, Response, ScheduleInfo, SourceView } from "../../platform/messaging";
-import type { LedgerEntry, SinkConfig } from "../../platform/storage";
+import type { DestinationMap, LedgerEntry } from "../../platform/storage";
 
 export class PopupLoadError extends Error {
   constructor(label: string) {
@@ -29,8 +29,8 @@ export function parseInitialBackgroundState(input: {
   };
 }
 
-export function parseConfigResponse(response: Response): SinkConfig | null {
-  return requireField<SinkConfig | null>(response, "config", "destination settings");
+export function parseDestinationsResponse(response: Response): DestinationMap {
+  return requireField<DestinationMap>(response, "destinations", "destination settings");
 }
 
 function requireField<T>(response: Response, field: string, label: string): T {

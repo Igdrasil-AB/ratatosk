@@ -23,29 +23,30 @@ describe("Igdrasil Collector credential storage", () => {
   it("persists only the upload-only token shape needed by background sync", async () => {
     const token = `rat_${"a".repeat(64)}`;
 
-    await setHostToken(token);
+    await setHostToken("company-a", token);
 
-    await expect(getHostToken()).resolves.toBe(token);
+    await expect(getHostToken("company-a")).resolves.toBe(token);
     expect(chrome.storage.local.setAccessLevel).toHaveBeenCalledWith({ accessLevel: "TRUSTED_CONTEXTS" });
     expect(vi.mocked(chrome.storage.local.setAccessLevel).mock.invocationCallOrder[0])
       .toBeLessThan(vi.mocked(chrome.storage.local.set).mock.invocationCallOrder[0]);
   });
 
   it("rejects a general user session token", async () => {
-    await expect(setHostToken("eyJhbGciOiJSUzI1NiJ9.session.jwt")).rejects.toThrow(
+    await expect(setHostToken("company-a", "eyJhbGciOiJSUzI1NiJ9.session.jwt")).rejects.toThrow(
       "invalid backend token",
     );
-    await expect(getHostToken()).resolves.toBeUndefined();
+    await expect(getHostToken("company-a")).resolves.toBeUndefined();
   });
 
   it.each(["eyJhbGciOiJSUzI1NiJ9.session.jwt", "rat_short", 42])(
     "fails closed and clears an invalid persisted host credential",
     async (invalidToken) => {
-      values.hostToken = invalidToken;
+      values.hostTokens = { "company-a": invalidToken };
 
-      await expect(getHostToken()).resolves.toBeUndefined();
-      expect(values.hostToken).toBeUndefined();
-      expect(chrome.storage.local.remove).toHaveBeenCalledWith("hostToken");
+      await expect(getHostToken("company-a")).resolves.toBeUndefined();
+      // Never turn an arbitrary persisted value into an authorization header,
+      // and do not leave it sitting in storage waiting for the next read.
+      expect(values.hostTokens).toEqual({});
     },
   );
 
@@ -64,7 +65,29 @@ describe("Igdrasil Collector credential storage", () => {
     });
     const auth = await import("../../collector/src/platform/auth");
 
-    await expect(auth.setHostToken(`rat_${"b".repeat(64)}`)).rejects.toThrow(/restrict Collector credential storage/);
+    await expect(auth.setHostToken("company-a", `rat_${"b".repeat(64)}`)).rejects.toThrow(/restrict Collector credential storage/);
     expect(set).not.toHaveBeenCalled();
+  });
+
+  it("keeps one company's credential from ever answering for another", async () => {
+    const a = `rat_${"a".repeat(64)}`;
+    const b = `rat_${"b".repeat(64)}`;
+
+    await setHostToken("company-a", a);
+    await setHostToken("company-b", b);
+
+    await expect(getHostToken("company-a")).resolves.toBe(a);
+    await expect(getHostToken("company-b")).resolves.toBe(b);
+    // There is no ambient "current token" to fall back to.
+    await expect(getHostToken("company-c")).resolves.toBeUndefined();
+  });
+
+  it("discards only the invalid entries, keeping the companies that are still usable", async () => {
+    const good = `rat_${"c".repeat(64)}`;
+    values.hostTokens = { "company-a": good, "company-b": "eyJhbGciOiJSUzI1NiJ9.session.jwt" };
+
+    await expect(getHostToken("company-a")).resolves.toBe(good);
+    await expect(getHostToken("company-b")).resolves.toBeUndefined();
+    expect(values.hostTokens).toEqual({ "company-a": good });
   });
 });

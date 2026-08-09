@@ -13,18 +13,22 @@ import {
   RetrievalIncomplete,
   type OperationalOutcomeCode,
 } from "../../../src/core/errors";
-import { buildRunContext, buildSink, buildStrategies } from "./runtime";
+import { buildRunContext, buildSink, buildStrategies, DestinationNeedsReconnect } from "./runtime";
 import { resolveCollectorSource } from "./source-catalog";
 import {
   boundedNextEligibleRunAt,
   getConnections,
+  getDestination,
   getNextEligibleRunAt,
-  getSinkConfig,
+  markDestinationUnavailable,
   recordCollected,
   recordRun,
   sinkCompanyId,
+  type DestinationId,
+  type DestinationUnavailableReason,
 } from "./storage";
-import { notifyReconnect } from "./notifications";
+import { IngestUnauthorized } from "../../../src/ingest/http-sink";
+import { notifyReconnect, notifyDestinationReconnect } from "./notifications";
 
 export interface VendorRunSummary {
   vendorId: string;
@@ -78,9 +82,15 @@ export function runVendorById(vendorId: string, fromMonth?: string): Promise<Ven
   if (existing) return existing;
 
   const task = resolveCollectorSource(vendorId)
-    .then((source) => source?.recipe
-      ? executeRecipeRun(source.recipe, undefined, false, fromMonth)
-      : { vendorId, status: "error", count: 0, error: "unknown vendor" } as VendorRunSummary)
+    .then(async (source) => {
+      if (!source?.recipe) return { vendorId, status: "error", count: 0, error: "unknown vendor" } as VendorRunSummary;
+      // The destination is the SUPPLIER's, resolved at the moment the run
+      // starts. There is no global current destination to read, which is what
+      // makes "one supplier, one company" true of every path rather than of
+      // the paths someone remembered to check.
+      const destinationId = (await getConnections())[vendorId]?.destinationId;
+      return executeRecipeRun(source.recipe, destinationId, undefined, false, fromMonth);
+    })
     .finally(() => {
       if (vendorRuns.get(vendorId) === task) vendorRuns.delete(vendorId);
     });
@@ -91,14 +101,16 @@ export function runVendorById(vendorId: string, fromMonth?: string): Promise<Ven
 /** Execute an ephemeral candidate before it is admitted to the local catalog. */
 export function runDiscoveredCandidate(
   recipe: VendorRecipe,
+  destinationId: DestinationId,
   afterFirstDelivery: (document: FetchedDocument) => Promise<void>,
   fromMonth?: string,
 ): Promise<VendorRunSummary> {
-  return executeRecipeRun(recipe, afterFirstDelivery, true, fromMonth);
+  return executeRecipeRun(recipe, destinationId, afterFirstDelivery, true, fromMonth);
 }
 
 async function executeRecipeRun(
   recipe: VendorRecipe,
+  destinationId: DestinationId | undefined,
   afterFirstDelivery?: (document: FetchedDocument) => Promise<void>,
   requireCompleteRetrieval = false,
   fromMonth?: string,
@@ -110,9 +122,16 @@ async function executeRecipeRun(
     return { vendorId, status: "skipped", count: 0, code: "rate_limited", nextEligibleRunAt };
   }
 
-  const config = await getSinkConfig();
-  if (!config) return { vendorId, status: "error", count: 0, error: "choose a destination before collecting" };
-  const { ctx, dispose } = buildRunContext(sinkCompanyId(config), recipe, fromMonth);
+  // A supplier left unbound by a company disconnect is paused, not redirected.
+  // Local Downloads is never an automatic fallback.
+  if (!destinationId) return unboundSummary(vendorId);
+  const destination = await getDestination(destinationId);
+  if (!destination) return unboundSummary(vendorId);
+  if (destination.kind === "unavailable") {
+    return destinationNeedsReconnectSummary(vendorId, destination.reason);
+  }
+
+  const { ctx, dispose } = buildRunContext(sinkCompanyId(destination), recipe, fromMonth);
   const acquisitionMetrics = { documentActions: 0 };
   const strategies = buildStrategies(recipe, {
     onSemanticDocumentAction: () => {
@@ -142,7 +161,7 @@ async function executeRecipeRun(
       // snapshot that supplied this run's tenant/dedup context. A later UI
       // configuration change must apply to the next run, never split one run
       // across two destinations.
-      sink = await buildSink(config);
+      sink = await buildSink(destination);
     } catch (error) {
       throw new DestinationDeliveryError(error);
     }
@@ -237,6 +256,32 @@ async function executeRecipeRun(
       emptyScopes: scopes.empty,
     };
   } catch (err) {
+    // An expired or revoked company credential retires that ONE destination and
+    // offers reconnection, instead of failing every supplier bound to it with a
+    // generic delivery error nobody can act on.
+    if (err instanceof DestinationDeliveryError && err.cause instanceof IngestUnauthorized
+      && destination.kind === "igdrasil") {
+      await markDestinationUnavailable(destinationId, "connection_expired").catch(() => undefined);
+      notifyDestinationReconnect(destination.companyName);
+      const code = "destination_connection_expired" as const;
+      const message = operationalOutcomeLabel(code);
+      await recordRunOutcome({
+        lastStatus: acceptedCount > 0 ? "partial" : "error",
+        lastCount: acceptedCount || undefined,
+        lastCode: code,
+        lastError: message,
+        nextEligibleRunAt: undefined,
+      });
+      return {
+        vendorId,
+        status: acceptedCount > 0 ? "partial" : "error",
+        count: acceptedCount,
+        verifiedCount,
+        ...runMetrics(),
+        code,
+        error: message,
+      };
+    }
     if (err instanceof DestinationDeliveryError) {
       failure = {
         ...collectionFailureEvidence(err.cause, "delivery", failure?.retrieval),
@@ -389,7 +434,9 @@ async function executeRecipeRun(
         ...(failure ? { failure } : {}),
       };
     }
-    const code: OperationalOutcomeCode = err instanceof DestinationDeliveryError ? "destination_unavailable" : operationalCodeForError(err);
+    const code: OperationalOutcomeCode = err instanceof DestinationDeliveryError
+      ? (err.cause instanceof DestinationNeedsReconnect ? "destination_connection_expired" : "destination_unavailable")
+      : operationalCodeForError(err);
     const message = operationalOutcomeLabel(code);
     console.error(`[collector] "${vendorId}": ${message}`);
     if (acceptedCount > 0) {
@@ -428,6 +475,19 @@ function fallbackFailureStage(error: unknown): CollectionFailureStage {
   if (error instanceof DocumentPermissionRequired) return "document_fetch";
   if (error instanceof RetrievalIncomplete) return "invoice_list";
   return "invoice_list";
+}
+
+function unboundSummary(vendorId: string): VendorRunSummary {
+  const code = "destination_unbound" as const;
+  return { vendorId, status: "error", count: 0, code, error: operationalOutcomeLabel(code) };
+}
+
+function destinationNeedsReconnectSummary(
+  vendorId: string,
+  reason: DestinationUnavailableReason,
+): VendorRunSummary {
+  const code = reason === "connection_expired" ? "destination_connection_expired" as const : "destination_unavailable" as const;
+  return { vendorId, status: "error", count: 0, code, error: operationalOutcomeLabel(code) };
 }
 
 /** Run every connected vendor in sequence (keeps concurrency gentle on the host). */

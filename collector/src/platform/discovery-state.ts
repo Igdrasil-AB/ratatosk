@@ -11,6 +11,7 @@ import { OPERATIONAL_OUTCOME_CODES, operationalOutcomeLabel } from "../../../src
 import { parseDiscoveryDiagnostic, type DiscoveryDiagnosticV1 } from "./discovery-diagnostic";
 import { parseExplorationCheckpoint, type ExplorationCheckpoint } from "./discovery-explorer";
 import { isSyncMonth } from "../../../src/core/sync-window";
+import { LOCAL_DESTINATION_ID, type DestinationId } from "./storage";
 
 const KEY = "supplierDiscovery.v1";
 const ACTIVE_TTL_MS = 15 * 60_000;
@@ -43,7 +44,7 @@ export const DISCOVERY_FAILURE_MESSAGES = {
 type DiscoveryState =
   | { stage: "awaiting_permission" | "scanning"; runId: string; tabId: number; origin: string; checkpoint?: ExplorationCheckpoint; updatedAt: number }
   | { stage: "preview"; runId: string; candidates: DiscoveredSupplierCandidateSetV1; diagnostic: DiscoveryDiagnosticV1; updatedAt: number }
-  | { stage: "confirming"; runId: string; candidates: DiscoveredSupplierCandidateSetV1; diagnostic: DiscoveryDiagnosticV1; fromMonth?: string; updatedAt: number }
+  | { stage: "confirming"; runId: string; candidates: DiscoveredSupplierCandidateSetV1; diagnostic: DiscoveryDiagnosticV1; fromMonth?: string; destinationId?: DestinationId; updatedAt: number }
   | { stage: "complete"; runId: string; vendorId: string; name: string; count: number; monthFallbackAll?: boolean; updatedAt: number }
   | { stage: "failed"; runId: string; message: string; origins: string[]; diagnostic?: DiscoveryDiagnosticV1; updatedAt: number };
 
@@ -51,6 +52,8 @@ export interface PendingSupplierDiscovery {
   runId: string;
   candidates: DiscoveredSupplierCandidateSetV1;
   fromMonth?: string;
+  /** The destination the user chose for this supplier before granting access. */
+  destinationId?: DestinationId;
 }
 
 export type DiscoveryStatusView =
@@ -133,6 +136,7 @@ export async function setSupplierDiscoveryPreview(
 export async function beginSupplierDiscoveryConnect(
   vendorId: string,
   fromMonth?: string,
+  destinationId?: DestinationId,
 ): Promise<PendingSupplierDiscovery | undefined> {
   return transition(async () => {
     const state = await read();
@@ -144,16 +148,27 @@ export async function beginSupplierDiscoveryConnect(
       candidates: state.candidates,
       diagnostic: state.diagnostic,
       ...(fromMonth ? { fromMonth } : {}),
+      ...(destinationId ? { destinationId } : {}),
       updatedAt: Date.now(),
     });
-    return { runId: state.runId, candidates: state.candidates, ...(fromMonth ? { fromMonth } : {}) };
+    return {
+      runId: state.runId,
+      candidates: state.candidates,
+      ...(fromMonth ? { fromMonth } : {}),
+      ...(destinationId ? { destinationId } : {}),
+    };
   });
 }
 
 export async function getPendingSupplierDiscoveryConnect(): Promise<PendingSupplierDiscovery | undefined> {
   const state = await read();
   return state?.stage === "confirming"
-    ? { runId: state.runId, candidates: state.candidates, ...(state.fromMonth ? { fromMonth: state.fromMonth } : {}) }
+    ? {
+      runId: state.runId,
+      candidates: state.candidates,
+      ...(state.fromMonth ? { fromMonth: state.fromMonth } : {}),
+      ...(state.destinationId ? { destinationId: state.destinationId } : {}),
+    }
     : undefined;
 }
 
@@ -338,11 +353,17 @@ function parseState(value: unknown): DiscoveryState | undefined {
       if (raw.stage === "confirming" && raw.fromMonth !== undefined && (!fromMonth || !isSyncMonth(fromMonth))) {
         return undefined;
       }
+      // A destination is an identity, so a persisted one is re-parsed rather
+      // than trusted: a malformed value drops the binding and the connect flow
+      // asks again, instead of admitting a supplier to an unknown destination.
+      const destinationId = raw.stage === "confirming" ? parseDestinationId(raw.destinationId) : undefined;
+      if (raw.stage === "confirming" && raw.destinationId !== undefined && !destinationId) return undefined;
       return {
         stage: raw.stage,
         runId: raw.runId, candidates: parseDiscoveredSupplierCandidateSet(raw.candidates),
         diagnostic: parseDiscoveryDiagnostic(raw.diagnostic),
         ...(fromMonth ? { fromMonth } : {}),
+        ...(destinationId ? { destinationId } : {}),
         updatedAt,
       };
     } catch {
@@ -426,4 +447,13 @@ function safeOrigins(value: unknown): string[] {
     if (typeof origin !== "string" || !origin.endsWith("/*")) throw new Error("Invalid discovery origin.");
     return exactOriginPattern(new URL(origin.slice(0, -2)).origin);
   }))];
+}
+
+/** Narrow a persisted destination id without trusting the stored string. */
+function parseDestinationId(value: unknown): DestinationId | undefined {
+  if (typeof value !== "string") return undefined;
+  if (value === LOCAL_DESTINATION_ID) return LOCAL_DESTINATION_ID;
+  return value.startsWith("igdrasil:") && value.length > "igdrasil:".length && value.length <= 240
+    ? value as DestinationId
+    : undefined;
 }
