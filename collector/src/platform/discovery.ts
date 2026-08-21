@@ -965,30 +965,40 @@ async function collectPageEvidenceInPage(
       element.textContent,
     ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim().slice(0, 320);
   };
+  const rowOf = (element: Element): Element | null => element.closest(semanticPolicy.rowSelector);
+  const contextRootOf = (row: Element): Element | null => {
+    const table = row.closest(semanticPolicy.tableSelector);
+    if (table) return table;
+    let root = row.parentElement;
+    for (let depth = 0; root && depth < 5; depth += 1, root = root.parentElement) {
+      if (root.querySelector(semanticPolicy.headerRowSelector)) return root;
+    }
+    return null;
+  };
   const rowContextOf = (element: Element): string => (
-    element.closest(semanticPolicy.contextSelector)?.textContent || ""
+    rowOf(element)?.textContent || element.closest(semanticPolicy.contextSelector)?.textContent || ""
   ).replace(/\s+/g, " ").trim().slice(0, 500);
   const columnContextOf = (element: Element): string => {
-    const cell = element.closest('td,th,[role="cell"],[role="gridcell"],[role="columnheader"]');
-    const row = cell?.closest('tr,[role="row"]');
-    const table = row?.closest(semanticPolicy.tableSelector);
+    const cell = element.closest(semanticPolicy.cellSelector);
+    const row = rowOf(element);
+    const table = row ? contextRootOf(row) : null;
     if (!cell || !row || !table) return "";
-    const cells = Array.from(row.querySelectorAll(':scope > td,:scope > th,:scope > [role="cell"],:scope > [role="gridcell"],:scope > [role="columnheader"]'));
+    const cells = Array.from(row.querySelectorAll(semanticPolicy.cellSelector));
     const index = cells.indexOf(cell);
     if (index < 0) return "";
-    const headerRows = Array.from(table.querySelectorAll('thead tr,[role="row"]')).slice(0, 5);
+    const headerRows = Array.from(table.querySelectorAll(semanticPolicy.headerRowSelector)).slice(0, 5);
     for (const headerRow of headerRows) {
-      const headers = Array.from(headerRow.querySelectorAll(':scope > th,:scope > [role="columnheader"]'));
+      const headers = Array.from(headerRow.querySelectorAll(semanticPolicy.headerCellSelector));
       const text = headers[index]?.textContent?.replace(/\s+/g, " ").trim().slice(0, 120);
       if (text) return text;
     }
     return "";
   };
   const tableContextOf = (element: Element): string => (
-    Array.from(element.closest(semanticPolicy.tableSelector)?.querySelectorAll(
-      'thead th,[role="columnheader"]',
-    ) || [])
+    Array.from((rowOf(element) ? contextRootOf(rowOf(element)!) : element.closest(semanticPolicy.tableSelector))
+      ?.querySelectorAll(semanticPolicy.headerRowSelector) || [])
       .slice(0, 20)
+      .flatMap((row) => Array.from(row.querySelectorAll(semanticPolicy.headerCellSelector)))
       .map((header) => header.textContent)
       .join(" ")
   ).replace(/\s+/g, " ").trim().slice(0, 500);

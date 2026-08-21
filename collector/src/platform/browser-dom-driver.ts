@@ -634,6 +634,7 @@ export async function runDomStepsInPage(
   let observedItems = 0;
   let resolvedItems = 0;
   let unresolvedItems = 0;
+  const documentNumberHeader = new RegExp(semanticPolicy.documentNumberPattern, "i");
   const result = (timedOut = false): PageDomRunResult => ({
     ok: true,
     collected,
@@ -728,19 +729,18 @@ export async function runDomStepsInPage(
   }
 
   function metadataForElement(element: Element): InvoiceMetadataEvidence[] {
-    const row = element.closest('tr,[role="row"],li,[role="listitem"],article');
+    const row = element.closest(semanticPolicy.rowSelector);
     if (!row) return [];
-    const table = row.closest('table,[role="table"],[role="grid"]');
-    const cells = Array.from(row.querySelectorAll(
-      ':scope > td,:scope > th,:scope > [role="cell"],:scope > [role="gridcell"],:scope > [role="columnheader"]',
-    ));
+    let table = row.closest(semanticPolicy.tableSelector);
+    for (let root = row.parentElement, depth = 0; !table && root && depth < 5; depth += 1, root = root.parentElement) {
+      if (root.querySelector(semanticPolicy.headerRowSelector)) table = root;
+    }
+    const cells = Array.from(row.querySelectorAll(semanticPolicy.cellSelector));
     if (!cells.length) return [];
     const headers: string[] = [];
     if (table) {
-      for (const headerRow of Array.from(table.querySelectorAll('thead tr,[role="row"]')).slice(0, 5)) {
-        const found = Array.from(headerRow.querySelectorAll(
-          ':scope > th,:scope > [role="columnheader"]',
-        ));
+      for (const headerRow of Array.from(table.querySelectorAll(semanticPolicy.headerRowSelector)).slice(0, 5)) {
+        const found = Array.from(headerRow.querySelectorAll(semanticPolicy.headerCellSelector));
         if (found.length >= cells.length) {
           for (let index = 0; index < cells.length; index += 1) {
             headers[index] = (found[index]?.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
@@ -766,7 +766,7 @@ export async function runDomStepsInPage(
       if (!text) continue;
       if (
         !claim.invoiceNumber &&
-        /(?:invoice|receipt|reference|document).*(?:number|no\.?|#|id)|^(?:number|no\.?|invoice|receipt)$/i.test(header)
+        documentNumberHeader.test(header)
       ) {
         claim.invoiceNumber = text;
       } else if (
