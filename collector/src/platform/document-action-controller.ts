@@ -658,6 +658,7 @@ export async function runSemanticDocumentOperationInPage(
   const invoiceContext = new RegExp(semanticPolicy.invoiceContextPattern, "i");
   const invoiceRow = new RegExp(semanticPolicy.invoiceRowPattern, "i");
   const actionColumn = new RegExp(semanticPolicy.actionColumnPattern, "i");
+  const documentNumberHeader = new RegExp(semanticPolicy.documentNumberPattern, "i");
   const unsafe = new RegExp(semanticPolicy.unsafeLabelPattern, "i");
   const unsafePath = new RegExp(semanticPolicy.unsafePathPattern, "i");
   const invoiceSectionLabel = new RegExp(semanticPolicy.invoiceSectionPattern, "i");
@@ -696,23 +697,29 @@ export async function runSemanticDocumentOperationInPage(
       element.textContent,
     ].filter(Boolean).join(" "), 320);
   };
-  const rowOf = (element: Element): Element | null =>
-    element.closest('tr,[role="row"],li,[role="listitem"],article');
+  const rowOf = (element: Element): Element | null => element.closest(semanticPolicy.rowSelector);
+  const contextRootOf = (row: Element): Element | null => {
+    const table = row.closest(semanticPolicy.tableSelector);
+    if (table) return table;
+    let root = row.parentElement;
+    for (let depth = 0; root && depth < 5; depth += 1, root = root.parentElement) {
+      if (root.querySelector(semanticPolicy.headerRowSelector)) return root;
+    }
+    return null;
+  };
   const rowContextOf = (element: Element): string => normalize(
-    element.closest(semanticPolicy.contextSelector)?.textContent,
+    rowOf(element)?.textContent ?? element.closest(semanticPolicy.contextSelector)?.textContent,
   );
   const columnContextOf = (element: Element): string => {
-    const cell = element.closest('td,th,[role="cell"],[role="gridcell"],[role="columnheader"]');
-    const row = cell?.closest('tr,[role="row"]');
-    const table = row?.closest(semanticPolicy.tableSelector);
+    const cell = element.closest(semanticPolicy.cellSelector);
+    const row = rowOf(element);
+    const table = row ? contextRootOf(row) : null;
     if (!cell || !row || !table) return "";
-    const cells = Array.from(row.querySelectorAll(
-      ':scope > td,:scope > th,:scope > [role="cell"],:scope > [role="gridcell"],:scope > [role="columnheader"]',
-    ));
+    const cells = Array.from(row.querySelectorAll(semanticPolicy.cellSelector));
     const index = cells.indexOf(cell);
     if (index < 0) return "";
-    for (const headerRow of Array.from(table.querySelectorAll('thead tr,[role="row"]')).slice(0, 5)) {
-      const headers = Array.from(headerRow.querySelectorAll(':scope > th,:scope > [role="columnheader"]'));
+    for (const headerRow of Array.from(table.querySelectorAll(semanticPolicy.headerRowSelector)).slice(0, 5)) {
+      const headers = Array.from(headerRow.querySelectorAll(semanticPolicy.headerCellSelector));
       const text = normalize(headers[index]?.textContent, 120);
       if (text) return text;
     }
@@ -849,15 +856,13 @@ export async function runSemanticDocumentOperationInPage(
   const metadataForElement = (element: Element): InvoiceMetadataEvidence[] => {
     const row = rowOf(element);
     if (!row) return [];
-    const table = row.closest('table,[role="table"],[role="grid"]');
-    const cells = Array.from(row.querySelectorAll(
-      ':scope > td,:scope > th,:scope > [role="cell"],:scope > [role="gridcell"],:scope > [role="columnheader"]',
-    ));
+    const table = contextRootOf(row);
+    const cells = Array.from(row.querySelectorAll(semanticPolicy.cellSelector));
     if (!cells.length) return [];
     const headers: string[] = [];
     if (table) {
-      for (const headerRow of Array.from(table.querySelectorAll('thead tr,[role="row"]')).slice(0, 5)) {
-        const found = Array.from(headerRow.querySelectorAll(':scope > th,:scope > [role="columnheader"]'));
+      for (const headerRow of Array.from(table.querySelectorAll(semanticPolicy.headerRowSelector)).slice(0, 5)) {
+        const found = Array.from(headerRow.querySelectorAll(semanticPolicy.headerCellSelector));
         if (found.length >= cells.length) {
           for (let index = 0; index < cells.length; index += 1) headers[index] = normalize(found[index]?.textContent, 120);
           break;
@@ -880,7 +885,7 @@ export async function runSemanticDocumentOperationInPage(
       if (!header || !text) continue;
       if (
         !claim.invoiceNumber &&
-        /(?:invoice|receipt|reference|document).*(?:number|no\.?|#|id)|^(?:number|no\.?|invoice|receipt)$/i.test(header)
+        documentNumberHeader.test(header)
       ) claim.invoiceNumber = text;
       else if (
         !claim.issuedAt && !/(?:due|paid|period|service|subscription|renew)/i.test(header) &&

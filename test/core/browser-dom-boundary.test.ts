@@ -983,6 +983,50 @@ describe("browser DOM boundary", () => {
     expect(actionControllerSource).toContain("candidate.control.click()");
   });
 
+  it.each([
+    ["invoice", "Invoice Number"],
+    ["receipt", "Receipt Number"],
+    ["statement", "Statement Number"],
+  ])("gives div-based %s rows a stable action identity", async (kind, numberHeader) => {
+    const page = stubDivDocumentPage(kind, numberHeader);
+    try {
+      const result = await runSemanticDocumentOperationInPage(
+        { kind: "enumerate", maximumActions: 8 },
+        ["https://vendor.example"],
+        DISCOVERY_DOM_POLICY,
+        Date.now() + 5_000,
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        kind: "enumeration",
+        observedItems: 1,
+        resolvedItems: 1,
+        unresolvedItems: 0,
+        actions: [{ evidence: [expect.objectContaining({ invoiceNumber: "DOC-001" })] }],
+      });
+    } finally {
+      page.restore();
+    }
+  });
+
+  it("extracts metadata from direct links in div-based document rows", async () => {
+    const page = stubDivDocumentPage("receipt", "Receipt Number", "https://vendor.example/receipts/DOC-001.pdf");
+    try {
+      await expect(runDomStepsInPage([{
+        action: "extractAll",
+        selector: "[data-document-link]",
+        attr: "data-url",
+        as: "documents",
+      }], ["https://vendor.example"], DISCOVERY_DOM_POLICY, null)).resolves.toMatchObject({
+        ok: true,
+        documents: [{ evidence: [expect.objectContaining({ invoiceNumber: "DOC-001" })] }],
+      });
+    } finally {
+      page.restore();
+    }
+  });
+
   it("waits for each revealed billing tier to mount instead of racing one mutation", async () => {
     // Every tier of an account menu mounts asynchronously. A framework flips an
     // unrelated attribute immediately, so a single mutation resolves long
@@ -1115,6 +1159,57 @@ function stubSemanticPage(): { clicked: string[]; restore: () => void } {
   }
 
   return { clicked, restore: () => vi.unstubAllGlobals() };
+}
+
+function stubDivDocumentPage(
+  kind: string,
+  numberHeader: string,
+  documentUrl?: string,
+): { restore: () => void } {
+  const node = (text = "", attributes: Record<string, string> = {}) => ({
+    textContent: text,
+    children: [] as unknown[],
+    getAttribute: (name: string) => attributes[name] ?? null,
+    hasAttribute: (name: string) => name in attributes,
+    querySelector: () => null,
+    querySelectorAll: () => [] as unknown[],
+    closest: () => null,
+    getBoundingClientRect: () => ({ width: 120, height: 32 }),
+  });
+  const headers = [node("Date"), node(numberHeader), node("Invoice Total"), node("")];
+  const headerRow = { ...node(), children: headers, querySelectorAll: () => headers };
+  const cells = [node("2026-08-17"), node("DOC-001"), node("$30"), node("")];
+  const section = { ...node(), querySelector: () => headerRow, querySelectorAll: () => [headerRow] };
+  const row = {
+    ...node(`2026-08-17 DOC-001 $30 ${kind}`),
+    children: cells,
+    parentElement: section,
+    querySelectorAll: () => cells,
+    closest: (selector: string) => selector === "section,article" ? section : null,
+  };
+  const control = {
+    ...node("", { title: `Download ${kind}`, ...(documentUrl ? { "data-url": documentUrl } : {}) }),
+    closest: (selector: string) => {
+      if (selector === "form") return null;
+      if (selector === DISCOVERY_DOM_POLICY.cellSelector) return cells[3];
+      if (selector === DISCOVERY_DOM_POLICY.rowSelector || selector === DISCOVERY_DOM_POLICY.contextSelector) return row;
+      return null;
+    },
+  };
+
+  vi.stubGlobal("document", {
+    title: "Billing",
+    getElementById: () => null,
+    querySelector: () => null,
+    querySelectorAll: (selector: string) => selector === DISCOVERY_DOM_POLICY.controlSelector || selector === "[data-document-link]"
+      ? [control]
+      : selector === "h1,h2,h3,caption" ? [node(`${kind}s`)] : [],
+  });
+  vi.stubGlobal("location", { href: "https://vendor.example/settings/billing", pathname: "/settings/billing" });
+  vi.stubGlobal("getComputedStyle", () => ({ display: "block", visibility: "visible", opacity: "1" }));
+  vi.stubGlobal("window", {});
+  for (const name of ["HTMLElement", "HTMLAnchorElement"]) vi.stubGlobal(name, class {});
+  return { restore: () => vi.unstubAllGlobals() };
 }
 
 function domRecipe() {
