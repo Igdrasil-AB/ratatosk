@@ -37,9 +37,15 @@ describe("Collector popup layout regressions", () => {
     expect(popupStyles).toMatch(/\.vendor-menu-items button \{[^}]*min-height:\s*40px/s);
   });
 
-  it("reads the two home facts as the shortcuts to the screens that change them", () => {
+  it("routes home facts to the per-vendor collection view", () => {
     expect(popupSource).toContain('class="fact" data-action="open-vendors"');
-    expect(popupSource).toContain('class="fact" data-action="open-settings"');
+  });
+
+  it("makes the Igdrasil company handoff explicit before anything is connected", () => {
+    expect(popupSource).toContain("Connect Igdrasil company");
+    expect(popupSource).toContain("Choose a company in Igdrasil");
+    expect(popupSource).toContain("Connected to Igdrasil");
+    expect(popupSource).toContain("const companyConnect = companies.length");
   });
 
   it("offers the flagship search from the first screen while a matching tab is open", () => {
@@ -151,7 +157,7 @@ describe("Collector popup layout regressions", () => {
   it("reports all-supplier sync coverage instead of the newest vendor attempt", () => {
     expect(popupSource).toContain("lastCompleteSyncAt");
     expect(popupSource).toContain("Math.min(...completeSyncs)");
-    expect(popupSource).toContain("all synced");
+    expect(popupSource).toContain("all collected");
     expect(popupSource).toContain("Need Attention");
     expect(popupSource).toContain('data-action="open-attention"');
     expect(popupSource).toContain("sourceNeedsAttention");
@@ -172,13 +178,13 @@ describe("Collector popup layout regressions", () => {
     expect(popupSource).toContain("Supplier not listed?");
     expect(popupSource).toContain("Find Invoices");
     expect(popupSource).toContain("Copy details");
-    expect(popupSource).toContain("Connect &amp; Collect");
+    expect(popupSource).toContain("Verify &amp; Collect");
     expect(popupSource).not.toContain("Studio on GitHub");
     expect(popupSource).not.toContain("Build a reviewed recipe instead");
     expect(popupSource).not.toContain('data-action="open-add-supplier"');
-    expect(popupSource).toContain("Invoice source found");
+    expect(popupSource).toContain("Possible invoice source");
     expect(popupSource).toContain("No invoices found");
-    expect(popupSource).not.toContain("possible invoice${");
+    expect(popupSource).toContain("possible invoice control");
     expect(popupStyles).toMatch(/\.supplier-request-link \{[^}]*min-height:\s*40px/s);
     expect(popupStyles).toMatch(/\.tab-awareness \.discovery-actions \{[^}]*grid-column:\s*2/s);
     expect(popupStyles).toMatch(/\.tab-awareness \.discovery-actions \{[^}]*flex-direction:\s*row/s);
@@ -192,13 +198,15 @@ describe("Collector popup layout regressions", () => {
     expect(popupSource).toContain("entry.filename");
     expect(popupSource).toContain('aria-label="Invoice date unavailable"');
     expect(popupSource).toContain('aria-label="Invoice amount unavailable"');
-    expect(popupSource).toContain('data-action="sync-all">Collect All');
+    expect(popupSource).toContain('data-action="sync-all">Collect Invoices');
   });
 
   it("asks for an optional starting month before manual collection", () => {
     expect(popupStyles).toContain('id="sync-dialog"');
-    expect(popupStyles).toContain('id="sync-from-month" type="month" min="1970-01"');
-    expect(popupStyles).toContain("Leave empty to check all available history");
+    expect(popupStyles).toContain('id="sync-from-month" name="fromMonth" type="month" min="1970-01"');
+    expect(popupStyles).toContain('id="sync-all-history"');
+    expect(popupStyles).toContain('id="sync-from-month-choice"');
+    expect(popupStyles).toContain("All available history");
     expect(popupSource).toContain('openSyncDialog({ kind: "connected", vendorId: vendorId! })');
     expect(popupSource).toContain('openSyncDialog({ kind: "connected" })');
     expect(popupSource).toContain('openSyncDialog({ kind: "discovery", vendorId })');
@@ -225,8 +233,8 @@ describe("Collector popup layout regressions", () => {
   it("shows the next scheduled run and uses the listed supplier's real action", () => {
     // The date and time it lands on, not only how far away it is: a weekly or
     // monthly schedule is chosen by day, so the day is what confirms it.
-    expect(popupSource).toContain("Next check ${esc(nextRunLabel(state.schedule.nextRunAt))}");
+    expect(popupSource).toContain("Next collection ${esc(nextRunLabel(state.schedule.nextRunAt))}");
     expect(popupSource).toContain("weekday: \"short\", day: \"numeric\", month: \"short\"");
-    expect(popupSource).toContain('${connected ? "Sync Now" : "Connect"}');
+    expect(popupSource).toContain('${connected ? "Collect Now" : "Connect"}');
   });
 });

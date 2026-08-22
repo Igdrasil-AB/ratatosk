@@ -66,6 +66,9 @@ const companyName = document.getElementById("company-name") as HTMLElement;
 const companySuppliers = document.getElementById("company-suppliers") as HTMLElement;
 const confirmCompany = document.getElementById("confirm-company") as HTMLButtonElement;
 const cancelCompany = document.getElementById("cancel-company") as HTMLButtonElement;
+const syncAllHistory = document.getElementById("sync-all-history") as HTMLInputElement;
+const syncFromMonthChoice = document.getElementById("sync-from-month-choice") as HTMLInputElement;
+const syncMonthField = document.getElementById("sync-month-field") as HTMLElement;
 const syncFromMonth = document.getElementById("sync-from-month") as HTMLInputElement;
 const confirmSync = document.getElementById("confirm-sync") as HTMLButtonElement;
 const cancelSync = document.getElementById("cancel-sync") as HTMLButtonElement;
@@ -352,10 +355,10 @@ function renderHome(): void {
     );
     if (completeSyncs.every((timestamp): timestamp is number => typeof timestamp === "number" && timestamp > 0)) {
       const coverageWatermark = Math.min(...completeSyncs);
-      status = `<div class="status" role="status"><span class="dot" aria-hidden="true"></span><strong>Up to Date</strong><span class="sep" aria-hidden="true">·</span><span>all synced ${relTime(coverageWatermark)}</span></div>`;
+      status = `<div class="status" role="status"><span class="dot" aria-hidden="true"></span><strong>Up to Date</strong><span class="sep" aria-hidden="true">·</span><span>all collected ${relTime(coverageWatermark)}</span></div>`;
     } else {
       const pending = completeSyncs.filter((timestamp) => !timestamp).length;
-      status = `<button type="button" class="status status-action" data-action="open-vendors"><span class="dot warn" aria-hidden="true"></span><strong>${pending} Vendor${pending === 1 ? "" : "s"} Awaiting First Sync</strong><span aria-hidden="true">→</span></button>`;
+      status = `<button type="button" class="status status-action" data-action="open-vendors"><span class="dot warn" aria-hidden="true"></span><strong>${pending} Vendor${pending === 1 ? "" : "s"} Awaiting First Collection</strong><span aria-hidden="true">→</span></button>`;
     }
   }
 
@@ -394,7 +397,7 @@ function renderHome(): void {
       ${homePrimaryAction()}
       <div class="home-facts">
         <button type="button" class="fact" data-action="open-vendors"><span class="fact-key">Vendors</span><span class="fact-value">${count} connected</span></button>
-        <button type="button" class="fact" data-action="open-settings" title="${esc(destinationLabel())}"><span class="fact-key">Destination</span><span class="fact-value">${esc(destinationLabel())}</span></button>
+        <button type="button" class="fact" data-action="open-vendors"><span class="fact-key">Destinations</span><span class="fact-value">${esc(destinationSummary())}</span></button>
       </div>
     </section>`;
   } else {
@@ -434,7 +437,7 @@ function discoveryBanner(): string {
 
 function homePrimaryAction(): string {
   return `<div class="home-actions">
-    <button type="button" class="btn lg" data-action="sync-all">Check for Invoices</button>
+    <button type="button" class="btn lg" data-action="sync-all">Collect Invoices</button>
     ${discoveryBanner()}
   </div>`;
 }
@@ -443,7 +446,7 @@ function homePrimaryAction(): string {
 function homeActionBar(): string {
   const banner = discoveryBanner();
   return `${banner ? `<div class="bar-lead">${banner}</div>` : ""}<div class="action-bar">
-    <button type="button" class="btn lg" data-action="sync-all">Collect All</button>
+    <button type="button" class="btn lg" data-action="sync-all">Collect Invoices</button>
     <button type="button" class="ghost" data-action="open-vendors">${branchIcon()}<span>Vendors</span></button>
   </div>`;
 }
@@ -507,9 +510,9 @@ function renderVendors(): void {
         : connection.lastStatus === "rate_limited"
           ? `Paused by vendor · resumes ${relTime(connection.nextEligibleRunAt)}`
           : connection.lastStatus === "error"
-        ? connection.lastError ? `Sync failed — ${connection.lastError}` : "Sync failed"
+        ? connection.lastError ? `Collection failed — ${connection.lastError}` : "Collection failed"
         : count > 0 ? `${count} collected · ${synced}` : `Connected · ${synced}`;
-      action = `<button type="button" class="btn outline sm" data-action="sync" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}">Sync</button>`;
+      action = `<button type="button" class="btn outline sm" data-action="sync" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}">Collect</button>`;
       if (!bound) {
         // Left behind by a company disconnect. Paused, never redirected: the
         // one thing worse than not collecting is collecting somewhere else.
@@ -580,7 +583,7 @@ function discoveryCard(): string {
     const sessionToken = discovery.usesSessionToken
       ? `<small class="discovery-consent">Uses the sign-in token ${esc(discovery.name)} issues to itself. Re-read each time, never stored.</small>`
       : "";
-    return `<aside class="supplier-request discovery-found" aria-labelledby="supplier-request-title"><span class="supplier-request-mark letter" aria-hidden="true">${esc(discovery.name.charAt(0).toUpperCase())}</span><span class="supplier-request-copy"><strong id="supplier-request-title">Invoice source found</strong><small>${esc(discovery.name)} · ${clues} invoice clue${clues === 1 ? "" : "s"} · ${sites} site${sites === 1 ? "" : "s"}</small><small class="discovery-hosts">Access: ${esc(hostnames)}</small>${sessionToken}</span><span class="discovery-actions"><button type="button" class="supplier-request-link" data-action="connect-discovery" data-id="${esc(discovery.vendorId)}">Connect &amp; Collect</button><button type="button" class="quiet-link compact" data-action="cancel-discovery">Cancel</button></span></aside>`;
+    return `<aside class="supplier-request discovery-found" aria-labelledby="supplier-request-title"><span class="supplier-request-mark letter" aria-hidden="true">${esc(discovery.name.charAt(0).toUpperCase())}</span><span class="supplier-request-copy"><strong id="supplier-request-title">Possible invoice source</strong><small>${esc(discovery.name)} · ${clues} possible invoice control${clues === 1 ? "" : "s"} · ${sites} site${sites === 1 ? "" : "s"}</small><small class="discovery-hosts">Access: ${esc(hostnames)}</small>${sessionToken}</span><span class="discovery-actions"><button type="button" class="supplier-request-link" data-action="connect-discovery" data-id="${esc(discovery.vendorId)}">Verify &amp; Collect</button><button type="button" class="quiet-link compact" data-action="cancel-discovery">Cancel</button></span></aside>`;
   }
   if (discovery.stage === "connecting") {
     return `<aside class="supplier-request discovery-progress" role="status"><span class="discovery-spinner" aria-hidden="true"></span><span class="supplier-request-copy"><strong>Verifying a real PDF…</strong><small>${esc(discovery.name)} is saved only if one arrives.</small></span></aside>`;
@@ -613,7 +616,7 @@ function discoveryCard(): string {
   const listed = page ? state.sources.find((source) => source.primaryOrigin === page.origin) : undefined;
   if (listed) {
     const connected = Boolean(listed.connection);
-    return `<aside class="supplier-request"><span class="supplier-request-mark letter" aria-hidden="true">${esc(listed.name.charAt(0).toUpperCase())}</span><span class="supplier-request-copy"><strong>${esc(listed.name)} is already listed</strong><small>${connected ? "Collect from this signed-in session." : `Connect to collect from ${page!.hostname}.`}</small></span><button type="button" class="supplier-request-link" data-action="${connected ? "sync" : "connect"}" data-id="${esc(listed.id)}">${connected ? "Sync Now" : "Connect"}</button></aside>`;
+    return `<aside class="supplier-request"><span class="supplier-request-mark letter" aria-hidden="true">${esc(listed.name.charAt(0).toUpperCase())}</span><span class="supplier-request-copy"><strong>${esc(listed.name)} is already listed</strong><small>${connected ? "Collect from this signed-in session." : `Connect to collect from ${page!.hostname}.`}</small></span><button type="button" class="supplier-request-link" data-action="${connected ? "sync" : "connect"}" data-id="${esc(listed.id)}">${connected ? "Collect Now" : "Connect"}</button></aside>`;
   }
   const ready = Boolean(hasAnyDestination() && page);
   const detail = !hasAnyDestination()
@@ -673,8 +676,8 @@ function renderSettings(): void {
     ? `<div class="destination-row"><span class="destination-copy"><strong>This Computer</strong><small>${esc(destinationDetail(local))} · ${supplierLabel(supplierCountFor(LOCAL_DESTINATION_ID))}</small></span></div>`
     : `<button type="button" class="opt opt-link" data-action="enable-local-destination"><span class="radio" aria-hidden="true"></span><span><strong>This Computer</strong><small>Downloads folder</small></span><span class="open-label">Use</span></button>`;
 
-  const companyRows = destinationEntries()
-    .filter((entry) => entry.id !== LOCAL_DESTINATION_ID)
+  const companies = destinationEntries().filter((entry) => entry.id !== LOCAL_DESTINATION_ID);
+  const companyRows = companies
     .map((entry) => {
       const needsReconnect = entry.destination.kind === "unavailable";
       const companyId = destinationCompanyId(entry) ?? "";
@@ -683,6 +686,12 @@ function renderSettings(): void {
         : "";
       return `<div class="destination-row${needsReconnect ? " needs-reconnect" : ""}"><span class="destination-copy"><strong>${esc(destinationName(entry))}</strong><small>${esc(destinationDetail(entry))} · ${supplierLabel(supplierCountFor(entry.id))}</small></span><span class="destination-actions">${reconnect}<button type="button" class="btn outline sm" data-action="disconnect-company" data-company="${esc(companyId)}">Disconnect</button></span></div>`;
     }).join("");
+  const companyConnect = companies.length
+    ? `<button type="button" class="btn tonal sm block" data-action="connect-igdrasil">Connect another company</button>`
+    : `<button type="button" class="opt opt-link" data-action="connect-igdrasil"><span class="radio" aria-hidden="true"></span><span><strong>Connect Igdrasil company</strong><small>Choose a company in Igdrasil</small></span><span class="open-label">Connect</span></button>`;
+  const companyConnectHelp = companies.length
+    ? ""
+    : `<p class="connect-company-note">Ratatosk opens Igdrasil so you can choose a company. It appears here only after connecting.</p>`;
 
   const empty = destinationEntries().length
     ? ""
@@ -699,11 +708,11 @@ function renderSettings(): void {
       <fieldset class="grp"><legend>Save Invoices To</legend>
         <div class="destination-list">${localRow}${companyRows}</div>
         ${folderFields}
-        <button type="button" class="btn tonal sm block" data-action="connect-igdrasil">Connect another company</button>
+        ${companyConnect}${companyConnectHelp}
         ${empty}${error}
       </fieldset>
       <fieldset class="grp divider"><legend>Check for New Invoices</legend>${scheduleControls()}</fieldset>
-      <fieldset class="grp divider"><legend>Browser Context</legend>${tabAwareness}${rememberedRoutes()}</fieldset>
+      <fieldset class="grp divider"><legend>Find Invoices</legend>${tabAwareness}${rememberedRoutes()}</fieldset>
       <fieldset class="grp divider"><legend>Help</legend><div class="context-access"><span><strong>Report a problem</strong><small>Open an issue on GitHub. A failed search offers a prefilled report with its own details attached.</small></span><button type="button" class="btn outline sm" data-action="open-issues">Open GitHub</button></div></fieldset>
     </form>
     <p class="foot">Runs while Chrome is open. If it is closed, Ratatosk catches up next time.</p>`);
@@ -761,7 +770,7 @@ function scheduleControls(): string {
     ? `<p class="schedule-note">Months without a ${ordinalDay(schedule.day)} use their last day.</p>`
     : "";
   const next = schedule.mode !== "off" && state.schedule.nextRunAt
-    ? `<p class="schedule-next">Next check ${esc(nextRunLabel(state.schedule.nextRunAt))}</p>`
+    ? `<p class="schedule-next">Next collection ${esc(nextRunLabel(state.schedule.nextRunAt))}</p>`
     : "";
 
   return `<div class="seg">${modeOption("Off", "off")}${modeOption("Daily", "daily")}${modeOption("Weekly", "weekly")}${modeOption("Monthly", "monthly")}</div>${dayRow}${shortMonths}${next}`;
@@ -1115,10 +1124,11 @@ async function openIgdrasilConnect(): Promise<void> {
     return;
   }
   await chrome.tabs.create({ url: response.connectUrl });
+  toast("Choose a company in Igdrasil, then return here.");
 }
 
 async function run(message: Parameters<typeof send>[0], vendorId?: string): Promise<void> {
-  toast("Syncing…");
+  toast("Collecting…");
   try {
     const response = await send(message);
     if (!response.ok) {
@@ -1172,9 +1182,23 @@ function openSyncDialog(target: CollectionTarget): void {
   const now = new Date();
   syncFromMonth.value = "";
   syncFromMonth.max = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  syncAllHistory.checked = true;
+  updateSyncScope();
   syncDialog.showModal();
-  requestAnimationFrame(() => syncFromMonth.focus());
+  requestAnimationFrame(() => syncAllHistory.focus());
 }
+
+function updateSyncScope(focusMonth = false): void {
+  const fromMonth = syncFromMonthChoice.checked;
+  syncMonthField.hidden = !fromMonth;
+  syncFromMonth.disabled = !fromMonth;
+  syncFromMonth.required = fromMonth;
+  if (!fromMonth) syncFromMonth.value = "";
+  if (focusMonth && fromMonth) requestAnimationFrame(() => syncFromMonth.focus());
+}
+
+syncAllHistory.addEventListener("change", () => updateSyncScope());
+syncFromMonthChoice.addEventListener("change", () => updateSyncScope(true));
 
 confirmSync.addEventListener("click", () => {
   if (!pendingSyncTarget || !syncFromMonth.reportValidity()) return;
@@ -1454,7 +1478,7 @@ function destinationName(entry: DestinationEntry): string {
 function destinationDetail(entry: DestinationEntry): string {
   const { destination } = entry;
   if (destination.kind === "filesystem") return savePath(destination.rootFolder);
-  if (destination.kind === "igdrasil") return "Igdrasil · invoices go to your inbox";
+  if (destination.kind === "igdrasil") return "Connected to Igdrasil · invoices go to your inbox";
   return destination.reason === "connection_expired"
     ? "Connection expired — reconnect to resume"
     : "Saved settings could not be read — reconnect";
@@ -1603,6 +1627,11 @@ function destinationLabel(): string {
   const local = entries.some((entry) => entry.id === LOCAL_DESTINATION_ID);
   const companyLabel = `${companies} compan${companies === 1 ? "y" : "ies"}`;
   return local ? `${companyLabel} + This Computer` : companyLabel;
+}
+
+function destinationSummary(): string {
+  const count = destinationEntries().length;
+  return count <= 1 ? destinationLabel() : `${count} configured · per vendor`;
 }
 
 /**

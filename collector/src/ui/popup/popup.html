@@ -601,6 +601,7 @@
       .destination-copy small { color: var(--muted); font-size: 10.5px; line-height: 1.4; overflow-wrap: anywhere; }
       .destination-actions { flex: none; display: flex; align-items: center; gap: 6px; }
       .settings-form .btn.block { margin-top: 9px; }
+      .connect-company-note { margin: 7px 2px 0; color: var(--muted); font-size: 10.5px; text-wrap: pretty; }
       /* The destination a supplier actually delivers to, on the supplier's row. */
       .vrow .vdest { margin-top: 2px; color: var(--copper); font-size: 10.5px; font-weight: 620; overflow-wrap: anywhere; }
       .actions .menu-select.connect-select { min-width: 132px; }
@@ -713,6 +714,14 @@
         font: inherit;
       }
       .dialog-field small { color: var(--muted); font-size: 10.5px; line-height: 1.4; }
+      .sync-scope { margin: 14px 0 0; padding: 0; display: grid; gap: 8px; border: 0; }
+      .sync-scope legend { padding: 0; color: var(--fg); font-size: 12px; font-weight: 620; }
+      .sync-choice { min-height: 48px; display: flex; align-items: flex-start; gap: 9px; padding: 9px 10px; border-radius: 9px; background: var(--surface); cursor: pointer; box-shadow: var(--shadow-border); }
+      .sync-choice input { width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--primary); }
+      .sync-choice span, .sync-choice small { display: block; }
+      .sync-choice span { font-size: 12.5px; font-weight: 620; }
+      .sync-choice small { margin-top: 1px; color: var(--muted); font-size: 10.5px; font-weight: 400; line-height: 1.35; }
+      .sync-choice:has(input:focus-visible) { outline: 2px solid var(--ring); outline-offset: 2px; }
       .dialog-actions { padding: 0 18px 18px; display: flex; justify-content: flex-end; gap: 8px; }
 
       .skeleton { min-height: 260px; }
@@ -764,11 +773,16 @@
     <dialog id="sync-dialog" aria-labelledby="sync-title" aria-describedby="sync-description">
       <div class="dialog-body">
         <h2 id="sync-title">Collect invoices</h2>
-        <p id="sync-description">Choose the first invoice month Ratatosk should collect.</p>
-        <div class="dialog-field">
+        <p id="sync-description">Choose how much invoice history to collect.</p>
+        <fieldset class="sync-scope">
+          <legend>Invoice history</legend>
+          <label class="sync-choice"><input id="sync-all-history" type="radio" name="sync-scope" value="all" checked><span>All available history<small>Collect every invoice Ratatosk can safely verify.</small></span></label>
+          <label class="sync-choice"><input id="sync-from-month-choice" type="radio" name="sync-scope" value="from-month"><span>Start from a month<small>Collect invoices from that month through today.</small></span></label>
+        </fieldset>
+        <div class="dialog-field" id="sync-month-field" hidden>
           <label for="sync-from-month">Starting month</label>
-          <input id="sync-from-month" type="month" min="1970-01" autocomplete="off">
-          <small>Leave empty to check all available history. If invoice dates are unavailable, Ratatosk will collect all history and tell you when it finishes.</small>
+          <input id="sync-from-month" name="fromMonth" type="month" min="1970-01" autocomplete="off" disabled>
+          <small>If invoice dates are unavailable, Ratatosk will collect all history and tell you when it finishes.</small>
         </div>
       </div>
       <div class="dialog-actions"><button type="button" class="btn outline" id="cancel-sync">Cancel</button><button type="button" class="btn" id="confirm-sync">Collect</button></div>
