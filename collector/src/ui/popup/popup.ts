@@ -676,8 +676,8 @@ function renderSettings(): void {
     ? `<div class="destination-row"><span class="destination-copy"><strong>This Computer</strong><small>${esc(destinationDetail(local))} · ${supplierLabel(supplierCountFor(LOCAL_DESTINATION_ID))}</small></span></div>`
     : `<button type="button" class="opt opt-link" data-action="enable-local-destination"><span class="radio" aria-hidden="true"></span><span><strong>This Computer</strong><small>Downloads folder</small></span><span class="open-label">Use</span></button>`;
 
-  const companyRows = destinationEntries()
-    .filter((entry) => entry.id !== LOCAL_DESTINATION_ID)
+  const companies = destinationEntries().filter((entry) => entry.id !== LOCAL_DESTINATION_ID);
+  const companyRows = companies
     .map((entry) => {
       const needsReconnect = entry.destination.kind === "unavailable";
       const companyId = destinationCompanyId(entry) ?? "";
@@ -686,6 +686,12 @@ function renderSettings(): void {
         : "";
       return `<div class="destination-row${needsReconnect ? " needs-reconnect" : ""}"><span class="destination-copy"><strong>${esc(destinationName(entry))}</strong><small>${esc(destinationDetail(entry))} · ${supplierLabel(supplierCountFor(entry.id))}</small></span><span class="destination-actions">${reconnect}<button type="button" class="btn outline sm" data-action="disconnect-company" data-company="${esc(companyId)}">Disconnect</button></span></div>`;
     }).join("");
+  const companyConnect = companies.length
+    ? `<button type="button" class="btn tonal sm block" data-action="connect-igdrasil">Connect another company</button>`
+    : `<button type="button" class="opt opt-link" data-action="connect-igdrasil"><span class="radio" aria-hidden="true"></span><span><strong>Connect Igdrasil company</strong><small>Choose a company in Igdrasil</small></span><span class="open-label">Connect</span></button>`;
+  const companyConnectHelp = companies.length
+    ? ""
+    : `<p class="connect-company-note">Ratatosk opens Igdrasil so you can choose a company. It appears here only after connecting.</p>`;
 
   const empty = destinationEntries().length
     ? ""
@@ -702,7 +708,7 @@ function renderSettings(): void {
       <fieldset class="grp"><legend>Save Invoices To</legend>
         <div class="destination-list">${localRow}${companyRows}</div>
         ${folderFields}
-        <button type="button" class="btn tonal sm block" data-action="connect-igdrasil">Connect another company</button>
+        ${companyConnect}${companyConnectHelp}
         ${empty}${error}
       </fieldset>
       <fieldset class="grp divider"><legend>Check for New Invoices</legend>${scheduleControls()}</fieldset>
@@ -1118,6 +1124,7 @@ async function openIgdrasilConnect(): Promise<void> {
     return;
   }
   await chrome.tabs.create({ url: response.connectUrl });
+  toast("Choose a company in Igdrasil, then return here.");
 }
 
 async function run(message: Parameters<typeof send>[0], vendorId?: string): Promise<void> {
@@ -1471,7 +1478,7 @@ function destinationName(entry: DestinationEntry): string {
 function destinationDetail(entry: DestinationEntry): string {
   const { destination } = entry;
   if (destination.kind === "filesystem") return savePath(destination.rootFolder);
-  if (destination.kind === "igdrasil") return "Igdrasil · invoices go to your inbox";
+  if (destination.kind === "igdrasil") return "Connected to Igdrasil · invoices go to your inbox";
   return destination.reason === "connection_expired"
     ? "Connection expired — reconnect to resume"
     : "Saved settings could not be read — reconnect";

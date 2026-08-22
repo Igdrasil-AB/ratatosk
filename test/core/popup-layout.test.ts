@@ -41,6 +41,13 @@ describe("Collector popup layout regressions", () => {
     expect(popupSource).toContain('class="fact" data-action="open-vendors"');
   });
 
+  it("makes the Igdrasil company handoff explicit before anything is connected", () => {
+    expect(popupSource).toContain("Connect Igdrasil company");
+    expect(popupSource).toContain("Choose a company in Igdrasil");
+    expect(popupSource).toContain("Connected to Igdrasil");
+    expect(popupSource).toContain("const companyConnect = companies.length");
+  });
+
   it("offers the flagship search from the first screen while a matching tab is open", () => {
     expect(popupSource).toContain("function discoverableTab()");
     expect(popupSource).toContain('data-action="discover-here"');
