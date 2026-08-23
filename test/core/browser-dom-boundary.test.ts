@@ -16,6 +16,8 @@ import {
   runSemanticDocumentOperationInPage,
 } from "../../collector/src/platform/document-action-controller";
 import { DISCOVERY_DOM_POLICY } from "../../collector/src/platform/discovery-dom-policy";
+import { collectPageEvidenceInPage } from "../../collector/src/platform/discovery";
+import { EXPLORATION_ROUTE_POLICY } from "../../collector/src/platform/discovery-explorer";
 import { AuthExpired, DocumentPermissionRequired } from "../../src/core/errors";
 
 const driverSource = readFileSync("collector/src/platform/browser-dom-driver.ts", "utf8");
@@ -41,6 +43,166 @@ const emptySemanticEnumeration = {
 
 describe("browser DOM boundary", () => {
   const origins = new Set(["https://vendor.example", "https://documents.example"]);
+
+  it("uses the same bounded accessible-name inputs in discovery and document collection", () => {
+    for (const source of [discoverySource, actionControllerSource]) {
+      expect(source).toContain("accessibleLabelSources");
+      expect(source).toContain('getAttribute("aria-labelledby")');
+      expect(source).toContain('querySelectorAll<HTMLLabelElement>("label[for]")');
+      expect(source).toContain('getAttribute("aria-label")');
+    }
+  });
+
+  it("records passive SPA routes without retaining query values or changing action ownership", () => {
+    expect(observerSource).toContain("snapshotRoutes");
+    expect(observerSource).toContain("captureObservedNavigation");
+    expect(observerSource).toContain("wrappedPushState");
+    expect(observerSource).toContain("history.pushState = originalPushState");
+    expect(observerSource).not.toContain("Cookie");
+  });
+
+  it("proves a speculative menu branch by finding Settings inside the revealed menu", () => {
+    expect(discoverySource).toContain("settingsControlAfterMenu");
+    expect(discoverySource).toContain("'[role=\"menu\"]'");
+    expect(discoverySource).toContain("semanticNavigationControl(settingsNavigation, root)");
+    expect(discoverySource).not.toContain("let settingsReady = Boolean(semanticNavigationControl(settingsNavigation))");
+  });
+
+  it("keeps same-origin frame discovery passive and network-only", () => {
+    expect(discoverySource).toContain("target: { tabId, allFrames: true }");
+    expect(discoverySource).toContain("topLevelFrame && options.allowSemanticNavigation !== false");
+    expect(discoverySource).toContain("mergeFrameNetworkEvidence(main, frames, options.maxResources)");
+  });
+
+  it.each([
+    ["blocks a mutation", "{}", true],
+    ["allows an explicit read-only GraphQL query", JSON.stringify({ query: "query Billing { invoices { id } }" }), false],
+  ] as const)("%s from a pre-connect navigation control", async (_name, body, blocked) => {
+    const originalFetch = vi.fn(async () => new Response("{}", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    class PageElement {
+      textContent = "Workspace menu";
+      id = "";
+      parentElement = null;
+      getAttribute(name: string): string | null {
+        return name === "aria-haspopup" ? "menu" : name === "aria-label" ? "Workspace menu" : null;
+      }
+      hasAttribute(): boolean { return false; }
+      closest(): null { return null; }
+      querySelector(): null { return null; }
+      querySelectorAll(): unknown[] { return []; }
+      getBoundingClientRect() { return { width: 120, height: 32 }; }
+      click(): void {
+        void (window.fetch as typeof fetch)("https://vendor.example/api/account", { method: "POST", body }).catch(() => undefined);
+      }
+      dispatchEvent(): boolean { return true; }
+    }
+    const trigger = new PageElement();
+    const documentStub = {
+      title: "Vendor",
+      activeElement: trigger,
+      documentElement: { outerHTML: "<html></html>", scrollHeight: 0 },
+      getElementById: () => null,
+      querySelector: () => null,
+      querySelectorAll: (selector: string) => selector.includes("aria-haspopup") ? [trigger] : [],
+    };
+    const windowStub: Record<string, unknown> = {
+      fetch: originalFetch,
+      open: vi.fn(),
+      scrollTo: vi.fn(),
+    };
+    windowStub.top = windowStub;
+    vi.stubGlobal("window", windowStub);
+    vi.stubGlobal("document", documentStub);
+    vi.stubGlobal("location", {
+      origin: "https://vendor.example",
+      href: "https://vendor.example/home",
+      pathname: "/home",
+      search: "",
+    });
+    vi.stubGlobal("fetch", originalFetch);
+    vi.stubGlobal("performance", { getEntriesByType: () => [] });
+    vi.stubGlobal("getComputedStyle", () => ({ display: "block", visibility: "visible" }));
+    vi.stubGlobal("HTMLElement", PageElement);
+    vi.stubGlobal("HTMLAnchorElement", class extends PageElement {});
+    vi.stubGlobal("KeyboardEvent", class {});
+
+    try {
+      const probe = collectPageEvidenceInPage(
+        { settleMs: 0, maxResources: 1, deadlineMs: 25, allowSemanticNavigation: true },
+        { ...EXPLORATION_ROUTE_POLICY, documentSelector: "[data-document]" },
+        DISCOVERY_DOM_POLICY,
+      );
+      if (blocked) {
+        await expect(probe).rejects.toThrow(/mutating/i);
+        expect(originalFetch).not.toHaveBeenCalled();
+      } else {
+        await expect(probe).resolves.toMatchObject({ origin: "https://vendor.example" });
+        expect(originalFetch).toHaveBeenCalledOnce();
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("emits every packaged passive route-evidence lane from the real page probe", async () => {
+    const observedRequest = "https://vendor.example/api/billing-feed";
+    const resourceRoute = "https://vendor.example/receipts-history";
+    const structuredRoute = "https://vendor.example/surface/r7";
+    const script = { textContent: JSON.stringify({ invoiceRoute: structuredRoute }), outerHTML: "<script></script>" };
+    const pageFetch = vi.fn(async () => new Response(JSON.stringify({ ready: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    const windowStub: Record<string, unknown> = {
+      fetch: pageFetch,
+      open: vi.fn(),
+      scrollTo: vi.fn(),
+      __ratatoskDiscoveryObserverV1: {
+        snapshotRoutes: async () => [],
+        snapshot: async () => [{
+          url: observedRequest,
+          method: "GET",
+          status: 200,
+          contentType: "application/json",
+          responseBody: JSON.stringify({ ready: true }),
+        }],
+      },
+    };
+    windowStub.top = windowStub;
+    vi.stubGlobal("window", windowStub);
+    vi.stubGlobal("document", {
+      title: "Vendor",
+      documentElement: { outerHTML: "<html></html>", scrollHeight: 0 },
+      querySelector: (selector: string) => selector.includes('script[type="application/json"]') ? script : null,
+      querySelectorAll: (selector: string) => selector.includes('script[type="application/json"]') ? [script] : [],
+    });
+    vi.stubGlobal("location", {
+      origin: "https://vendor.example",
+      href: "https://vendor.example/home",
+      pathname: "/home",
+      search: "",
+    });
+    vi.stubGlobal("fetch", pageFetch);
+    vi.stubGlobal("performance", { getEntriesByType: () => [{ name: resourceRoute }] });
+
+    try {
+      const evidence = await collectPageEvidenceInPage(
+        { settleMs: 0, maxResources: 4, deadlineMs: 1_000, allowSemanticNavigation: false, allowScroll: false },
+        { ...EXPLORATION_ROUTE_POLICY, documentSelector: "[data-document]" },
+        DISCOVERY_DOM_POLICY,
+      );
+      expect(evidence.navigationUrls).toEqual(expect.arrayContaining([
+        expect.objectContaining({ url: observedRequest, hintSource: "observed_request" }),
+        expect.objectContaining({ url: resourceRoute, hintSource: "resource_timing" }),
+        expect.objectContaining({ url: structuredRoute, hintSource: "structured_data" }),
+      ]));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 
   it("accepts only bounded HTTPS results from recipe-approved origins", () => {
     expect(parseDomRunResult({
@@ -1051,6 +1213,32 @@ describe("browser DOM boundary", () => {
     }
   }, 20_000);
 
+  it.each([
+    ["Inställningar", "Fakturering"],
+    ["Einstellungen", "Abrechnung"],
+    ["Paramètres", "Facturation"],
+    ["Configuración", "Facturación"],
+  ])("uses the packaged localized navigation policy for %s", async (settings, billing) => {
+    const page = stubSemanticPage({ settings, billing, mountDelayMs: 0 });
+    try {
+      const result = await runSemanticDocumentOperationInPage(
+        { kind: "enumerate", maximumActions: 8 },
+        ["https://vendor.example"],
+        DISCOVERY_DOM_POLICY,
+        Date.now() + 3_000,
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        kind: "enumeration",
+        directDocuments: [{ url: "https://vendor.example/invoices/one.pdf" }],
+      });
+      expect(page.clicked).toEqual(["Open profile menu", settings, billing]);
+    } finally {
+      page.restore();
+    }
+  });
+
   it("treats a same-origin address-bar rewrite as the requested page committing", async () => {
     // Applications routinely restore their shell URL while keeping the
     // requested surface mounted. Demanding the exact path back would strand
@@ -1091,11 +1279,15 @@ describe("browser DOM boundary", () => {
  * The elements are plain objects because the injected function is serialized
  * into a page and may only rely on the DOM surface it actually reads.
  */
-function stubSemanticPage(): { clicked: string[]; restore: () => void } {
+function stubSemanticPage(options: {
+  settings?: string;
+  billing?: string;
+  mountDelayMs?: number;
+} = {}): { clicked: string[]; restore: () => void } {
   const clicked: string[] = [];
   const navigation: unknown[] = [];
   const downloads: unknown[] = [];
-  const mountDelayMs = 300;
+  const mountDelayMs = options.mountDelayMs ?? 300;
 
   const control = (
     attributes: Record<string, string>,
@@ -1120,13 +1312,13 @@ function stubSemanticPage(): { clicked: string[]; restore: () => void } {
     setTimeout(() => target.push(element), mountDelayMs);
   };
 
-  const billingTab = control({ role: "tab" }, "Billing", () => {
+  const billingTab = control({ role: "tab" }, options.billing ?? "Billing", () => {
     mount(downloads, control(
       { "data-href": "https://vendor.example/invoices/one.pdf" },
       "Download invoice PDF",
     ));
   });
-  const settingsItem = control({ role: "menuitem" }, "Settings", () => {
+  const settingsItem = control({ role: "menuitem" }, options.settings ?? "Settings", () => {
     mount(navigation, billingTab);
   });
   navigation.push(control({ role: "button", "aria-label": "Open profile menu" }, "Open profile menu", () => {

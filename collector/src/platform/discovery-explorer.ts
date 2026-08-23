@@ -1,4 +1,4 @@
-import { isBoundedTenantIdentifierSegment } from "../../../src/core/discovery";
+import { isBoundedTenantIdentifierSegment, safeEntryUrl } from "../../../src/core/discovery";
 
 /**
  * Pure planning policy for unsupported-supplier exploration.
@@ -11,7 +11,7 @@ import { isBoundedTenantIdentifierSegment } from "../../../src/core/discovery";
 export const MAX_EXPLORATION_PAGES = 15;
 export const MAX_EXPLORATION_DEPTH = 3;
 export const EXPLORATION_DEADLINE_MS = 10_000;
-export const DISCOVERY_ENGINE_REVISION = 36;
+export const DISCOVERY_ENGINE_REVISION = 38;
 
 /**
  * A scan starts in the inexpensive fast lane, but its policy is deliberately
@@ -59,6 +59,19 @@ export function explorationBudget(mode: ExplorationMode = "fast"): ExplorationBu
  */
 export type ExplorationPageSource = "entry" | "entry_replay" | "linked" | "common_route" | "remembered";
 
+/** Where a route was actually observed. This is bounded structural provenance,
+ * not supplier-specific route knowledge. */
+export type RouteHintSource =
+  | "active_entry"
+  | "cold_replay"
+  | "dom_link"
+  | "semantic_navigation"
+  | "resource_timing"
+  | "observed_request"
+  | "structured_data"
+  | "remembered"
+  | "common_fallback";
+
 /** A family is a path *kind*, never an origin, tenant identifier, or URL. */
 export type ExplorationFamily =
   | "exact_entry"
@@ -88,6 +101,7 @@ export interface ExplorationTarget {
   score: number;
   /** Optional for legacy callers; all newly planned targets carry a family. */
   family?: ExplorationFamily;
+  hintSource?: RouteHintSource;
 }
 
 export function explorationFamilyForTarget(target: Pick<ExplorationTarget, "source" | "family">): ExplorationFamily {
@@ -96,7 +110,7 @@ export function explorationFamilyForTarget(target: Pick<ExplorationTarget, "sour
   return target.source === "linked" ? "observed_navigation" : "common_billing_route";
 }
 
-const EXPLORATION_CHECKPOINT_SCHEMA = "ratatosk.exploration-checkpoint.v1" as const;
+const EXPLORATION_CHECKPOINT_SCHEMA = "ratatosk.exploration-checkpoint.v2" as const;
 
 /**
  * Durable progress intentionally contains only route templates.  It must not
@@ -121,10 +135,70 @@ export interface ExplorationFrontierItem {
   family: ExplorationFamily;
   score: number;
   depth: number;
+  /** A same-origin replayable pathname. Never an origin, query, fragment, or
+   * opaque credential-shaped tenant segment. */
+  route?: string;
+  source?: ExplorationPageSource;
+  hintSource?: RouteHintSource;
 }
 
 export function explorationTargetKey(target: Pick<ExplorationTarget, "url" | "source" | "family">): string {
   return `${explorationFamilyForTarget(target)}|${structuralRoute(target.url)}`;
+}
+
+/** Persist the minimum route material needed to resume one safe target. */
+export function checkpointFrontierItem(target: ExplorationTarget): ExplorationFrontierItem {
+  return {
+    key: explorationTargetKey(target),
+    family: explorationFamilyForTarget(target),
+    score: Math.max(0, Math.min(10_000, Math.trunc(target.score))),
+    depth: target.depth,
+    ...(checkpointRoute(target.url) ? { route: checkpointRoute(target.url) } : {}),
+    source: target.source,
+    ...(target.hintSource ? { hintSource: target.hintSource } : {}),
+  };
+}
+
+/** Reconstruct only target routes that were safe to write to session storage. */
+export function restoreExplorationTargets(
+  checkpoint: ExplorationCheckpoint,
+  origin: string,
+): ExplorationTarget[] {
+  const expectedOrigin = exactPublicHttpsOrigin(origin);
+  const targets: ExplorationTarget[] = [];
+  for (const item of checkpoint.frontier) {
+    if (!item.route || !item.source) continue;
+    let url: string;
+    try { url = new URL(item.route, `${expectedOrigin}/`).toString(); } catch { continue; }
+    if (new URL(url).origin !== expectedOrigin || checkpointRoute(url) !== item.route) continue;
+    targets.push({
+      url,
+      depth: item.depth,
+      source: item.source,
+      family: item.family,
+      score: item.score,
+      ...(item.hintSource ? { hintSource: item.hintSource } : {}),
+    });
+  }
+  return rankExplorationQueue(targets);
+}
+
+/** Fast progress may become a deep run only through an explicit user action. */
+export function continueExplorationCheckpoint(
+  checkpoint: ExplorationCheckpoint,
+): ExplorationCheckpoint | undefined {
+  if (checkpoint.mode !== "fast") return undefined;
+  return createExplorationCheckpoint({
+    mode: "deep",
+    pagesAttempted: checkpoint.pagesAttempted,
+    linkedPagesAttempted: checkpoint.linkedPagesAttempted,
+    commonRoutePagesAttempted: checkpoint.commonRoutePagesAttempted,
+    elapsedMs: checkpoint.elapsedMs,
+    frontier: checkpoint.frontier,
+    completedTargetKeys: checkpoint.completedTargetKeys,
+    attemptedFamilies: checkpoint.attemptedFamilies,
+    slicesCompleted: 0,
+  });
 }
 
 export function createExplorationCheckpoint(input: Omit<ExplorationCheckpoint, "schema">): ExplorationCheckpoint {
@@ -183,6 +257,8 @@ export interface ExplorationLinkEvidence {
   url: string;
   label?: string;
   context?: string;
+  /** A route observed after safe SPA navigation may be structurally opaque. */
+  hintSource?: Extract<RouteHintSource, "dom_link" | "semantic_navigation" | "resource_timing" | "observed_request" | "structured_data">;
 }
 
 export interface ExplorationProbeOptions {
@@ -209,21 +285,24 @@ export function explorationProbeOptions(
   target: ExplorationTarget,
   mode: ExplorationMode = "fast",
 ): ExplorationProbeOptions {
-  const pathname = new URL(target.url).pathname;
-  const billing = BILLING_INTENT.test(pathname);
+  const hintSource = target.hintSource ?? (
+    target.source === "common_route" ? "common_fallback" :
+    target.source === "remembered" ? "remembered" : "dom_link"
+  );
+  const evidenced = hintSource !== "common_fallback";
   // The escalation is not just a larger frontier. A portal the interactive pass
   // could not resolve is often one whose billing view simply had not finished
   // rendering, so the deeper envelope buys patience per route as well as more
   // routes — otherwise a second pass re-probes the same page the same way and
   // reaches the same conclusion.
   if (mode === "fast") {
-    return billing
+    return evidenced
       ? { settleMs: 2_600, maxResources: 12, deadlineMs: 4_200 }
-      : { settleMs: 900, maxResources: 6, deadlineMs: 2_200 };
+      : { settleMs: 350, maxResources: 3, deadlineMs: 900 };
   }
-  return billing
+  return evidenced
     ? { settleMs: 8_000, maxResources: 12, deadlineMs: 10_000 }
-    : { settleMs: 2_000, maxResources: 6, deadlineMs: 3_500 };
+    : { settleMs: 800, maxResources: 4, deadlineMs: 1_800 };
 }
 
 /** The active tab is already loaded and rendered, so it needs a settle window
@@ -328,7 +407,10 @@ export function planExplorationTargets(input: {
     const semantic = `${label} ${context}`.trim();
     const candidatePath = safePathname(evidence.url, origin);
     const bridge = input.nextDepth <= 2 && BRIDGE_INTENT.test(`${candidatePath} ${semantic}`);
-    const url = safeExplorationUrl(evidence.url, origin, semantic, { allowBridgeIntent: bridge });
+    const observedSpaNavigation = evidence.hintSource === "semantic_navigation";
+    const url = observedSpaNavigation
+      ? safeReplayUrl(evidence.url, origin)
+      : safeExplorationUrl(evidence.url, origin, semantic, { allowBridgeIntent: bridge });
     if (!url || input.visited.has(url)) continue;
     const billing = BILLING_INTENT.test(`${new URL(url).pathname} ${semantic}`);
     addBest(targets, {
@@ -336,7 +418,9 @@ export function planExplorationTargets(input: {
       depth: input.nextDepth,
       source: "linked",
       family: "observed_navigation",
-      score: (billing ? 100 : 85) + pathScore(new URL(url).pathname) + semanticScore(semantic) - (input.nextDepth - 1) * 3,
+      hintSource: evidence.hintSource ?? "dom_link",
+      score: (observedSpaNavigation ? 160 : billing ? 100 : 85) +
+        pathScore(new URL(url).pathname) + semanticScore(semantic) - (input.nextDepth - 1) * 3,
     });
   }
 
@@ -351,6 +435,7 @@ export function planExplorationTargets(input: {
           depth: 1,
           source: "common_route",
           family: "tenant_contextual_route",
+          hintSource: "common_fallback",
           score: 80 + (CONTEXTUAL_BILLING_SUFFIXES.length - index),
         });
       }
@@ -363,6 +448,7 @@ export function planExplorationTargets(input: {
         depth: 1,
         source: "common_route",
         family: "common_billing_route",
+        hintSource: "common_fallback",
         score: 60 + (COMMON_BILLING_PATHS.length - index),
       });
     }
@@ -615,8 +701,54 @@ function normalizeFrontier(value: readonly ExplorationFrontierItem[], budget: Ex
     const [family] = item.key.split("|");
     if (family !== item.family) continue;
     seen.add(item.key);
-    frontier.push({ key: item.key, family: item.family, score: item.score, depth: item.depth });
+    const route = typeof item.route === "string" && isSafeCheckpointRoute(item.route) ? item.route : undefined;
+    const source = isExplorationPageSource(item.source) ? item.source : undefined;
+    const hintSource = isRouteHintSource(item.hintSource) ? item.hintSource : undefined;
+    if ((item.route !== undefined && !route) || (item.source !== undefined && !source) ||
+      (item.hintSource !== undefined && !hintSource)) continue;
+    frontier.push({
+      key: item.key,
+      family: item.family,
+      score: item.score,
+      depth: item.depth,
+      ...(route ? { route } : {}),
+      ...(source ? { source } : {}),
+      ...(hintSource ? { hintSource } : {}),
+    });
     if (frontier.length >= budget.pages) break;
   }
   return frontier;
+}
+
+function checkpointRoute(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if (url.search || url.hash || url.username || url.password) return undefined;
+    const safe = safeEntryUrl(url.toString());
+    if (safe !== url.toString()) return undefined;
+    return isSafeCheckpointRoute(url.pathname) ? url.pathname : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isSafeCheckpointRoute(value: string): boolean {
+  if (!value.startsWith("/") || value.length > 320 || value.includes("?") || value.includes("#")) return false;
+  try {
+    const url = new URL(value, "https://checkpoint.invalid/");
+    return safeEntryUrl(url.toString()) === url.toString();
+  } catch {
+    return false;
+  }
+}
+
+function isExplorationPageSource(value: unknown): value is ExplorationPageSource {
+  return value === "entry" || value === "entry_replay" || value === "linked" ||
+    value === "common_route" || value === "remembered";
+}
+
+function isRouteHintSource(value: unknown): value is RouteHintSource {
+  return value === "active_entry" || value === "cold_replay" || value === "dom_link" ||
+    value === "semantic_navigation" || value === "resource_timing" || value === "observed_request" ||
+    value === "structured_data" || value === "remembered" || value === "common_fallback";
 }

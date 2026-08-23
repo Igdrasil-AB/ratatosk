@@ -227,8 +227,9 @@ Collector uses a two-confirmation state machine in `chrome.storage.session` so
 Chrome may close the popup during either permission prompt without losing the
 user's intent:
 
-1. **Find Invoices** requests the active tab's exact HTTPS origin and snapshots
-   the rendered page without navigating, reloading, scrolling, or closing it.
+1. **Find Invoices** requests the active tab's exact HTTPS origin and passively
+   snapshots the rendered page without clicking, navigating, reloading,
+   scrolling, or closing it.
    Collector then dynamically registers a packaged
    `document_start` MAIN-world observer for that exact origin. It keeps a bounded,
    sanitized, in-memory sample of JSON fetch/XHR responses, including the method,
@@ -249,32 +250,39 @@ user's intent:
    verification and click capture; otherwise a visibility-gated SPA could be
    discoverable but not collectable. Registration and page hooks are removed in `finally`;
    no captured response is persisted or uploaded.
-2. A deterministic planner scores same-origin routes from path intent, bounded
-   visible/accessibility labels, nearby menu context, tenant shape, depth, and
-   route-family confidence. Semantic controls such as `Invoices` can therefore
-   lead to otherwise opaque routes, while observed `Settings` routes remain as
-   lower-confidence bridges for multi-step navigation. For tenant-scoped apps,
-   `/<tenant>/settings/billing` ranks ahead of speculative history paths. The
-   planner also keeps a small packaged set of common paths. The best safe
-   contextual/common route is scheduled after at most two higher-ranked observed
-   routes, preventing a saturated menu or slow probes from starving an independent
-   route source. For account-scoped apps it preserves one bounded tenant prefix, so
-   shapes such as `/<account-id>/billing/subscriptions` remain navigable and
-   reusable. An opaque tenant segment is bound only when the exact observed route
-   placed it directly behind a trusted container such as `org`, `workspace`, or
-   `account`; arbitrary opaque path segments are never promoted. A best-first
-   queue repeats this process from every inspected page,
-   prioritizing invoice/receipt paths over billing history and broader payment or
-   subscription paths. It checks at most fifteen pages, depth three, and thirty
-   seconds. After the active entry page, it probes deterministic waves of at most
-   two same-origin routes in separate inactive temporary tabs. Invoice/detail
+2. A deterministic planner ranks same-origin routes that the application
+   actually exposed: the active entry, cold replay, rendered/accessible links,
+   bounded same-document SPA navigation, observed request evidence, inert page
+   data, and a previously proved local route. An observed SPA destination may be
+   structurally opaque because navigating to it is already evidence; an
+   unobserved opaque path is rejected. In a disposable replay only, discovery
+   may branch across at most four native ARIA menu triggers. A branch survives
+   only when its revealed menu contains a packaged, localized Settings intent;
+   it may then activate at most two localized Settings/Billing controls. It
+   runs under a temporary mutation guard that permits GET/HEAD and explicit
+   read-only GraphQL queries while blocking mutating fetch/XHR, beacon, form,
+   popup, and unsafe navigation attempts. It never activates a document or form action. Same-origin frames contribute
+   passive network evidence only; frame DOM routes and controls are not admitted.
+   Common billing paths are a bounded compatibility fallback in an explicit deep
+   search only; they are not tried during the ten-second fast search. The fast
+   frontier checks at most fifteen pages to depth three. A `limit_reached` result
+   retains only reconstructable safe targets and offers one explicit deeper
+   continuation within the remaining portion of the 45-second total envelope. A
+   restart never re-probes completed targets. After the active entry page,
+   deterministic waves use at most two same-origin temporary tabs. Invoice/detail
    routes stay in the queue; only explicit
    `.pdf`, download, PDF-path, known direct-receipt, or hosted-Stripe links become
-   document candidates. Search navigation is GET-only; it
-   never clicks controls, submits forms, or follows logout, checkout, purchase,
+   document candidates. Search navigation is GET-only; it never submits forms
+   or follows logout, checkout, purchase,
    cancellation, deletion, or authorization paths. The tab is always closed.
 3. Packaged adapters compile observed/replayed network JSON, embedded JSON,
-   rendered invoice links, or semantic document controls into recipes. Discovery
+   rendered invoice links, or semantic document controls into recipes. Every
+   DOM candidate is replayed without a sink in a fresh disposable tab before it
+   can reach preview. A DOM
+   candidate is retained only when its proven route can be replayed: either a
+   normal safe entry URL, or one full tenant path segment templated from a typed
+   first-party config scope in the same run. The observed tenant value is never
+   persisted. Discovery
    and verification receive the same packaged semantic policy. Accessible names
    remain the primary signal; an icon-only control is eligible only when its
    document icon, invoice-shaped row, invoice-page context, and action/document

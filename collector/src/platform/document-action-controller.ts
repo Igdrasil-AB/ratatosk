@@ -663,6 +663,9 @@ export async function runSemanticDocumentOperationInPage(
   const unsafePath = new RegExp(semanticPolicy.unsafePathPattern, "i");
   const invoiceSectionLabel = new RegExp(semanticPolicy.invoiceSectionPattern, "i");
   const semanticNavigation = new RegExp(semanticPolicy.semanticNavigationPattern, "i");
+  const profileNavigation = new RegExp(semanticPolicy.profileNavigationPattern, "i");
+  const settingsNavigation = new RegExp(semanticPolicy.settingsNavigationPattern, "i");
+  const billingNavigation = new RegExp(semanticPolicy.billingNavigationPattern, "i");
   const allowed = new Set(allowedOrigins.slice(0, 9));
   const deadline = Math.min(Date.now() + 30_000, runDeadline ?? Number.POSITIVE_INFINITY);
   const normalize = (value: string | null | undefined, maximum = 500): string =>
@@ -675,17 +678,35 @@ export async function runSemanticDocumentOperationInPage(
       rect.width > 0 && rect.height > 0 &&
       !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true";
   };
+  const accessibleLabelSources = (element: Element, maximum = 160): string[] => {
+    const labelledBy = (element.getAttribute("aria-labelledby") || "")
+      .split(/\s+/).filter(Boolean).slice(0, 4)
+      .map((id) => document.getElementById(id)?.textContent)
+      .filter((value): value is string => Boolean(value));
+    const associated = [
+      element.closest("label")?.textContent,
+      ...(element.id
+        ? Array.from(document.querySelectorAll<HTMLLabelElement>("label[for]"))
+          .filter((label) => label.htmlFor === element.id).slice(0, 4).map((label) => label.textContent)
+        : []),
+    ].filter((value): value is string => Boolean(value));
+    const sources: Record<(typeof semanticPolicy.accessibleNameOrder)[number], string | null | undefined> = {
+      "aria-labelledby": labelledBy.join(" "),
+      "aria-label": element.getAttribute("aria-label"),
+      "associated-label": associated.join(" "),
+      title: element.getAttribute("title"),
+      alt: element.getAttribute("alt"),
+      value: element.getAttribute("value"),
+      "visible-text": element.textContent,
+    };
+    return semanticPolicy.accessibleNameOrder
+      .map((source) => normalize(sources[source], maximum))
+      .filter(Boolean);
+  };
   const labelOf = (element: Element): string => {
     const icon = element.querySelector("svg,[icon],[name],[data-lucide]");
-    const labelledBy = (element.getAttribute("aria-labelledby") || "")
-      .split(/\s+/).slice(0, 4)
-      .map((id) => document.getElementById(id)?.textContent)
-      .filter(Boolean).join(" ");
     return normalize([
-      element.getAttribute("aria-label"),
-      labelledBy,
-      element.getAttribute("title"),
-      element.getAttribute("value"),
+      ...accessibleLabelSources(element, 320),
       element.getAttribute("data-test"),
       element.getAttribute("data-testid"),
       element.getAttribute("data-lucide"),
@@ -694,7 +715,6 @@ export async function runSemanticDocumentOperationInPage(
       icon?.getAttribute("icon"),
       icon?.getAttribute("name"),
       element.getAttribute("class"),
-      element.textContent,
     ].filter(Boolean).join(" "), 320);
   };
   const rowOf = (element: Element): Element | null => element.closest(semanticPolicy.rowSelector);
@@ -766,11 +786,7 @@ export async function runSemanticDocumentOperationInPage(
     observer?.beginDocumentAction?.();
     try { control.click(); } finally { observer?.endDocumentAction?.(); }
   };
-  const navigationLabelsOf = (element: Element): string[] => [
-    element.getAttribute("aria-label"),
-    element.getAttribute("title"),
-    element.textContent,
-  ].map((value) => normalize(value, 120)).filter(Boolean);
+  const navigationLabelsOf = (element: Element): string[] => accessibleLabelSources(element, 120);
   const navigationControl = (tier: RegExp): HTMLElement | undefined => Array.from(
     document.querySelectorAll<HTMLElement>('button,[role="button"],[role="menuitem"],[role="tab"],a:not([href])'),
   ).find((element) => {
@@ -785,9 +801,9 @@ export async function runSemanticDocumentOperationInPage(
   const revealBillingSurface = async (): Promise<void> => {
     if (downloadControls().length > 0) return;
     const tiers = [
-      /(?:open\s+)?profile\s+menu$|account\s+menu$/i,
-      /^(?:settings|preferences)$/i,
-      /^(?:account|billing|subscriptions?|invoice\s+history|receipt\s+history|billing\s+history|past\s+invoices?)$/i,
+      profileNavigation,
+      settingsNavigation,
+      billingNavigation,
     ];
     let mounting = true;
     for (const tier of tiers) {
@@ -811,12 +827,8 @@ export async function runSemanticDocumentOperationInPage(
     const section = Array.from(document.querySelectorAll<HTMLElement>(
       semanticPolicy.sectionSelector,
     )).find((element) => {
-      const label = normalize([
-        element.getAttribute("aria-label"),
-        element.getAttribute("title"),
-        element.textContent,
-      ].filter(Boolean).join(" "), 120);
-      if (!label || !invoiceSectionLabel.test(label) || unsafe.test(label) || element.closest("form") || !visible(element)) {
+      const labels = accessibleLabelSources(element, 120);
+      if (!labels.some((label) => invoiceSectionLabel.test(label)) || labels.some((label) => unsafe.test(label)) || element.closest("form") || !visible(element)) {
         return false;
       }
       if (element instanceof HTMLAnchorElement && element.href) {

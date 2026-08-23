@@ -45,18 +45,40 @@ export interface PortalLink {
   context?: string;
 }
 
+/** A same-document destination the application itself exposed after a bounded,
+ * non-mutating semantic navigation reveal. Unlike a rendered link, its path
+ * need not contain billing vocabulary. */
+export interface PortalNavigation {
+  href: string;
+  /** The safe control that caused this in-app navigation. */
+  label: string;
+}
+
 export interface PortalRoute {
   path: string;
   /** Milliseconds after navigation before billing evidence exists. */
   hydrateMs?: number;
   /** Milliseconds before the application shell (navigation) is rendered. */
   shellHydrateMs?: number;
+  /** Additional modeled evidence-probe costs, in the same order as the real
+   * in-page function. They make deadline regressions visible without claiming
+   * this Node simulator executes browser DOM. */
+  semanticRevealMs?: number;
+  mutationSettleMs?: number;
+  scrollMs?: number;
+  resourceTimingMs?: number;
   title?: string;
   applicationName?: string;
   html?: string;
   /** Fetch/XHR the application issues once hydrated. */
   calls?: ObservedCall[];
+  /** Same-origin high-signal URLs already present in ResourceTiming. */
+  resourceRoutes?: string[];
+  /** Same-origin routes found under invoice/document keys in inert JSON. */
+  structuredRoutes?: string[];
   links?: PortalLink[];
+  /** Same-document SPA destinations observed after a safe navigation reveal. */
+  navigations?: PortalNavigation[];
   /** Counted semantic download controls, as the in-page DOM policy would. */
   semanticControls?: number;
   semanticSections?: number;
@@ -91,7 +113,17 @@ export interface Portal {
 export interface SimulationTrace {
   /** Modelled wall-clock a person would wait, in milliseconds. */
   elapsedMs: number;
-  probes: Array<{ url: string; foreground: boolean; hydrated: boolean; costMs: number }>;
+  probes: Array<{ url: string; foreground: boolean; hydrated: boolean; costMs: number; deadlineMs: number }>;
+  /** The modelled sub-phases of each browser evidence probe. These are not a
+   * substitute for exact-Chrome acceptance of the injected function. */
+  probePhases: Array<{
+    url: string;
+    semanticRevealMs: number;
+    observerQuiescenceMs: number;
+    mutationSettleMs: number;
+    scrollMs: number;
+    resourceTimingMs: number;
+  }>;
   navigations: number;
   openTabs: number;
 }
@@ -128,7 +160,7 @@ export function createSimulation(portal: Portal): Simulation {
   const origin = portal.origin;
   const navMs = portal.navMs ?? DEFAULT_NAV_MS;
   const routes = new Map(portal.routes.map((route) => [route.path, route]));
-  const trace: SimulationTrace = { elapsedMs: 0, probes: [], navigations: 0, openTabs: 0 };
+  const trace: SimulationTrace = { elapsedMs: 0, probes: [], probePhases: [], navigations: 0, openTabs: 0 };
 
   let clock = 1_800_000_000_000;
   const started = clock;
@@ -201,7 +233,13 @@ export function createSimulation(portal: Portal): Simulation {
   const shellFor = (route: PortalRoute | undefined): string =>
     `<html><head><title>${route?.title ?? "Loading"}</title></head><body><div id="root"></div></body></html>`;
 
-  const collectEvidence = async (tab: FakeTab, options: { settleMs: number; maxResources: number; deadlineMs: number }) => {
+  const collectEvidence = async (tab: FakeTab, options: {
+    settleMs: number;
+    maxResources: number;
+    deadlineMs: number;
+    allowSemanticNavigation?: boolean;
+    allowScroll?: boolean;
+  }) => {
     const start = startOf(tab);
     await tick();
     const route = routeFor(tab.url);
@@ -214,12 +252,39 @@ export function createSimulation(portal: Portal): Simulation {
       ? Math.max(0, (route.hydrateMs ?? 0) - sinceNav)
       : Number.POSITIVE_INFINITY;
 
-    const hydrated = hydrateIn <= budgetMs;
+    let remaining = budgetMs;
+    const semanticRevealMs = options.allowSemanticNavigation === false
+      ? 0
+      : Math.min(Math.max(0, route?.semanticRevealMs ?? 0), remaining);
+    remaining -= semanticRevealMs;
+    const quiescenceNeeded = Math.max(0, hydrateIn - semanticRevealMs);
+    const observerQuiescenceMs = Math.min(quiescenceNeeded, remaining);
+    remaining -= observerQuiescenceMs;
+    const hydrated = Number.isFinite(quiescenceNeeded) && observerQuiescenceMs >= quiescenceNeeded;
+    const mutationSettleMs = hydrated
+      ? Math.min(Math.max(0, route?.mutationSettleMs ?? 0), remaining)
+      : 0;
+    remaining -= mutationSettleMs;
+    const scrollMs = hydrated && options.allowScroll !== false
+      ? Math.min(Math.max(0, route?.scrollMs ?? 0), remaining)
+      : 0;
+    remaining -= scrollMs;
+    const resourceTimingMs = hydrated
+      ? Math.min(Math.max(0, route?.resourceTimingMs ?? 0), remaining)
+      : 0;
     const shellReady = shellReadyIn <= budgetMs;
-    const waited = Math.min(budgetMs, hydrated ? hydrateIn : budgetMs);
-    const costMs = Math.min(Math.max(options.deadlineMs, PROBE_FLOOR_MS), PROBE_FLOOR_MS + waited);
+    const waited = semanticRevealMs + observerQuiescenceMs + mutationSettleMs + scrollMs + resourceTimingMs;
+    const costMs = Math.max(0, Math.min(options.deadlineMs, PROBE_FLOOR_MS + waited));
     finish(tab, start, costMs);
-    trace.probes.push({ url: tab.url, foreground: tab.active, hydrated, costMs });
+    trace.probes.push({ url: tab.url, foreground: tab.active, hydrated, costMs, deadlineMs: options.deadlineMs });
+    trace.probePhases.push({
+      url: tab.url,
+      semanticRevealMs,
+      observerQuiescenceMs,
+      mutationSettleMs,
+      scrollMs,
+      resourceTimingMs,
+    });
 
     if (missing) throw new Error("supplier route did not render");
 
@@ -267,6 +332,9 @@ export function createSimulation(portal: Portal): Simulation {
 
     const html = hydrated ? route!.html ?? shellFor(route) : shellFor(route);
     const links = shellReady ? route!.links ?? [] : [];
+    const navigations = hydrated && tab.observed && options.allowSemanticNavigation !== false
+      ? route!.navigations ?? []
+      : [];
     const crossOriginHosts = [...new Set(resources
       .map((resource) => new URL(resource.url).hostname)
       .filter((host) => host !== new URL(origin).hostname))].slice(0, 8);
@@ -278,7 +346,26 @@ export function createSimulation(portal: Portal): Simulation {
       applicationName: route!.applicationName,
       html,
       resources,
-      navigationUrls: plannableLinks(links, origin),
+      navigationUrls: [
+        ...plannableLinks(links, origin),
+        ...navigations.slice(0, 80).map((navigation) => ({
+          url: absolute(navigation.href, origin),
+          label: navigation.label,
+          hintSource: "semantic_navigation" as const,
+        })),
+        ...(hydrated && tab.observed ? calls
+          .filter((call) => safeSameOrigin(call.url, origin) && BILLING_INTENT.test(call.url))
+          .map((call) => ({ url: call.url, hintSource: "observed_request" as const })) : []),
+        ...(hydrated ? (route!.resourceRoutes ?? []).map((href) => ({
+          url: absolute(href, origin),
+          hintSource: "resource_timing" as const,
+        })) : []),
+        ...(hydrated ? (route!.structuredRoutes ?? []).map((href) => ({
+          url: absolute(href, origin),
+          context: "invoice route",
+          hintSource: "structured_data" as const,
+        })) : []),
+      ],
       crossOriginHosts,
       stats: {
         documentLinks: hydrated ? countDocumentLinks(html) : 0,
@@ -292,12 +379,17 @@ export function createSimulation(portal: Portal): Simulation {
   };
 
   const replay = (request: { url: string; method?: string; body?: string; headers?: Record<string, string> }) => {
-    const reply = portal.endpoint?.({
+    const normalized = {
       url: request.url,
       method: (request.method ?? "GET").toUpperCase(),
       body: request.body,
       headers: lowercaseKeys(request.headers),
-    });
+    };
+    const observed = portal.routes.flatMap((route) => route.calls ?? []).find((call) =>
+      call.url === normalized.url && (call.method ?? "GET") === normalized.method);
+    const reply = portal.endpoint?.(normalized) ?? (observed
+      ? { status: observed.status, contentType: observed.contentType, body: observed.body }
+      : undefined);
     advanceTo(now() + 90);
     return reply;
   };
@@ -374,7 +466,44 @@ export function createSimulation(portal: Portal): Simulation {
           return [{ result: tab.observed }];
         }
         if (args?.length === 3 && typeof first?.settleMs === "number") {
-          return [{ result: await collectEvidence(tab, first as unknown as { settleMs: number; maxResources: number; deadlineMs: number }) }];
+          return [{ result: await collectEvidence(tab, first as unknown as {
+            settleMs: number;
+            maxResources: number;
+            deadlineMs: number;
+            allowSemanticNavigation?: boolean;
+            allowScroll?: boolean;
+          }) }];
+        }
+        if (args?.length === 4 && Array.isArray(args[0])) {
+          const route = routeFor(tab.url);
+          const hrefs = documentLinksFromHtml(route?.html ?? "", origin);
+          const key = (args[0] as Array<{ action?: string; as?: string }>).find((step) => step.action === "extractAll")?.as ?? "documents";
+          return [{ result: {
+            ok: true,
+            collected: { [key]: hrefs },
+            retrieval: { observedItems: hrefs.length, resolvedItems: hrefs.length, unresolvedItems: 0 },
+          } }];
+        }
+        if (args?.length === 4 && first?.kind === "enumerate") {
+          const route = routeFor(tab.url);
+          const count = Math.max(0, Math.min(100, route?.semanticControls ?? 0));
+          return [{ result: {
+            ok: true,
+            kind: "enumeration",
+            directDocuments: [],
+            actions: Array.from({ length: count }, (_, index) => {
+              const id = (index + 1).toString(16).padStart(32, "0");
+              return { actionId: id, vendorInvoiceId: `semantic-${id}`, evidence: [] };
+            }),
+            observedItems: count,
+            resolvedItems: count,
+            unresolvedItems: 0,
+            unstableItems: 0,
+            ambiguousItems: 0,
+            truncated: false,
+            navigationSteps: 0,
+            sectionObserved: Boolean(route?.semanticSections),
+          } }];
         }
         if (args?.length === 1 && typeof first?.url === "string") {
           const reply = replay(first as { url: string; method?: string; body?: string; headers?: Record<string, string> });
@@ -506,6 +635,21 @@ function countDocumentLinks(html: string): number {
     ) count += 1;
   }
   return Math.min(1_000, count);
+}
+
+function documentLinksFromHtml(html: string, origin: string): string[] {
+  const links: string[] = [];
+  for (const match of html.matchAll(/<a\b([^>]*)>/gi)) {
+    const href = /\bhref="([^"]+)"/i.exec(match[1])?.[1];
+    if (!href) continue;
+    try {
+      const url = new URL(href, `${origin}/`);
+      if (url.protocol === "https:") links.push(url.toString());
+    } catch {
+      // Malformed fixture links are not replayable documents.
+    }
+  }
+  return [...new Set(links)].slice(0, 500);
 }
 
 function countStructuredData(html: string): number {

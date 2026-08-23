@@ -31,18 +31,20 @@ Three things happen, all driven by you.
 
 **1. Find Invoices** — from any page in a supplier app.
 
-Ratatosk snapshots the page you're on without navigating, reloading, or closing
-it, then reopens that exact page once in a hidden tab so it can watch the app
-boot and see the JSON calls the billing UI makes. From there a bounded planner
-follows same-origin, billing-looking routes — read-only `GET` requests in
+Ratatosk passively snapshots the page you're on without clicking, scrolling,
+navigating, reloading, or closing it, then reopens that exact page once in a
+disposable tab so it can watch the app boot and see the JSON calls the billing
+UI makes. In that disposable page it may open up to four native menus and follow
+up to two localized Settings/Billing controls, retaining only routes the app
+actually exposed. From there a bounded planner follows same-origin routes — read-only `GET` requests in
 disposable inactive tabs, at most 15 pages, depth 3, 10 seconds. It never
 submits a form, and never follows logout, checkout, purchase, cancellation,
 deletion, or authorization links.
 
 The search stops the moment it has proof rather than when the budget runs out,
 so a portal that answers on its first page costs a second or two, not the whole
-envelope. Only a portal that the interactive pass cannot resolve escalates once
-to a longer, still bounded search.
+envelope. If the interactive pass cannot finish, the person may explicitly
+continue its saved frontier under a longer, still bounded search.
 
 It ranks routes by path intent *and* by what the page actually says, so an
 opaque route labelled `Invoices` is still found, and `/<tenant>/settings/billing`
@@ -98,12 +100,17 @@ enters the extension.
   decide what the extension does.
 - **Bounded permissions.** Host access is requested per supplier, for the exact
   origins your own candidates need. No wildcards, no private hosts.
-- **Read-only until you say otherwise.** Search never clicks. Semantic controls
-  are activated only after Connect & Collect and after the engine has reserved
-  a stable invoice identity. One shared controller re-locates an unambiguous,
-  visible, enabled control in a disposable tab; payment, purchase,
-  cancellation, deletion, and form actions are excluded. Chrome-native
-  supplier downloads are contained and rejected, never counted as collection.
+- **Read-only until you say otherwise.** Only a disposable replay may open up to
+  four native menus and two bounded, non-mutating localized Settings/Billing
+  controls to reveal existing invoice
+  UI. A temporary packaged guard permits only GET/HEAD and explicit read-only
+  GraphQL queries during those reveals; mutating fetch/XHR, beacon, form,
+  popup, and unsafe navigation attempts fail the probe. It never activates a
+  document, submits a form, or changes an account.
+  Semantic document controls are activated only after **Connect & Collect** and
+  stable invoice identity reservation in a disposable tab; payment, purchase,
+  cancellation, deletion, and form actions are excluded. Chrome-native supplier
+  downloads are contained and rejected, never counted as collection.
 - **Diagnostics carry no data.** When discovery fails, the copyable diagnostic
   holds the failed stage, a finite cause code, an optional HTTP status family,
   bounded counts, and `:id`-templated route shapes. Never URLs, selectors,

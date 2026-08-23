@@ -1,5 +1,13 @@
 # Plan 012: Build a proof-carrying adaptive acquisition fabric for unknown suppliers
 
+> **SUPERSEDED by
+> [`Plan 015`](015-build-evidence-first-adaptive-acquisition.md).** Do not
+> implement this plan. It was written at `3d33b9f` before cold replay,
+> transactional DOM acquisition, fair exploration families, diagnostics, and
+> local route memory landed. Plan 015 preserves its evidence-first, bounded,
+> proof-before-promotion direction while removing the stale rebuild and
+> speculative Studio, standards-intake, WebMCP, and broad benchmark work.
+
 > **Executor instructions**: This is a staged program plan, not permission to
 > land one giant PR. Execute the phases in order as separate, reviewable PRs.
 > Run every verification command and confirm the expected result before moving
@@ -18,6 +26,7 @@
 
 ## Status
 
+- **Plan status**: REJECTED — superseded by Plan 015 after implementation drift
 - **Priority**: P1
 - **Effort**: L (multi-PR program)
 - **Risk**: HIGH

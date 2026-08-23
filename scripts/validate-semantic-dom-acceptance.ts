@@ -10,6 +10,7 @@ export const SEMANTIC_DOM_ACCEPTANCE_SCHEMA = "ratatosk.semantic-dom-acceptance.
 const SITE_CLASSES = [
   "supabase",
   "additional-semantic-supplier",
+  "observed-spa-discovery",
   "synthetic-local-native-download",
 ] as const;
 const DESTINATION_KINDS = ["filesystem", "igdrasil"] as const;
@@ -89,6 +90,7 @@ export function parseSemanticDomAcceptanceReceipt(
   }
   const cases = raw.cases.map(parseCase);
   requireCase(cases, "supabase", "filesystem", "collected");
+  requireCase(cases, "observed-spa-discovery", "filesystem", "collected");
   for (const destination of DESTINATION_KINDS) {
     requireCase(cases, "additional-semantic-supplier", destination, "collected");
     requireCase(cases, "synthetic-local-native-download", destination, "browser_download_unsupported");

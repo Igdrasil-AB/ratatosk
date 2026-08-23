@@ -25,6 +25,37 @@ const recipe: VendorRecipe = {
 };
 
 describe("DOM document integrity", () => {
+  it("renders a discovered typed tenant DOM route only at collection time", async () => {
+    if (recipe.invoices.strategy !== "dom") throw new Error("expected DOM recipe");
+    const discovered: VendorRecipe = {
+      ...structuredClone(recipe),
+      id: "discovered-dom-template",
+      category: "discovered",
+      auth: { check: { request: { url: "https://vendor.example/" }, expect: { statusIn: [200] } }, loginUrl: "https://vendor.example" },
+      config: [{ id: "workspaceId", discover: { request: { url: "https://vendor.example/api/session" }, value: "workspaceId" } }],
+      invoices: {
+        strategy: "dom",
+        list: {
+          ...recipe.invoices.list,
+          open: "https://vendor.example/{workspaceId}/surface/r7",
+        },
+        document: recipe.invoices.document,
+      },
+    };
+    const driver: DomDriver = {
+      run: vi.fn(async () => domRun(["https://vendor.example/documents/july.pdf"])),
+      download: vi.fn(),
+    };
+
+    await makeDomStrategy(driver).list(discovered, { workspaceId: "9012345678901" }, {} as never);
+
+    expect(driver.run).toHaveBeenCalledWith(
+      "https://vendor.example/9012345678901/surface/r7",
+      expect.any(Array),
+      expect.anything(),
+    );
+  });
+
   it("rejects oversized browser-driver documents before they enter the engine", async () => {
     const driver: DomDriver = {
       run: vi.fn(async () => domRun(["https://vendor.example/invoice.pdf"])),

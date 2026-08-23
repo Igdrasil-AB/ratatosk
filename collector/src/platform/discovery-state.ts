@@ -9,7 +9,12 @@ import {
 } from "../../../src/core/discovery";
 import { OPERATIONAL_OUTCOME_CODES, operationalOutcomeLabel } from "../../../src/core/errors";
 import { parseDiscoveryDiagnostic, type DiscoveryDiagnosticV1 } from "./discovery-diagnostic";
-import { parseExplorationCheckpoint, type ExplorationCheckpoint } from "./discovery-explorer";
+import {
+  continueExplorationCheckpoint,
+  explorationBudget,
+  parseExplorationCheckpoint,
+  type ExplorationCheckpoint,
+} from "./discovery-explorer";
 import { isSyncMonth } from "../../../src/core/sync-window";
 import { LOCAL_DESTINATION_ID, type DestinationId } from "./storage";
 
@@ -46,7 +51,17 @@ type DiscoveryState =
   | { stage: "preview"; runId: string; candidates: DiscoveredSupplierCandidateSetV1; diagnostic: DiscoveryDiagnosticV1; updatedAt: number }
   | { stage: "confirming"; runId: string; candidates: DiscoveredSupplierCandidateSetV1; diagnostic: DiscoveryDiagnosticV1; fromMonth?: string; destinationId?: DestinationId; updatedAt: number }
   | { stage: "complete"; runId: string; vendorId: string; name: string; count: number; monthFallbackAll?: boolean; updatedAt: number }
-  | { stage: "failed"; runId: string; message: string; origins: string[]; diagnostic?: DiscoveryDiagnosticV1; updatedAt: number };
+  | {
+    stage: "failed";
+    runId: string;
+    message: string;
+    origins: string[];
+    diagnostic?: DiscoveryDiagnosticV1;
+    tabId?: number;
+    origin?: string;
+    checkpoint?: ExplorationCheckpoint;
+    updatedAt: number;
+  };
 
 export interface PendingSupplierDiscovery {
   runId: string;
@@ -78,6 +93,9 @@ export type DiscoveryStatusView =
     message: string;
     reason: "not_found" | "limit_reached" | "failed";
     diagnosticAvailable: boolean;
+    canSearchDeeper?: true;
+    deepRemainingMs?: number;
+    origin?: string;
   };
 
 export async function beginSupplierDiscovery(tabId: number, origin: string): Promise<string> {
@@ -238,9 +256,13 @@ export async function failSupplierDiscovery(
   diagnostic?: DiscoveryDiagnosticV1,
 ): Promise<boolean> {
   return transition(async () => {
+  let resumable: { tabId: number; origin: string; checkpoint: ExplorationCheckpoint } | undefined;
   if (runId) {
     const state = await read();
     if (!state || state.runId !== runId || (state.stage !== "scanning" && state.stage !== "confirming")) return false;
+    if (state.stage === "scanning" && state.checkpoint) {
+      resumable = { tabId: state.tabId, origin: state.origin, checkpoint: state.checkpoint };
+    }
   }
   await write({
     stage: "failed",
@@ -248,9 +270,32 @@ export async function failSupplierDiscovery(
     message: safeMessage(message),
     origins: safeOrigins(origins),
     diagnostic: diagnostic ? parseDiscoveryDiagnostic(diagnostic) : undefined,
+    ...(resumable ? { tabId: resumable.tabId, origin: resumable.origin, checkpoint: resumable.checkpoint } : {}),
     updatedAt: Date.now(),
   });
   return true;
+  });
+}
+
+/** Restart only the unfinished frontier under the explicit deep envelope. */
+export async function continueSupplierDiscovery(): Promise<{ runId: string; tabId: number; origin: string; checkpoint: ExplorationCheckpoint } | undefined> {
+  return transition(async () => {
+    const state = await read();
+    if (
+      !state || state.stage !== "failed" || state.diagnostic?.result !== "limit_reached" ||
+      state.tabId === undefined || !state.origin || !state.checkpoint
+    ) return undefined;
+    const checkpoint = continueExplorationCheckpoint(state.checkpoint);
+    if (!checkpoint) return undefined;
+    await write({
+      stage: "scanning",
+      runId: state.runId,
+      tabId: state.tabId,
+      origin: state.origin,
+      checkpoint,
+      updatedAt: Date.now(),
+    });
+    return { runId: state.runId, tabId: state.tabId, origin: state.origin, checkpoint };
   });
 }
 
@@ -303,6 +348,13 @@ export async function getSupplierDiscoveryStatus(): Promise<DiscoveryStatusView>
       ...(state.monthFallbackAll ? { monthFallbackAll: true } : {}),
     };
     case "failed": return {
+      ...(state.checkpoint?.mode === "fast" && state.diagnostic?.result === "limit_reached" && state.origin && state.tabId !== undefined
+        ? {
+          canSearchDeeper: true as const,
+          deepRemainingMs: Math.max(0, explorationBudget("deep").durationMs - state.checkpoint.elapsedMs),
+          origin: state.origin,
+        }
+        : {}),
       stage: "failed",
       message: state.message,
       reason: state.diagnostic?.result === "not_found" || state.diagnostic?.result === "limit_reached"
@@ -391,11 +443,19 @@ function parseState(value: unknown): DiscoveryState | undefined {
   }
   if (raw.stage === "failed" && typeof raw.message === "string") {
     try {
+      const checkpoint = raw.checkpoint === undefined ? undefined : parseExplorationCheckpoint(raw.checkpoint);
+      if (raw.checkpoint !== undefined && !checkpoint) return undefined;
+      const hasContinuation = raw.tabId !== undefined || raw.origin !== undefined || checkpoint !== undefined;
+      if (hasContinuation) {
+        if (!Number.isInteger(raw.tabId) || Number(raw.tabId) < 0 || typeof raw.origin !== "string" || !checkpoint) return undefined;
+        exactOriginPattern(raw.origin);
+      }
       return {
         stage: raw.stage,
         runId: raw.runId, message: safeMessage(raw.message),
         origins: safeOrigins(raw.origins),
         diagnostic: raw.diagnostic === undefined ? undefined : parseDiscoveryDiagnostic(raw.diagnostic),
+        ...(hasContinuation ? { tabId: Number(raw.tabId), origin: raw.origin as string, checkpoint: checkpoint! } : {}),
         updatedAt,
       };
     } catch {

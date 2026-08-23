@@ -472,7 +472,7 @@ export function assertDiscoveredRecipePolicy(recipe: VendorRecipe, primaryOrigin
 
   if (recipe.invoices.strategy === "dom") {
     const { list } = recipe.invoices;
-    if (safeEntryUrl(list.open) !== list.open) throw new Error("DOM discovery page cannot contain query, fragment, or credential-like path data");
+    assertSafeDiscoveredDomOpenTemplate(list.open, primaryOrigin, recipe.config ?? []);
     if (list.steps.length < 1 || list.steps.length > 4) throw new Error("DOM discovery has too many steps");
     for (const step of list.steps) {
       if ((step as { action: string }).action === "click") {
@@ -493,6 +493,73 @@ export function assertDiscoveredRecipePolicy(recipe: VendorRecipe, primaryOrigin
       if ((list.continuation.maxActions ?? 8) > 12) throw new Error("DOM continuation exceeds the action budget");
       if ((list.continuation.maxDocuments ?? 500) > 500) throw new Error("DOM continuation exceeds the document budget");
       if ((list.continuation.timeoutMs ?? 30_000) > 60_000) throw new Error("DOM continuation exceeds the time budget");
+    }
+  }
+}
+
+/**
+ * Validate the one dynamic DOM-open form that discovered suppliers may retain:
+ * a full tenant path segment bound by an already-validated runtime config
+ * scope. This retains the route shape, never the value discovered on the page.
+ */
+function assertSafeDiscoveredDomOpenTemplate(
+  value: string,
+  primaryOrigin: string,
+  config: NonNullable<VendorRecipe["config"]>,
+): void {
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error("DOM discovery page must be a normal HTTPS URL"); }
+  const segments = decodeURIComponent(url.pathname).split("/").filter(Boolean);
+  const placeholders = segments.flatMap((segment, index) => {
+    const match = /^\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(segment);
+    return match ? [{ index, id: match[1] }] : [];
+  });
+  if (!placeholders.length) {
+    if (safeEntryUrl(value) !== value) throw new Error("DOM discovery page cannot contain query, fragment, or credential-like path data");
+    return;
+  }
+  if (url.origin !== primaryOrigin || url.search || url.hash || url.username || url.password) {
+    throw new Error("DOM discovery page cannot contain query, fragment, credentials, or another origin");
+  }
+  if (placeholders.length !== 1 || !isTenantScopeName(placeholders[0].id) || !config.some((option) => option.id === placeholders[0].id)) {
+    throw new Error("DOM discovery page templates must be one typed tenant scope");
+  }
+  const candidate = new URL(value.replace(`{${placeholders[0].id}}`, "tenant"));
+  if (safeEntryUrl(candidate.toString()) !== candidate.toString()) {
+    throw new Error("DOM discovery page template is not a safe route");
+  }
+}
+
+/** Validate a rendered discovered DOM route without weakening generic entry URL policy. */
+export function assertSafeRenderedDiscoveredDomOpen(
+  recipe: VendorRecipe,
+  template: string,
+  rendered: string,
+): void {
+  if (recipe.category !== "discovered") return;
+  assertSafeDiscoveredDomOpenTemplate(template, new URL(recipe.homepage).origin, recipe.config ?? []);
+  let source: URL;
+  let target: URL;
+  try {
+    source = new URL(template);
+    target = new URL(rendered);
+  } catch {
+    throw new Error("rendered DOM discovery page is invalid");
+  }
+  if (target.origin !== source.origin || target.search || target.hash || target.username || target.password) {
+    throw new Error("rendered DOM discovery page changed its safe origin or route shape");
+  }
+  const sourceSegments = decodeURIComponent(source.pathname).split("/").filter(Boolean);
+  const targetSegments = decodeURIComponent(target.pathname).split("/").filter(Boolean);
+  if (sourceSegments.length !== targetSegments.length) throw new Error("rendered DOM discovery page changed route depth");
+  for (const [index, segment] of sourceSegments.entries()) {
+    const placeholder = /^\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(segment);
+    if (placeholder) {
+      if (!isBoundedTenantIdentifierSegment(targetSegments[index])) {
+        throw new Error("rendered DOM discovery page has an invalid tenant scope");
+      }
+    } else if (segment !== targetSegments[index]) {
+      throw new Error("rendered DOM discovery page changed route structure");
     }
   }
 }

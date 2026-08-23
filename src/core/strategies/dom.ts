@@ -26,6 +26,7 @@ import { render } from "../template";
 import { createInvoiceListResult } from "../retrieval";
 import { MAX_DOCUMENT_BYTES } from "../document-size";
 import { resolveInvoiceMetadata } from "../invoice-metadata";
+import { assertSafeRenderedDiscoveredDomOpen } from "../discovery";
 
 export interface DomDocumentObservation {
   url: string;
@@ -66,9 +67,11 @@ const DEFAULT_FILENAME = "{vendorId}-{issuedAt}-{vendorInvoiceId}.pdf";
 
 export function makeDomStrategy(driver: DomDriver): Strategy {
   return {
-    async list(recipe, _vars, _ctx) {
+    async list(recipe, vars, _ctx) {
       const spec = (recipe.invoices as DomInvoices).list;
-      const { collected, documents = [], actions = [], retrieval } = await driver.run(spec.open, spec.steps, spec.continuation);
+      const open = render(spec.open, vars);
+      assertSafeRenderedDiscoveredDomOpen(recipe, spec.open, open);
+      const { collected, documents = [], actions = [], retrieval } = await driver.run(open, spec.steps, spec.continuation);
       const hrefs = collected[spec.hrefsFrom];
       if (!hrefs) throw new SelectorMiss(`DOM step never collected "${spec.hrefsFrom}"`, recipe.id);
       const evidenceByUrl = new Map<string, InvoiceMetadataEvidence[]>();

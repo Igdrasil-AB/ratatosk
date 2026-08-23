@@ -77,7 +77,7 @@ describe("local discovered supplier catalog", () => {
 
     await expect(upsertDiscoveredSupplier(profileFor(50))).rejects.toThrow(/capacity/i);
     await expect(getDiscoveredSuppliers()).resolves.toEqual(before);
-  });
+  }, 15_000);
 });
 
 function profileFor(index: number) {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertSafeRenderedDiscoveredDomOpen,
   assertDiscoveredRecipePolicy,
   createDiscoveredSupplierCandidateSet,
   createDiscoveredSupplierProfile,
@@ -413,6 +414,26 @@ describe("discovered supplier profiles", () => {
     expect(safeEntryUrl(`${origin}/a473171df3249291b4be6fca57bb8444/settings/team`)).toBe(`${origin}/`);
     expect(safeEntryUrl(`${origin}/a473171df3249291b4be6fca57bb8444/billing`)).toBe(`${origin}/`);
     expect(safeEntryUrl(`${origin}/token/a473171df3249291b4be6fca57bb8444/billing`)).toBe(`${origin}/`);
+  });
+
+  it("allows one typed tenant template for a discovered DOM page and rejects an untyped render", () => {
+    const scoped = domRecipe();
+    scoped.category = "discovered";
+    scoped.auth.check.request.url = `${origin}/`;
+    scoped.config = [{ id: "workspaceId", discover: { request: { url: `${origin}/api/session` }, value: "workspaceId" } }];
+    if (scoped.invoices.strategy === "dom") scoped.invoices.list.open = `${origin}/{workspaceId}/surface/r7`;
+
+    expect(() => assertDiscoveredRecipePolicy(scoped, origin, `${origin}/`)).not.toThrow();
+    expect(() => assertSafeRenderedDiscoveredDomOpen(
+      scoped,
+      `${origin}/{workspaceId}/surface/r7`,
+      `${origin}/9012345678901/surface/r7`,
+    )).not.toThrow();
+    expect(() => assertSafeRenderedDiscoveredDomOpen(
+      scoped,
+      `${origin}/{workspaceId}/surface/r7`,
+      `${origin}/not-a-typed-tenant/surface/r7`,
+    )).toThrow(/tenant scope/);
   });
 
   it("rejects opaque GraphQL variables and accepts only reviewed templates and pagination constants", () => {

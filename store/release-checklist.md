@@ -20,7 +20,7 @@ unzip -l artifacts/ratatosk-collector-*.zip
 - [ ] CI, typecheck, validation, and tests pass.
 - [ ] A fresh `store/semantic-dom-acceptance.json` matches the exact Collector
       version, acquisition revision, and packaged ZIP SHA-256; its Supabase, additional-supplier,
-      native-download, filesystem, Igdrasil, immediate-second-run, and
+      observed-SPA-discovery, native-download, filesystem, Igdrasil, immediate-second-run, and
       configured-cadence cases pass with zero page-owned download delta.
 - [ ] Collector and its checksum are produced under `artifacts/`.
 - [ ] `manifest.json` is at the ZIP root.

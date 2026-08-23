@@ -9,6 +9,7 @@ import {
   checkpointSupplierDiscovery,
   clearSupplierDiscovery,
   completeSupplierDiscovery,
+  continueSupplierDiscovery,
   failSupplierDiscovery,
   getPendingSupplierDiscoveryConnect,
   getSupplierDiscoveryDiagnostic,
@@ -114,6 +115,106 @@ describe("durable supplier discovery handoff", () => {
     });
     expect(JSON.stringify((values["supplierDiscovery.v1"] as { checkpoint?: unknown }).checkpoint))
       .not.toMatch(/https?:|token|responseBody|9012345678/i);
+  });
+
+  it("continues a capped fast search explicitly from its safe unfinished frontier", async () => {
+    const runId = await beginSupplierDiscovery(42, "https://vendor.example");
+    await markSupplierDiscoveryScanning();
+    const checkpoint = createExplorationCheckpoint({
+      mode: "fast",
+      pagesAttempted: 4,
+      linkedPagesAttempted: 2,
+      commonRoutePagesAttempted: 1,
+      elapsedMs: 10_000,
+      frontier: [{
+        key: "common_billing_route|/account/billing",
+        family: "common_billing_route",
+        score: 90,
+        depth: 1,
+        route: "/account/billing",
+        source: "common_route",
+        hintSource: "common_fallback",
+      }],
+      completedTargetKeys: ["exact_entry|/home"],
+      attemptedFamilies: ["exact_entry", "observed_navigation"],
+      slicesCompleted: 0,
+    });
+    await checkpointSupplierDiscovery(runId, checkpoint);
+    await failSupplierDiscovery(runId, DISCOVERY_FAILURE_MESSAGES.timeCap, ["https://vendor.example/*"], {
+      schema: DISCOVERY_DIAGNOSTIC_SCHEMA,
+      site: "vendor.example",
+      runtime: { collectorVersion: "0.8.50", discoveryEngine: 37 },
+      limits: { pages: 15, depth: 3, durationMs: 10_000 },
+      timing: { elapsedMs: 10_000 },
+      pages: { attempted: 4, linked: 2, commonRoutes: 1 },
+      evidence: { jsonResources: 0, observedRequests: 0, replayedRequests: 0, documentLinks: 0, structuredDataPages: 0, crossOriginHosts: [] },
+      candidates: { compiled: 0, previewed: 0, retained: 0 },
+      attempts: [],
+      termination: "time_cap",
+      result: "limit_reached",
+    });
+
+    await expect(getSupplierDiscoveryStatus()).resolves.toMatchObject({
+      stage: "failed",
+      reason: "limit_reached",
+      canSearchDeeper: true,
+      deepRemainingMs: 35_000,
+      origin: "https://vendor.example",
+    });
+    await expect(continueSupplierDiscovery()).resolves.toMatchObject({
+      runId,
+      tabId: 42,
+      origin: "https://vendor.example",
+      checkpoint: expect.objectContaining({ mode: "deep", elapsedMs: 10_000, frontier: [expect.objectContaining({ route: "/account/billing" })] }),
+    });
+    expect(JSON.stringify((values["supplierDiscovery.v1"] as { checkpoint?: unknown }).checkpoint))
+      .not.toMatch(/https?:|token|9012345678/i);
+  });
+
+  it("does not advertise another continuation after the deep envelope is capped", async () => {
+    const runId = await beginSupplierDiscovery(42, "https://vendor.example");
+    await markSupplierDiscoveryScanning();
+    const checkpoint = createExplorationCheckpoint({
+      mode: "deep",
+      pagesAttempted: 20,
+      linkedPagesAttempted: 10,
+      commonRoutePagesAttempted: 5,
+      elapsedMs: 45_000,
+      frontier: [{
+        key: "common_billing_route|/account/billing",
+        family: "common_billing_route",
+        score: 90,
+        depth: 1,
+        route: "/account/billing",
+        source: "common_route",
+        hintSource: "common_fallback",
+      }],
+      completedTargetKeys: ["exact_entry|/home"],
+      attemptedFamilies: ["exact_entry", "observed_navigation"],
+      slicesCompleted: 0,
+    });
+    await checkpointSupplierDiscovery(runId, checkpoint);
+    await failSupplierDiscovery(runId, DISCOVERY_FAILURE_MESSAGES.timeCap, ["https://vendor.example/*"], {
+      schema: DISCOVERY_DIAGNOSTIC_SCHEMA,
+      site: "vendor.example",
+      runtime: { collectorVersion: "0.8.50", discoveryEngine: 38 },
+      limits: { pages: 40, depth: 4, durationMs: 45_000 },
+      timing: { elapsedMs: 45_000 },
+      pages: { attempted: 20, linked: 10, commonRoutes: 5 },
+      evidence: { jsonResources: 0, observedRequests: 0, replayedRequests: 0, documentLinks: 0, structuredDataPages: 0, crossOriginHosts: [] },
+      candidates: { compiled: 0, previewed: 0, retained: 0 },
+      attempts: [],
+      termination: "time_cap",
+      result: "limit_reached",
+    });
+
+    await expect(getSupplierDiscoveryStatus()).resolves.toEqual({
+      stage: "failed",
+      message: DISCOVERY_FAILURE_MESSAGES.timeCap,
+      reason: "limit_reached",
+      diagnosticAvailable: true,
+    });
+    await expect(continueSupplierDiscovery()).resolves.toBeUndefined();
   });
 
   it("keeps the strict profile only in session until confirmation succeeds", async () => {

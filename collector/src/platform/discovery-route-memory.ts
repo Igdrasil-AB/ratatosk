@@ -23,7 +23,8 @@ import { exactOriginPattern, safeEntryUrl } from "../../../src/core/discovery";
  * Everything here stays on this machine. Nothing is uploaded or shared.
  */
 
-const KEY = "discoveryRouteMemory.v1";
+const KEY = "discoveryRouteMemory.v2";
+const LEGACY_KEY = "discoveryRouteMemory.v1";
 /** Origins remembered before the least recently confirmed is evicted. */
 const ORIGIN_CAP = 100;
 /** Searches that failed to confirm a route before it is dropped as stale. */
@@ -38,6 +39,9 @@ export interface RememberedRoute {
   confirmedAt: number;
   /** Searches since that did not confirm it. Reset by every confirmation. */
   misses: number;
+  /** The immediately preceding proved route. It is used only after the active
+   * route fails repeatedly, then becomes active again without guessing. */
+  previousEntryUrl?: string;
 }
 
 /**
@@ -63,7 +67,14 @@ export async function rememberSupplierRoute(origin: string, entryUrl: string): P
   if (!key || !route) return;
   await enqueue(async () => {
     const entries = await readValidated();
-    entries[key] = { entryUrl: route, confirmedAt: Date.now(), misses: 0 };
+    const existing = entries[key];
+    entries[key] = {
+      entryUrl: route,
+      confirmedAt: Date.now(),
+      misses: 0,
+      ...(existing && existing.entryUrl !== route ? { previousEntryUrl: existing.entryUrl } :
+        existing?.previousEntryUrl ? { previousEntryUrl: existing.previousEntryUrl } : {}),
+    };
     await write(evictOldest(entries));
   });
 }
@@ -84,7 +95,9 @@ export async function recordRouteMiss(origin: string): Promise<void> {
     const existing = entries[key];
     if (!existing) return;
     const misses = existing.misses + 1;
-    if (misses >= MAX_MISSES) delete entries[key];
+    if (misses >= MAX_MISSES && existing.previousEntryUrl) {
+      entries[key] = { entryUrl: existing.previousEntryUrl, confirmedAt: Date.now(), misses: 0 };
+    } else if (misses >= MAX_MISSES) delete entries[key];
     else entries[key] = { ...existing, misses };
     await write(entries);
   });
@@ -107,7 +120,10 @@ export async function listRememberedRoutes(): Promise<Record<string, RememberedR
 }
 
 export async function clearRememberedRoutes(): Promise<void> {
-  await enqueue(() => chrome.storage.local.remove(KEY));
+  await enqueue(async () => {
+    await chrome.storage.local.remove(KEY);
+    await chrome.storage.local.remove(LEGACY_KEY);
+  });
 }
 
 // ---- storage --------------------------------------------------------------
@@ -123,6 +139,7 @@ async function readValidated(): Promise<Record<string, RememberedRoute>> {
   let raw: unknown;
   try {
     raw = (await chrome.storage.local.get(KEY))[KEY];
+    if (raw === undefined) raw = (await chrome.storage.local.get(LEGACY_KEY))[LEGACY_KEY];
   } catch {
     return {};
   }
@@ -135,15 +152,18 @@ async function readValidated(): Promise<Record<string, RememberedRoute>> {
     const entryUrl = typeof entry.entryUrl === "string" ? safeRouteUrl(entry.entryUrl, key) : undefined;
     const confirmedAt = Number(entry.confirmedAt);
     const misses = Number(entry.misses);
+    const previousEntryUrl = typeof entry.previousEntryUrl === "string" ? safeRouteUrl(entry.previousEntryUrl, key) : undefined;
     if (!entryUrl || !Number.isFinite(confirmedAt) || confirmedAt <= 0) continue;
     if (!Number.isInteger(misses) || misses < 0 || misses >= MAX_MISSES) continue;
-    valid[key] = { entryUrl, confirmedAt, misses };
+    if (entry.previousEntryUrl !== undefined && (!previousEntryUrl || previousEntryUrl === entryUrl)) continue;
+    valid[key] = { entryUrl, confirmedAt, misses, ...(previousEntryUrl ? { previousEntryUrl } : {}) };
   }
   return valid;
 }
 
 async function write(entries: Record<string, RememberedRoute>): Promise<void> {
   await chrome.storage.local.set({ [KEY]: entries });
+  await chrome.storage.local.remove(LEGACY_KEY);
 }
 
 /** Keep the most recently confirmed routes; a shortcut nobody uses is not worth

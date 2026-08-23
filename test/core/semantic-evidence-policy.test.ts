@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isSafeSemanticNavigationTrigger,
   isSafeSemanticNavigationLabel,
   semanticControlEvidenceBasis,
 } from "../../collector/src/platform/discovery-dom-policy";
@@ -45,11 +46,42 @@ describe("semantic invoice evidence policy", () => {
   });
 
   it("allows only inert navigation labels used to reveal billing surfaces", () => {
-    for (const label of ["Open profile menu", "Example User Pro, open profile menu", "Account menu", "Settings", "Preferences", "Billing", "Subscription", "Invoice history"]) {
+    for (const label of [
+      "Open profile menu", "Example User Pro, open profile menu", "Account menu",
+      "Settings", "Preferences", "Billing", "Subscription", "Invoice history",
+      "Inställningar", "Fakturering", "Einstellungen", "Abrechnung",
+      "Paramètres", "Facturation", "Configuración", "Facturación",
+    ]) {
       expect(isSafeSemanticNavigationLabel(label)).toBe(true);
     }
     for (const label of ["Download apps", "Upgrade now", "Pay invoice", "Delete account", "Add payment method", "Sign out"]) {
       expect(isSafeSemanticNavigationLabel(label)).toBe(false);
     }
+  });
+
+  it("admits only structurally identified account/workspace menu triggers", () => {
+    expect(isSafeSemanticNavigationTrigger({
+      structural: "workspace-picker-toggle__button cdk-menu-trigger",
+      hasPopupMenu: true,
+      visible: true,
+      enabled: true,
+      formBacked: false,
+    })).toBe(true);
+    // Opening a native menu is the harmless speculative step. The branch is
+    // retained only if the revealed popup contains a safe Settings intent.
+    expect(isSafeSemanticNavigationTrigger({
+      structural: "create-task-menu cdk-menu-trigger",
+      hasPopupMenu: true,
+      visible: true,
+      enabled: true,
+      formBacked: false,
+    })).toBe(true);
+    expect(isSafeSemanticNavigationTrigger({
+      structural: "workspace-picker-toggle__button",
+      hasPopupMenu: false,
+      visible: true,
+      enabled: true,
+      formBacked: false,
+    })).toBe(false);
   });
 });

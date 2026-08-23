@@ -275,6 +275,7 @@ const tenantScopedPortal: Portal = {
       path: `/organization/${TENANT}/projects`,
       title: "Projects | Tenant",
       hydrateMs: 200,
+      navigations: [{ href: `/organization/${TENANT}/billing`, label: "Billing and invoices" }],
       html: '<html><head><title>Projects | Tenant</title></head><body><h1>Projects</h1></body></html>',
     },
     {
