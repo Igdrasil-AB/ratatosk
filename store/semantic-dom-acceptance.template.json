@@ -31,6 +31,18 @@
       "pass": true
     },
     {
+      "siteClass": "observed-spa-discovery",
+      "destinationKind": "filesystem",
+      "firstRunAcceptedCount": 1,
+      "secondRunActionCount": 0,
+      "secondRunAcceptedCount": 0,
+      "cadenceRunActionCount": 0,
+      "cadenceRunAcceptedCount": 0,
+      "pageOwnedDownloadDelta": 0,
+      "closedOutcome": "collected",
+      "pass": true
+    },
+    {
       "siteClass": "additional-semantic-supplier",
       "destinationKind": "igdrasil",
       "firstRunAcceptedCount": 1,

@@ -167,7 +167,7 @@ describe("packaged supplier discovery adapters", () => {
     }, base.url, "Example Vendor");
     expect(candidates).toHaveLength(1);
     expect(candidates[0].adapterId).toBe("dom-links");
-    expect(candidates[0].previewCount).toBe(1);
+    expect("previewCount" in candidates[0]).toBe(false);
     expect(candidates[0].recipe.invoices.strategy).toBe("dom");
     if (candidates[0].recipe.invoices.strategy === "dom") {
       expect(candidates[0].recipe.invoices.list.continuation).toMatchObject({ mode: "auto", maxActions: 8 });

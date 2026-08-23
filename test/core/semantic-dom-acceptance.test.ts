@@ -16,6 +16,7 @@ describe("semantic DOM release acceptance", () => {
       unrelatedUserDownloadSameUrlUntouched: true,
       cases: expect.arrayContaining([
         expect.objectContaining({ siteClass: "supabase", closedOutcome: "collected" }),
+        expect.objectContaining({ siteClass: "observed-spa-discovery", closedOutcome: "collected" }),
       ]),
     });
     vi.useRealTimers();
@@ -68,6 +69,7 @@ function receipt() {
       { ...common, siteClass: "supabase", destinationKind: "filesystem", firstRunAcceptedCount: 1, closedOutcome: "collected" },
       { ...common, siteClass: "additional-semantic-supplier", destinationKind: "filesystem", firstRunAcceptedCount: 1, closedOutcome: "collected" },
       { ...common, siteClass: "additional-semantic-supplier", destinationKind: "igdrasil", firstRunAcceptedCount: 1, closedOutcome: "collected" },
+      { ...common, siteClass: "observed-spa-discovery", destinationKind: "filesystem", firstRunAcceptedCount: 1, closedOutcome: "collected" },
       { ...common, siteClass: "synthetic-local-native-download", destinationKind: "filesystem", firstRunAcceptedCount: 0, closedOutcome: "browser_download_unsupported" },
       { ...common, siteClass: "synthetic-local-native-download", destinationKind: "igdrasil", firstRunAcceptedCount: 0, closedOutcome: "browser_download_unsupported" },
     ],

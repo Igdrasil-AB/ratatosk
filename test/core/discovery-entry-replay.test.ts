@@ -14,6 +14,7 @@ describe("exact-entry cold replay", () => {
         depth: 0,
         source: "entry",
         family: "exact_entry",
+        hintSource: "active_entry",
         score: Number.MAX_SAFE_INTEGER,
       },
       {
@@ -21,6 +22,7 @@ describe("exact-entry cold replay", () => {
         depth: 0,
         source: "entry_replay",
         family: "exact_entry",
+        hintSource: "cold_replay",
         score: Number.MAX_SAFE_INTEGER - 1,
       },
     ]);
@@ -33,12 +35,18 @@ describe("exact-entry cold replay", () => {
 
   it("registers the observer before creating the replay plan and never navigates the active tab", () => {
     const observerStart = discoverySource.indexOf("await pageObserver.start()");
-    const replayPlan = discoverySource.indexOf("const queue = createInitialExplorationTargets(");
+    const replayPlan = discoverySource.indexOf("createInitialExplorationTargets(firstUrl, observerReady, remembered)");
 
     expect(observerStart).toBeGreaterThan(0);
     expect(replayPlan).toBeGreaterThan(observerStart);
     expect(discoverySource).toContain('target.source === "entry_replay"');
     expect(discoverySource).not.toMatch(/chrome\.tabs\.update\(tabId,\s*\{/);
+    expect(discoverySource).toContain('allowSemanticNavigation: target.source !== "entry"');
+    expect(discoverySource).toContain('allowScroll: target.source !== "entry"');
+    expect(discoverySource).toContain('if (topLevelFrame && options.allowSemanticNavigation !== false) {');
+    expect(discoverySource).toContain('await withDiscoveryMutationGuard(async () => {');
+    expect(discoverySource).toContain('await revealSemanticNavigation()');
+    expect(discoverySource).toContain('topLevelFrame && options.allowScroll !== false && !usefulEvidencePresent()');
   });
 
   it("waits for observer quiescence independently of embedded hydration data", () => {

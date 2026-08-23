@@ -1,8 +1,42 @@
 import { describe, expect, it } from "vitest";
-import { parsePageEvidence } from "../../collector/src/platform/discovery";
+import { mergeFrameNetworkEvidence, parsePageEvidence } from "../../collector/src/platform/discovery";
 
 describe("supplier page evidence boundary", () => {
   const options = { settleMs: 0, maxResources: 2, deadlineMs: 3_000 };
+
+  it("merges same-origin frame requests without admitting frame DOM controls or routes", () => {
+    const main = parsePageEvidence({
+      url: "https://vendor.example/home",
+      origin: "https://vendor.example",
+      html: "<html><body>Home</body></html>",
+      resources: [],
+      navigationUrls: [],
+      crossOriginHosts: [],
+      stats: { documentLinks: 0, structuredData: 0, semanticControls: 0 },
+    }, "https://vendor.example", { ...options, maxResources: 12 });
+    const frame = parsePageEvidence({
+      url: "https://vendor.example/embed/billing",
+      origin: "https://vendor.example",
+      html: '<a href="/private/frame-document.pdf">Frame document</a>',
+      resources: [{
+        url: "https://vendor.example/api/invoices",
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ invoices: [] }),
+        source: "observed",
+      }],
+      navigationUrls: [{ url: "https://vendor.example/frame-route", label: "Billing" }],
+      crossOriginHosts: [],
+      stats: { documentLinks: 1, structuredData: 0, semanticControls: 1 },
+    }, "https://vendor.example", { ...options, maxResources: 12 });
+
+    const merged = mergeFrameNetworkEvidence(main, [frame], 12);
+
+    expect(merged.resources).toHaveLength(1);
+    expect(merged.html).toBe(main.html);
+    expect(merged.navigationUrls).toEqual([]);
+    expect(merged.stats).toEqual(main.stats);
+  });
 
   it("accepts bounded exact-origin structural evidence", () => {
     expect(parsePageEvidence({

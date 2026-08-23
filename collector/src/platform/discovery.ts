@@ -3,6 +3,7 @@ import {
   createDiscoveredSupplierProfile,
   deriveSupplierDisplayName,
   exactOriginPattern,
+  isBoundedTenantIdentifierSegment,
   MAX_DISCOVERY_CANDIDATES,
   safeEntryUrl,
   reuseDiscoveredSupplierIdentity,
@@ -40,6 +41,7 @@ import {
   entryProbeOptions,
   EXPLORATION_ROUTE_POLICY,
   capExplorationProbeOptions,
+  checkpointFrontierItem,
   createExplorationCheckpoint,
   ENABLED_EXPLORATION_FAMILIES,
   explorationBudget,
@@ -48,6 +50,7 @@ import {
   explorationTargetKey,
   planExplorationTargets,
   rankExplorationQueue,
+  restoreExplorationTargets,
   runWithinExplorationBudget,
   safeExplorationUrl,
   safeReplayUrl,
@@ -139,7 +142,6 @@ export interface PageEvidence {
 type Candidate = {
   adapterId: DiscoveryAdapterId;
   recipe: VendorRecipe;
-  previewCount?: number;
   admission: CandidateAdmissionSignal[];
 };
 
@@ -172,6 +174,7 @@ export function createInitialExplorationTargets(
     depth: 0,
     source: "entry",
     family: "exact_entry",
+    hintSource: "active_entry",
     score: Number.MAX_SAFE_INTEGER,
   }];
   if (observerReady) {
@@ -180,6 +183,7 @@ export function createInitialExplorationTargets(
       depth: 0,
       source: "entry_replay",
       family: "exact_entry",
+      hintSource: "cold_replay",
       score: Number.MAX_SAFE_INTEGER - 1,
     });
   }
@@ -193,6 +197,7 @@ export function createInitialExplorationTargets(
       depth: 1,
       source: "remembered",
       family: "common_billing_route",
+      hintSource: "remembered",
       score: REMEMBERED_ROUTE_SCORE,
     });
   }
@@ -231,8 +236,13 @@ export async function discoverSupplierInTab(
   // only seeded when a search actually starts.
   const remembered = resumed ? undefined : (await getRememberedRoute(expectedOrigin))?.entryUrl;
   if (remembered) console.info(`[collector] discovery will try the remembered route ${toDiagnosticRoute(remembered)} first`);
-  const queue = createInitialExplorationTargets(firstUrl, observerReady, remembered);
-  const known = new Set([firstUrl]);
+  const restored = resumed ? restoreExplorationTargets(resumed, expectedOrigin) : [];
+  // A checkpoint with no replayable frontier is terminal progress, not license
+  // to start the same search again with its old budget already consumed.
+  const queue = restored.length
+    ? restored
+    : resumed ? [] : createInitialExplorationTargets(firstUrl, observerReady, remembered);
+  const known = new Set([firstUrl, ...queue.map((target) => target.url)]);
   const foregroundProbeBudget = { remaining: 1 };
   const explorers = Array.from(
     // One tab per concurrent probe slot, and never fewer than the two the entry
@@ -262,12 +272,7 @@ export async function discoverSupplierInTab(
       linkedPagesAttempted: diagnostic.pages.linked,
       commonRoutePagesAttempted: diagnostic.pages.commonRoutes,
       elapsedMs: Math.min(budget.durationMs, elapsedBefore + Math.max(0, Date.now() - startedAt)),
-      frontier: queue.map((target) => ({
-        key: explorationTargetKey(target),
-        family: explorationFamilyForTarget(target),
-        score: Math.max(0, Math.min(10_000, Math.trunc(target.score))),
-        depth: target.depth,
-      })),
+      frontier: queue.map(checkpointFrontierItem),
       completedTargetKeys: [...completedTargetKeys],
       attemptedFamilies: diagnostic.coverage!.attemptedFamilies,
       slicesCompleted: diagnostic.coverage!.slicesCompleted,
@@ -328,11 +333,15 @@ export async function discoverSupplierInTab(
         const probeOptions: ProbeOptions = {
           ...capExplorationProbeOptions(baseOptions, remainingMs),
           allowForegroundRetry: index === foregroundCandidateIndex,
+          // The page the person chose is observational only. Menu exploration
+          // and scrolling belong to the disposable cold replay/background tabs.
+          allowSemanticNavigation: target.source !== "entry",
+          allowScroll: target.source !== "entry",
         };
         const probe = target.source === "entry"
           ? probeSupplierTab(tabId, expectedOrigin, probeOptions)
           : explorers[index].probe(target.url, probeOptions);
-        return runWithinExplorationBudget(probe, remainingMs);
+        return runWithinExplorationBudget(probe, probeOptions.deadlineMs);
       });
 
       for await (const probe of probes) {
@@ -351,7 +360,7 @@ export async function discoverSupplierInTab(
               links: [],
               visited: known,
               nextDepth: 1,
-              includeCommonRoutes: true,
+              includeCommonRoutes: mode !== "fast",
               limit: budget.pages - diagnostic.pages.attempted,
               maxDepth: budget.depth,
             }), completedTargetKeys);
@@ -393,13 +402,18 @@ export async function discoverSupplierInTab(
         // back to their shell would otherwise compile a recipe that reopens a
         // page the evidence never came from.
         const openUrl = requestedEntryUrl(target.url, entryUrl);
+        const domOpen = replayableDomOpen(target.url, evidence);
         // These four evidence families are inspected for every successfully
         // loaded route, so a large navigation graph cannot starve them.
         markCoverageFamilies(diagnostic, ["observed_network", "embedded_data", "document_provider", "semantic_download"]);
-        const candidates = compileCandidates(evidence, entryUrl, display.name, openUrl);
+        const candidates = compileCandidates(evidence, entryUrl, display.name, openUrl, domOpen);
         diagnostic.candidates.compiled += candidates.length;
         const routeEvidence = diagnosticEvidence(evidence);
-        if (!candidates.length) recordAttempt(diagnostic, page, target.source, undefined, "no_candidate", Date.now() - pageStartedAt, {
+        if (!candidates.length) recordAttempt(diagnostic, page, target.source, undefined,
+          domOpen === null && (evidence.stats.documentLinks > 0 || evidence.stats.semanticControls > 0 || (evidence.stats.semanticSections ?? 0) > 0)
+            ? "route_not_replayable"
+            : "no_candidate",
+          Date.now() - pageStartedAt, {
           route: target.url,
           resolvedRoute: evidence.url,
           evidence: routeEvidence,
@@ -408,10 +422,8 @@ export async function discoverSupplierInTab(
         const evaluations = await mapConcurrentOrdered(candidates, {
           limit: DEFAULT_SAFE_CONCURRENCY.candidatePreviews,
         }, async (candidate) => {
-          const candidateCount = candidate.previewCount ?? await (async () => {
-            diagnostic.candidates.previewed += 1;
-            return previewCandidate(candidate.recipe);
-          })();
+          diagnostic.candidates.previewed += 1;
+          const candidateCount = await previewCandidate(candidate.recipe);
           return { candidate, candidateCount };
         });
         for (const evaluation of evaluations) {
@@ -429,7 +441,7 @@ export async function discoverSupplierInTab(
           const { candidate, candidateCount } = evaluation.value;
           try {
             console.info(
-              `[collector] discovery page ${page}/${budget.pages} (${target.source}) ${candidate.adapterId} -> ${candidate.previewCount ? "deferred-canary" : "previewed"}`,
+              `[collector] discovery page ${page}/${budget.pages} (${target.source}) ${candidate.adapterId} -> previewed`,
             );
             retainCandidate(retained, {
               score: candidateScore(candidate.adapterId, candidateCount, target.score),
@@ -467,7 +479,7 @@ export async function discoverSupplierInTab(
             links: evidence.navigationUrls,
             visited: known,
             nextDepth: target.depth + 1,
-            includeCommonRoutes: target.source === "entry" || target.source === "entry_replay",
+            includeCommonRoutes: mode !== "fast" && (target.source === "entry" || target.source === "entry_replay"),
             limit: budget.pages - diagnostic.pages.attempted,
             maxDepth: budget.depth,
           });
@@ -659,6 +671,7 @@ export function compileCandidates(
   entryUrl: string,
   displayName: string,
   openUrl: string = entryUrl,
+  domOpen: { url: string; config?: VendorRecipe["config"] } | null = { url: openUrl },
 ): Candidate[] {
   const candidates: Candidate[] = [];
   const resourceEntries: CapturedEntry[] = evidence.resources.map((resource) => ({
@@ -713,17 +726,18 @@ export function compileCandidates(
     }
   }
 
-  const links = findLikelyDocumentLinks(evidence.html, entryUrl, evidence.title);
-  const domCandidate = links.length ? directDomRecipe(evidence.origin, openUrl, displayName, links) : undefined;
+  const links = findLikelyDocumentLinks(evidence.html, evidence.url, evidence.title);
+  const domCandidate = links.length && domOpen
+    ? directDomRecipe(evidence.origin, entryUrl, domOpen.url, displayName, links, domOpen.config)
+    : undefined;
   if (domCandidate) candidates.push({
     adapterId: "dom-links",
     recipe: domCandidate,
-    previewCount: Math.min(500, links.length),
     admission: ["direct_document_link"],
   });
   const semanticEvidenceCount = evidence.stats.semanticControls + (evidence.stats.semanticSections ?? 0);
-  const semanticCandidate = semanticEvidenceCount > 0
-    ? semanticDomRecipe(evidence.origin, openUrl, displayName, evidence.crossOriginHosts)
+  const semanticCandidate = semanticEvidenceCount > 0 && domOpen
+    ? semanticDomRecipe(evidence.origin, entryUrl, domOpen.url, displayName, evidence.crossOriginHosts, domOpen.config)
     : undefined;
   if (semanticCandidate) {
     const admission: CandidateAdmissionSignal[] = [];
@@ -732,9 +746,6 @@ export function compileCandidates(
     candidates.push({
       adapterId: "dom-actions",
       recipe: semanticCandidate,
-      // Discovery may reveal inert account/settings UI, but it never invokes a
-      // download action. Documents are captured only during explicit collection.
-      previewCount: Math.min(500, semanticEvidenceCount),
       admission,
     });
   }
@@ -746,6 +757,8 @@ type ProbeOptions = {
   maxResources: number;
   deadlineMs: number;
   allowForegroundRetry?: boolean;
+  allowSemanticNavigation?: boolean;
+  allowScroll?: boolean;
 };
 
 export async function probeSupplierTab(
@@ -759,14 +772,46 @@ export async function probeSupplierTab(
     throw new Error("the supplier tab changed before discovery started");
   }
   const controller = new DocumentActionController(new Set([expectedOrigin]), "discovery");
-  const [injection] = await controller.runDiscoveryProbe(tabId, () =>
+  const injections = await controller.runDiscoveryProbe(tabId, () =>
     chrome.scripting.executeScript({
-      target: { tabId },
+      target: { tabId, allFrames: true },
       world: "MAIN",
       func: collectPageEvidenceInPage,
       args: [options, { ...EXPLORATION_ROUTE_POLICY, documentSelector: DOM_LINK_SELECTOR }, DISCOVERY_DOM_POLICY],
     }));
-  return parsePageEvidence(injection?.result, expectedOrigin, options);
+  const main = parsePageEvidence(injections[0]?.result, expectedOrigin, options);
+  const frames = injections.slice(1).flatMap((injection) => {
+    try { return [parsePageEvidence(injection.result, expectedOrigin, options)]; } catch { return []; }
+  });
+  return mergeFrameNetworkEvidence(main, frames, options.maxResources);
+}
+
+/** Same-origin frames contribute passive request evidence only. Their DOM,
+ * controls, and routes are not replayable by the top-level DOM strategy. */
+export function mergeFrameNetworkEvidence(
+  main: PageEvidence,
+  frames: readonly PageEvidence[],
+  maxResources: number,
+): PageEvidence {
+  const resources = new Map<string, ProbedResource>();
+  for (const resource of [main, ...frames].flatMap((evidence) => evidence.resources)) {
+    const key = `${resource.method ?? "GET"}|${resource.url}|${resource.requestBody ?? ""}`;
+    if (!resources.has(key)) resources.set(key, resource);
+  }
+  const ranked = [...resources.values()].sort((left, right) =>
+    frameResourceScore(right) - frameResourceScore(left) || left.url.localeCompare(right.url));
+  return {
+    ...main,
+    resources: ranked.slice(0, Math.max(1, Math.min(12, maxResources))),
+    crossOriginHosts: [...new Set([main, ...frames].flatMap((evidence) => evidence.crossOriginHosts))].slice(0, 8),
+  };
+}
+
+function frameResourceScore(resource: ProbedResource): number {
+  const value = `${resource.url} ${resource.body.slice(0, 4_000)}`;
+  return (/invoice|receipt|statement/i.test(value) ? 100 : 0) +
+    (/billing|transaction|charge/i.test(value) ? 50 : 0) +
+    (/payment|subscription|plan/i.test(value) ? 25 : 0);
 }
 
 export function parsePageEvidence(value: unknown, expectedOrigin: string, options: ProbeOptions): PageEvidence {
@@ -847,9 +892,14 @@ export function parsePageEvidence(value: unknown, expectedOrigin: string, option
     const label = typeof evidence.label === "string" ? evidence.label.replace(/\s+/g, " ").trim() : undefined;
     const context = typeof evidence.context === "string" ? evidence.context.replace(/\s+/g, " ").trim() : undefined;
     const semantic = `${label ?? ""} ${context ?? ""}`.trim();
-    const safe = safeExplorationUrl(evidence.url, expectedOrigin, semantic, { allowBridgeIntent: true });
+    const hintSource = isExplorationHintSource(evidence.hintSource) ? evidence.hintSource : undefined;
+    const safe = hintSource === "semantic_navigation"
+      ? safeReplayUrl(evidence.url, expectedOrigin)
+      : safeExplorationUrl(evidence.url, expectedOrigin, semantic, { allowBridgeIntent: true });
     if (!safe) return invalid();
-    navigationUrls.push(label || context ? { url: safe, ...(label ? { label } : {}), ...(context ? { context } : {}) } : safe);
+    navigationUrls.push(label || context || hintSource
+      ? { url: safe, ...(label ? { label } : {}), ...(context ? { context } : {}), ...(hintSource ? { hintSource } : {}) }
+      : safe);
   }
   if (!Array.isArray(raw.crossOriginHosts) || raw.crossOriginHosts.length > 8) return invalid();
   const crossOriginHosts: string[] = [];
@@ -892,6 +942,11 @@ function isAuthScheme(value: unknown): value is "bearer" | "basic" | "custom" {
   return value === "bearer" || value === "basic" || value === "custom";
 }
 
+function isExplorationHintSource(value: unknown): value is NonNullable<ExplorationLinkEvidence["hintSource"]> {
+  return value === "dom_link" || value === "semantic_navigation" ||
+    value === "resource_timing" || value === "observed_request" || value === "structured_data";
+}
+
 /** Structural field paths only: no values, no separators that could smuggle one. */
 function isCredentialPathList(value: unknown): value is string[] {
   return Array.isArray(value) && value.length <= 40 && value.every((item) =>
@@ -913,7 +968,7 @@ function isSafeObservedRequestHeaders(value: unknown): value is Record<string, s
  * never invokes document, form, payment, or other mutating actions. No result
  * from this function is persisted.
  */
-async function collectPageEvidenceInPage(
+export async function collectPageEvidenceInPage(
   options: ProbeOptions,
   routePolicy: typeof EXPLORATION_ROUTE_POLICY & { documentSelector: string },
   semanticPolicy: typeof DISCOVERY_DOM_POLICY,
@@ -922,6 +977,7 @@ async function collectPageEvidenceInPage(
   const MAX_BODY = 256_000;
   const MAX_TOTAL = 768_000;
   const MAX_RESOURCES = Math.max(1, Math.min(12, options.maxResources));
+  const topLevelFrame = window.top === window;
   const deadline = Date.now() + Math.max(1, Math.min(12_000, options.deadlineMs));
   const interesting = /invoice|billing|receipt|statement|transaction|charge|payment|subscription|plan|account|session|organization|workspace|team/i;
   const billingPath = new RegExp(routePolicy.intent, "i");
@@ -938,6 +994,9 @@ async function collectPageEvidenceInPage(
   const actionColumn = new RegExp(semanticPolicy.actionColumnPattern, "i");
   const unsafeLabel = new RegExp(semanticPolicy.unsafeLabelPattern, "i");
   const semanticNavigation = new RegExp(semanticPolicy.semanticNavigationPattern, "i");
+  const semanticNavigationTrigger = new RegExp(semanticPolicy.semanticNavigationTriggerPattern, "i");
+  const settingsNavigation = new RegExp(semanticPolicy.settingsNavigationPattern, "i");
+  const billingNavigation = new RegExp(semanticPolicy.billingNavigationPattern, "i");
   const invoiceSection = new RegExp(semanticPolicy.invoiceSectionPattern, "i");
   const visible = (element: Element): element is HTMLElement => {
     if (!(element instanceof HTMLElement)) return false;
@@ -946,12 +1005,35 @@ async function collectPageEvidenceInPage(
     return style.display !== "none" && style.visibility !== "hidden" &&
       rect.width > 0 && rect.height > 0;
   };
+  const accessibleLabelSources = (element: Element, maximum = 160): string[] => {
+    const labelledBy = (element.getAttribute("aria-labelledby") || "")
+      .split(/\s+/).filter(Boolean).slice(0, 4)
+      .map((id) => document.getElementById(id)?.textContent)
+      .filter((value): value is string => Boolean(value));
+    const associated = [
+      element.closest("label")?.textContent,
+      ...(element.id
+        ? Array.from(document.querySelectorAll<HTMLLabelElement>("label[for]"))
+          .filter((label) => label.htmlFor === element.id).slice(0, 4).map((label) => label.textContent)
+        : []),
+    ].filter((value): value is string => Boolean(value));
+    const sources: Record<(typeof semanticPolicy.accessibleNameOrder)[number], string | null | undefined> = {
+      "aria-labelledby": labelledBy.join(" "),
+      "aria-label": element.getAttribute("aria-label"),
+      "associated-label": associated.join(" "),
+      title: element.getAttribute("title"),
+      alt: element.getAttribute("alt"),
+      value: element.getAttribute("value"),
+      "visible-text": element.textContent,
+    };
+    return semanticPolicy.accessibleNameOrder
+      .map((source) => (sources[source] || "").replace(/\s+/g, " ").trim().slice(0, maximum))
+      .filter(Boolean);
+  };
   const semanticMaterial = (element: Element): string => {
     const icon = element.querySelector("svg,[icon],[name],[data-lucide]");
     return [
-      element.getAttribute("aria-label"),
-      element.getAttribute("title"),
-      element.getAttribute("value"),
+      ...accessibleLabelSources(element, 320),
       element.getAttribute("data-test"),
       element.getAttribute("data-testid"),
       element.getAttribute("data-lucide"),
@@ -962,7 +1044,6 @@ async function collectPageEvidenceInPage(
       icon?.getAttribute("aria-label"),
       icon?.getAttribute("title"),
       element.getAttribute("class"),
-      element.textContent,
     ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim().slice(0, 320);
   };
   const rowOf = (element: Element): Element | null => element.closest(semanticPolicy.rowSelector);
@@ -1034,33 +1115,69 @@ async function collectPageEvidenceInPage(
     semanticPolicy.sectionSelector,
   )).filter((element) => {
     if (!visible(element) || element.closest("form")) return false;
-    const label = [
-      element.getAttribute("aria-label"),
-      element.getAttribute("title"),
-      element.textContent,
-    ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim().slice(0, 120);
+    const label = accessibleLabelSources(element, 120).join(" ");
     return Boolean(label && invoiceSection.test(label) && !unsafeLabel.test(label));
   });
   let semanticNavigationSteps = 0;
   // The navigation pattern is anchored, so each label source is matched on its
   // own. Joining them turns an accessible name plus its visible text into one
   // string that no anchored pattern can ever match.
-  const semanticNavigationLabelsOf = (element: Element): string[] => [
-    element.getAttribute("aria-label"),
-    element.getAttribute("title"),
-    element.textContent,
-  ].map((value) => (value || "").replace(/\s+/g, " ").trim().slice(0, 120)).filter(Boolean);
-  const semanticNavigationControl = (tier: RegExp): HTMLElement | undefined => Array.from(
-    document.querySelectorAll<HTMLElement>('button,[role="button"],[role="menuitem"],[role="tab"],a:not([href])'),
+  const semanticNavigationLabelsOf = (element: Element): string[] => accessibleLabelSources(element, 120);
+  const structuralNavigationMaterialOf = (element: Element): string => [
+    element.getAttribute("data-test"),
+    element.getAttribute("data-testid"),
+    element.getAttribute("id"),
+    element.getAttribute("class"),
+    element.getAttribute("name"),
+    element.getAttribute("aria-controls"),
+  ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim().slice(0, 320);
+  const safeNavigationHref = (element: HTMLElement): boolean => {
+    const raw = element.getAttribute("href");
+    if (!raw) return true;
+    try {
+      const url = new URL(raw, location.href);
+      return url.protocol === "https:" && url.origin === location.origin && !url.username && !url.password &&
+        !unsafePath.test(url.pathname) && !unsafeSegment.test(url.pathname) && !directDocumentPath.test(url.pathname);
+    } catch {
+      return false;
+    }
+  };
+  const semanticNavigationControl = (tier: RegExp, root: ParentNode = document): HTMLElement | undefined => Array.from(
+    root.querySelectorAll<HTMLElement>('button,[role="button"],[role="menuitem"],[role="tab"],a'),
   ).find((element) => {
     const labels = semanticNavigationLabelsOf(element);
     return Boolean(
       labels.length && !labels.some((label) => unsafeLabel.test(label)) &&
-      labels.some((label) => semanticNavigation.test(label) && tier.test(label)) &&
+      labels.some((label) => semanticNavigation.test(label) && tier.test(label)) && safeNavigationHref(element) &&
       !element.closest("form") && visible(element) &&
       !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true"
     );
   });
+  const semanticMenuTriggers = (): HTMLElement[] => Array.from(document.querySelectorAll<HTMLElement>(
+    'button[aria-haspopup="menu"],button[aria-haspopup="true"],[role="button"][aria-haspopup="menu"],[role="button"][aria-haspopup="true"]',
+  )).filter((element) => {
+    const labels = semanticNavigationLabelsOf(element);
+    return !labels.some((label) => unsafeLabel.test(label)) && !element.closest("form,[role=menu]") &&
+      visible(element) && !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true";
+  }).sort((left, right) => {
+    const score = (element: HTMLElement): number =>
+      (semanticNavigationTrigger.test(structuralNavigationMaterialOf(element)) ? 100 : 0) +
+      (element.closest('nav,header,[role="navigation"]') ? 20 : 0) +
+      (element.hasAttribute("aria-controls") ? 5 : 0);
+    return score(right) - score(left);
+  }).slice(0, 4);
+  const settingsControlAfterMenu = (trigger: HTMLElement): HTMLElement | undefined => {
+    const controlledId = trigger.getAttribute("aria-controls");
+    const controlled = controlledId ? document.getElementById(controlledId) : null;
+    const roots = controlled && visible(controlled)
+      ? [controlled]
+      : Array.from(document.querySelectorAll<HTMLElement>('[role="menu"]')).filter(visible);
+    for (const root of roots.slice(0, 4)) {
+      const settings = semanticNavigationControl(settingsNavigation, root);
+      if (settings) return settings;
+    }
+    return undefined;
+  };
   const billingSurfaceObserved = (): boolean => Boolean(
     document.querySelector(routePolicy.documentSelector) ||
     semanticControls().length ||
@@ -1068,11 +1185,6 @@ async function collectPageEvidenceInPage(
   );
   const revealSemanticNavigation = async (): Promise<void> => {
     if (billingSurfaceObserved()) return;
-    const tiers = [
-      /(?:open\s+)?profile\s+menu$|account\s+menu$/i,
-      /^(?:settings|preferences)$/i,
-      /^(?:account|billing|subscriptions?|invoice\s+history|receipt\s+history|billing\s+history|past\s+invoices?)$/i,
-    ];
     // A tier is worth waiting for only while something can still mount it: the
     // application's own startup for the first tier, or the previous click. A
     // single mutation fires on the first unrelated attribute change, long
@@ -1083,26 +1195,188 @@ async function collectPageEvidenceInPage(
     // Revealing shares this page's budget with observed-network and embedded
     // evidence, so it may claim at most half of what remains.
     const revealDeadline = Math.min(deadline, Date.now() + Math.max(500, Math.floor((deadline - Date.now()) / 2)));
-    let mounting = true;
-    for (const tier of tiers) {
-      if (Date.now() >= revealDeadline || semanticNavigationSteps >= 3) break;
-      const tierDeadline = mounting ? Math.min(revealDeadline, Date.now() + 1_500) : 0;
-      let control = semanticNavigationControl(tier);
-      while (!control && Date.now() < tierDeadline) {
+    let settingsControl: HTMLElement | undefined;
+    for (const trigger of semanticMenuTriggers()) {
+      if (Date.now() >= revealDeadline || semanticNavigationSteps >= 4) break;
+      trigger.click();
+      semanticNavigationSteps += 1;
+      const menuDeadline = Math.min(revealDeadline, Date.now() + 600);
+      while (Date.now() < menuDeadline && !settingsControlAfterMenu(trigger)) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      settingsControl = settingsControlAfterMenu(trigger);
+      if (settingsControl) break;
+      (document.activeElement ?? document).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    }
+
+    if (settingsControl && semanticNavigationSteps < 6) {
+      settingsControl.click();
+      semanticNavigationSteps += 1;
+      const billingDeadline = Math.min(revealDeadline, Date.now() + 1_500);
+      let billingControl = semanticNavigationControl(billingNavigation);
+      while (!billingControl && Date.now() < billingDeadline) {
         if (billingSurfaceObserved()) return;
         await new Promise((resolve) => setTimeout(resolve, 100));
-        control = semanticNavigationControl(tier);
+        billingControl = semanticNavigationControl(billingNavigation);
       }
-      mounting = Boolean(control);
-      if (!control) continue;
-      control.click();
-      semanticNavigationSteps += 1;
-      if (billingSurfaceObserved()) break;
+      if (billingControl && semanticNavigationSteps < 6) {
+        billingControl.click();
+        semanticNavigationSteps += 1;
+      }
+    }
+  };
+
+  const withDiscoveryMutationGuard = async (operation: () => Promise<void>): Promise<void> => {
+    let mutationAttempts = 0;
+    const blocked = (): DOMException => {
+      mutationAttempts += 1;
+      return new DOMException("pre-connect navigation attempted a mutating request", "SecurityError");
+    };
+    const readOnlyGraphqlBody = (body: unknown): boolean => {
+      if (typeof body !== "string" || body.length > 65_536) return false;
+      try {
+        const value = JSON.parse(body) as Record<string, unknown>;
+        if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+        if (Object.keys(value).some((key) => !["query", "variables", "operationName"].includes(key))) return false;
+        return typeof value.query === "string" && /^\s*query(?:\s|\{|$)/i.test(value.query) &&
+          !/\b(?:mutation|subscription)\b/i.test(value.query);
+      } catch {
+        return false;
+      }
+    };
+    const safeMethod = (method: string, body?: unknown): boolean => {
+      const normalized = method.toUpperCase();
+      return normalized === "GET" || normalized === "HEAD" ||
+        (normalized === "POST" && readOnlyGraphqlBody(body));
+    };
+    const safeNavigation = (raw: string | URL | null | undefined): boolean => {
+      if (raw === undefined || raw === null || raw === "") return true;
+      try {
+        const url = new URL(String(raw), location.href);
+        return url.protocol === "https:" && url.origin === location.origin && !url.username && !url.password &&
+          !unsafePath.test(url.pathname) && !unsafeSegment.test(url.pathname) && !directDocumentPath.test(url.pathname);
+      } catch {
+        return false;
+      }
+    };
+
+    const originalFetch = window.fetch;
+    const guardedFetch: typeof window.fetch = function(this: Window, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+      const request = typeof Request !== "undefined" && input instanceof Request ? input : undefined;
+      const method = init?.method ?? request?.method ?? "GET";
+      const body = init?.body ?? (request && method.toUpperCase() !== "GET" && method.toUpperCase() !== "HEAD" ? undefined : null);
+      if (!safeMethod(method, body)) return Promise.reject(blocked());
+      return Reflect.apply(originalFetch, this, [input, init]) as Promise<Response>;
+    };
+
+    const xhr = typeof XMLHttpRequest === "undefined" ? undefined : XMLHttpRequest.prototype;
+    const originalXhrOpen = xhr?.open;
+    const originalXhrSend = xhr?.send;
+    const xhrMethods = new WeakMap<XMLHttpRequest, string>();
+    const guardedXhrOpen: typeof XMLHttpRequest.prototype.open = function(
+      this: XMLHttpRequest,
+      method: string,
+      url: string | URL,
+      async = true,
+      username?: string | null,
+      password?: string | null,
+    ): void {
+      xhrMethods.set(this, method);
+      return Reflect.apply(originalXhrOpen!, this, [method, url, async, username, password]);
+    } as typeof XMLHttpRequest.prototype.open;
+    const guardedXhrSend: typeof XMLHttpRequest.prototype.send = function(
+      this: XMLHttpRequest,
+      body?: Document | XMLHttpRequestBodyInit | null,
+    ): void {
+      if (!safeMethod(xhrMethods.get(this) ?? "GET", body)) throw blocked();
+      return Reflect.apply(originalXhrSend!, this, [body]);
+    };
+
+    const pageNavigator = typeof navigator === "undefined" ? undefined : navigator;
+    const originalBeacon = pageNavigator?.sendBeacon;
+    const guardedBeacon: typeof navigator.sendBeacon = () => {
+      blocked();
+      return false;
+    };
+    const originalWindowOpen = window.open;
+    const guardedWindowOpen: typeof window.open = () => {
+      blocked();
+      return null;
+    };
+    const form = typeof HTMLFormElement === "undefined" ? undefined : HTMLFormElement.prototype;
+    const originalFormSubmit = form?.submit;
+    const originalFormRequestSubmit = form?.requestSubmit;
+    const guardedFormSubmit: typeof HTMLFormElement.prototype.submit = function(): void { throw blocked(); };
+    const guardedFormRequestSubmit: typeof HTMLFormElement.prototype.requestSubmit = function(): void { throw blocked(); };
+    const pageHistory = typeof history === "undefined" ? undefined : history;
+    const originalPushState = pageHistory?.pushState;
+    const originalReplaceState = pageHistory?.replaceState;
+    const guardedPushState: typeof history.pushState = function(this: History, data, unused, url) {
+      if (!safeNavigation(url)) throw blocked();
+      return Reflect.apply(originalPushState!, this, [data, unused, url]) as void;
+    };
+    const guardedReplaceState: typeof history.replaceState = function(this: History, data, unused, url) {
+      if (!safeNavigation(url)) throw blocked();
+      return Reflect.apply(originalReplaceState!, this, [data, unused, url]) as void;
+    };
+    const pageNavigation = (window as Window & { navigation?: EventTarget }).navigation;
+    const preventUnsafeNavigation: EventListener = (rawEvent) => {
+      const event = rawEvent as Event & { destination?: { url?: string } };
+      if (safeNavigation(event.destination?.url)) return;
+      blocked();
+      if (rawEvent.cancelable) rawEvent.preventDefault();
+    };
+
+    window.fetch = guardedFetch;
+    window.open = guardedWindowOpen;
+    if (xhr && originalXhrOpen && originalXhrSend) {
+      xhr.open = guardedXhrOpen;
+      xhr.send = guardedXhrSend;
+    }
+    if (pageNavigator && originalBeacon) pageNavigator.sendBeacon = guardedBeacon;
+    if (form && originalFormSubmit && originalFormRequestSubmit) {
+      form.submit = guardedFormSubmit;
+      form.requestSubmit = guardedFormRequestSubmit;
+    }
+    if (pageHistory && originalPushState && originalReplaceState) {
+      pageHistory.pushState = guardedPushState;
+      pageHistory.replaceState = guardedReplaceState;
+    }
+    pageNavigation?.addEventListener("navigate", preventUnsafeNavigation);
+    try {
+      await operation();
+      if (mutationAttempts > 0) throw blocked();
+    } finally {
+      if (window.fetch === guardedFetch) window.fetch = originalFetch;
+      if (window.open === guardedWindowOpen) window.open = originalWindowOpen;
+      if (xhr?.open === guardedXhrOpen) xhr.open = originalXhrOpen!;
+      if (xhr?.send === guardedXhrSend) xhr.send = originalXhrSend!;
+      if (pageNavigator?.sendBeacon === guardedBeacon) pageNavigator.sendBeacon = originalBeacon!;
+      if (form?.submit === guardedFormSubmit) form.submit = originalFormSubmit!;
+      if (form?.requestSubmit === guardedFormRequestSubmit) form.requestSubmit = originalFormRequestSubmit!;
+      if (pageHistory?.pushState === guardedPushState) pageHistory.pushState = originalPushState!;
+      if (pageHistory?.replaceState === guardedReplaceState) pageHistory.replaceState = originalReplaceState!;
+      pageNavigation?.removeEventListener("navigate", preventUnsafeNavigation);
     }
   };
 
   let observedSnapshot: CapturedEntry[] = [];
   let observedHighSignal = false;
+  const snapshotNavigationRoutes = async (): Promise<string[]> => {
+    try {
+      const pageObserver = (window as Window & {
+        __ratatoskDiscoveryObserverV1?: { snapshotRoutes?: () => Promise<string[]> };
+      }).__ratatoskDiscoveryObserverV1;
+      if (typeof pageObserver?.snapshotRoutes !== "function") return [];
+      const routes = await Promise.race([
+        Promise.resolve(pageObserver.snapshotRoutes()),
+        new Promise<string[]>((resolve) => setTimeout(() => resolve([]), Math.min(500, Math.max(50, deadline - Date.now())))),
+      ]);
+      return Array.isArray(routes) ? routes.filter((route) => typeof route === "string").slice(0, 80) : [];
+    } catch {
+      return [];
+    }
+  };
   const snapshotObserver = async (): Promise<CapturedEntry[]> => {
     try {
       const pageObserver = (window as Window & {
@@ -1149,8 +1423,15 @@ async function collectPageEvidenceInPage(
       }
     }
   };
-  await revealSemanticNavigation();
-  await waitForObservedEvidenceQuiescence();
+  if (topLevelFrame && options.allowSemanticNavigation !== false) {
+    await withDiscoveryMutationGuard(async () => {
+      await revealSemanticNavigation();
+      await waitForObservedEvidenceQuiescence();
+    });
+  } else {
+    await waitForObservedEvidenceQuiescence();
+  }
+  const observedNavigationRoutes = await snapshotNavigationRoutes();
 
   const usefulEvidencePresent = () => Boolean(
     document.querySelector(routePolicy.documentSelector) ||
@@ -1161,7 +1442,7 @@ async function collectPageEvidenceInPage(
   const durableEvidencePresent = () => Boolean(
     document.querySelector(routePolicy.documentSelector) || observedHighSignal,
   );
-  if (!durableEvidencePresent() && options.settleMs > 0) {
+  if (!durableEvidencePresent() && options.settleMs > 0 && Date.now() < deadline) {
     await new Promise<void>((resolve) => {
       let settled = false;
       let semanticQuietTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1187,12 +1468,12 @@ async function collectPageEvidenceInPage(
       };
       const observer = new MutationObserver(considerEvidence);
       observer.observe(document.documentElement, { childList: true, subtree: true });
-      const timer = setTimeout(finish, Math.max(0, Math.min(5_000, options.settleMs)));
+      const timer = setTimeout(finish, Math.max(0, Math.min(5_000, options.settleMs, deadline - Date.now())));
       considerEvidence();
     });
   }
   if (
-    !usefulEvidencePresent() && options.settleMs > 0 &&
+    topLevelFrame && options.allowScroll !== false && !usefulEvidencePresent() && options.settleMs > 0 && Date.now() < deadline &&
     document.documentElement.scrollHeight > window.innerHeight + 20
   ) {
     window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "auto" });
@@ -1209,7 +1490,7 @@ async function collectPageEvidenceInPage(
         if (usefulEvidencePresent()) finish();
       });
       observer.observe(document.documentElement, { childList: true, subtree: true });
-      const timer = setTimeout(finish, Math.max(250, Math.min(2_000, Math.ceil(options.settleMs / 2))));
+      const timer = setTimeout(finish, Math.max(0, Math.min(2_000, Math.ceil(options.settleMs / 2), deadline - Date.now())));
     });
   }
   const structuredData = document.querySelectorAll('script[type="application/json"],script[type="application/ld+json"]').length;
@@ -1339,7 +1620,90 @@ async function collectPageEvidenceInPage(
     }
   }
 
-  const navigationUrls = new Map<string, { url: string; label?: string; context?: string }>();
+  const navigationUrls = new Map<string, ExplorationLinkEvidence>();
+  const keepNavigationRoute = (
+    raw: string,
+    hintSource: "resource_timing" | "observed_request" | "structured_data",
+    context = "",
+  ): void => {
+    if (navigationUrls.size >= 80 || raw.length > 2_048) return;
+    try {
+      const url = new URL(raw, location.href);
+      if (
+        url.protocol !== "https:" || url.origin !== location.origin || url.username || url.password ||
+        unsafePath.test(url.pathname) || unsafeSegment.test(url.pathname) || directDocumentPath.test(url.pathname) ||
+        url.pathname.length > 320
+      ) return;
+      if (
+        hintSource !== "structured_data" &&
+        !billingPath.test(`${url.pathname}${url.search}`) &&
+        !bridgePath.test(`${url.pathname}${url.search}`)
+      ) return;
+      for (const [key, value] of [...url.searchParams.entries()]) {
+        if (!/^(?:page|p|offset|start|per_page|limit)$/i.test(key) || !/^\d{1,6}$/.test(value)) {
+          url.searchParams.delete(key);
+        }
+      }
+      url.searchParams.sort();
+      url.hash = "";
+      const value = url.toString();
+      if (!navigationUrls.has(value)) {
+        navigationUrls.set(value, { url: value, hintSource, ...(context ? { context } : {}) });
+      }
+    } catch {
+      // Malformed inert evidence is not a route hint.
+    }
+  };
+  for (const raw of observedNavigationRoutes) {
+    const url = safeReplayUrl(raw, location.origin);
+    if (!url || navigationUrls.size >= 80) continue;
+    navigationUrls.set(url, { url, hintSource: "semantic_navigation" });
+  }
+  for (const url of urls) keepNavigationRoute(url, "resource_timing");
+  for (const resource of resources) {
+    if (resource.source === "observed" && interesting.test(resource.url)) {
+      keepNavigationRoute(resource.url, "observed_request");
+    }
+  }
+  const structuredRouteKey = /(?:invoice|receipt|statement|billing|document|download|pdf|url|href|route)/i;
+  for (const script of Array.from(document.querySelectorAll('script[type="application/json"],script[type="application/ld+json"]')).slice(0, 20)) {
+    const text = script.textContent ?? "";
+    if (!text || text.length > 256_000) continue;
+    let root: unknown;
+    try { root = JSON.parse(text); } catch { continue; }
+    const pending: Array<{ value: unknown; path: string; depth: number; typed: boolean }> = [
+      { value: root, path: "", depth: 0, typed: false },
+    ];
+    let visited = 0;
+    while (pending.length && visited < 2_000 && navigationUrls.size < 80) {
+      const node = pending.shift()!;
+      visited += 1;
+      if (node.depth > 8) continue;
+      if (typeof node.value === "string") {
+        if ((node.typed || structuredRouteKey.test(node.path)) && node.value.length <= 2_048) {
+          keepNavigationRoute(node.value, "structured_data", "invoice route");
+        }
+        continue;
+      }
+      if (Array.isArray(node.value)) {
+        for (const item of node.value.slice(0, 200)) {
+          pending.push({ value: item, path: node.path, depth: node.depth + 1, typed: node.typed });
+        }
+        continue;
+      }
+      if (!node.value || typeof node.value !== "object") continue;
+      const record = node.value as Record<string, unknown>;
+      const typed = node.typed || (typeof record["@type"] === "string" && structuredRouteKey.test(record["@type"]));
+      for (const [key, value] of Object.entries(record).slice(0, 200)) {
+        pending.push({
+          value,
+          path: `${node.path}.${key}`.slice(-320),
+          depth: node.depth + 1,
+          typed,
+        });
+      }
+    }
+  }
   const routeElements = document.querySelectorAll(
     "a[href],area[href],[role=link][href],[data-href],[data-url],[data-route],[routerlink],[ng-reflect-router-link],iframe[src]",
   );
@@ -1354,9 +1718,7 @@ async function collectPageEvidenceInPage(
       try {
         const url = new URL(raw, location.href);
         if (url.protocol !== "https:" || url.origin !== location.origin || url.username || url.password) continue;
-        const label = (
-          element.getAttribute("aria-label") || element.getAttribute("title") || element.textContent || ""
-        ).replace(/\s+/g, " ").trim().slice(0, 160);
+        const label = accessibleLabelSources(element, 160)[0] ?? "";
         const contextElement = element.closest('li,[role="menuitem"],[role="option"]') || element.parentElement;
         const context = (contextElement?.textContent || "")
           .replace(/\s+/g, " ").trim().slice(0, 240);
@@ -1380,6 +1742,7 @@ async function collectPageEvidenceInPage(
             url: canonical,
             ...(label ? { label } : {}),
             ...(context && context !== label ? { context } : {}),
+            hintSource: current?.hintSource ?? "dom_link",
           });
         }
       } catch {
@@ -1441,7 +1804,7 @@ class DiscoveryPageObserverRegistration {
         js: [discoveryPageObserverScript],
         runAt: "document_start",
         world: "MAIN",
-        allFrames: false,
+        allFrames: true,
         persistAcrossSessions: false,
       }]);
       this.registered = true;
@@ -1469,7 +1832,7 @@ class DiscoveryPageObserverRegistration {
     if (!this.registered) return false;
     try {
       await chrome.scripting.executeScript({
-        target: { tabId },
+        target: { tabId, allFrames: true },
         world: "MAIN",
         files: [discoveryPageObserverScript],
       });
@@ -1942,11 +2305,18 @@ function findLikelyDocumentLinks(html: string, baseUrl: string, pageTitle?: stri
   return [...links];
 }
 
-function directDomRecipe(origin: string, entryUrl: string, displayName: string, links: string[]): VendorRecipe | undefined {
+function directDomRecipe(
+  origin: string,
+  authEntryUrl: string,
+  openUrl: string,
+  displayName: string,
+  links: string[],
+  config?: VendorRecipe["config"],
+): VendorRecipe | undefined {
   try {
     const hosts = new Set([exactOriginPattern(origin)]);
     for (const href of links) {
-      const url = normalizedDocumentUrl(new URL(href, entryUrl));
+      const url = normalizedDocumentUrl(new URL(href, openUrl));
       if (url.protocol === "https:") {
         hosts.add(exactOriginPattern(url.origin));
         if (documentProviderForUrl(url)?.id === "stripe") {
@@ -1963,13 +2333,13 @@ function directDomRecipe(origin: string, entryUrl: string, displayName: string, 
       fetchContext: "page",
       notes: "Locally discovered candidate.",
       auth: {
-        check: { request: { url: authProbeUrl(entryUrl) }, expect: { statusIn: [200] } },
+        check: { request: { url: authProbeUrl(authEntryUrl) }, expect: { statusIn: [200] } },
         loginUrl: origin,
       },
       invoices: {
         strategy: "dom",
         list: {
-          open: entryUrl,
+          open: openUrl,
           steps: [
             { action: "waitFor", selector: DOM_LINK_SELECTOR, timeoutMs: 8_000 },
             { action: "extractAll", selector: DOM_LINK_SELECTOR, attr: "href", as: "documents" },
@@ -1985,6 +2355,7 @@ function directDomRecipe(origin: string, entryUrl: string, displayName: string, 
         },
         document: { contentType: "application/pdf" },
       },
+      ...(config?.length ? { config } : {}),
     });
   } catch {
     return undefined;
@@ -1993,9 +2364,11 @@ function directDomRecipe(origin: string, entryUrl: string, displayName: string, 
 
 function semanticDomRecipe(
   origin: string,
-  entryUrl: string,
+  authEntryUrl: string,
+  openUrl: string,
   displayName: string,
   observedCrossOriginHosts: readonly string[],
+  config?: VendorRecipe["config"],
 ): VendorRecipe | undefined {
   try {
     return validateRecipe({
@@ -2012,13 +2385,13 @@ function semanticDomRecipe(
       fetchContext: "page",
       notes: "Locally discovered semantic download candidate.",
       auth: {
-        check: { request: { url: authProbeUrl(entryUrl) }, expect: { statusIn: [200] } },
+        check: { request: { url: authProbeUrl(authEntryUrl) }, expect: { statusIn: [200] } },
         loginUrl: origin,
       },
       invoices: {
         strategy: "dom",
         list: {
-          open: entryUrl,
+          open: openUrl,
           steps: [{ action: "extractSemanticDownloads", as: "documents", maxActions: 12 }],
           continuation: {
             mode: "auto",
@@ -2031,6 +2404,7 @@ function semanticDomRecipe(
         },
         document: { contentType: "application/pdf" },
       },
+      ...(config?.length ? { config } : {}),
     });
   } catch {
     return undefined;
@@ -2051,6 +2425,90 @@ function requestedEntryUrl(requestedUrl: string, servedEntryUrl: string): string
   } catch {
     return servedEntryUrl;
   }
+}
+
+/**
+ * A DOM candidate must reopen its proved page. Ordinary routes are persisted
+ * unchanged; one opaque tenant segment may become a template only when this
+ * same evidence set exposes that exact value from a typed first-party scope.
+ */
+function replayableDomOpen(
+  requestedUrl: string,
+  evidence: PageEvidence,
+): { url: string; config?: VendorRecipe["config"] } | null {
+  let requested: URL;
+  try { requested = new URL(requestedUrl); } catch { return null; }
+  if (requested.origin !== evidence.origin || requested.search || requested.hash) return null;
+  try {
+    if (safeEntryUrl(requested.toString()) === requested.toString()) return { url: requested.toString() };
+  } catch {
+    return null;
+  }
+  const segments = requested.pathname.split("/").filter(Boolean);
+  const tenantIndexes = segments.flatMap((segment, index) => {
+    try { return isBoundedTenantIdentifierSegment(decodeURIComponent(segment)) ? [index] : []; } catch { return []; }
+  });
+  if (tenantIndexes.length !== 1) return null;
+  const tenantIndex = tenantIndexes[0];
+  let tenant: string;
+  try { tenant = decodeURIComponent(segments[tenantIndex]); } catch { return null; }
+  for (const resource of evidence.resources) {
+    if (
+      (resource.method ?? "GET") !== "GET" || resource.requestBody ||
+      (resource.requestHeaders && Object.keys(resource.requestHeaders).length > 0)
+    ) continue;
+    let source: URL;
+    try { source = new URL(resource.url); } catch { continue; }
+    if (source.origin !== evidence.origin || source.search || source.hash) continue;
+    let binding: { id: string; path: string } | undefined;
+    try { binding = findTypedTenantBinding(JSON.parse(resource.body), tenant); } catch { continue; }
+    if (!binding) continue;
+    const template = new URL(requested.toString());
+    const templateSegments = [...segments];
+    templateSegments[tenantIndex] = `{${binding.id}}`;
+    template.pathname = `/${templateSegments.join("/")}`;
+    const openUrl = decodeURIComponent(template.toString());
+    return {
+      url: openUrl,
+      config: [{
+        id: binding.id,
+        discover: { request: { url: source.toString() }, value: binding.path },
+      }],
+    };
+  }
+  return null;
+}
+
+function findTypedTenantBinding(value: unknown, expected: string): { id: string; path: string } | undefined {
+  const pending: Array<{ value: unknown; path: string; parentKey?: string; depth: number }> = [
+    { value, path: "", depth: 0 },
+  ];
+  let visited = 0;
+  while (pending.length && visited < 2_000) {
+    const current = pending.shift()!;
+    visited += 1;
+    if (current.depth > 8 || !current.value || typeof current.value !== "object" || Array.isArray(current.value)) continue;
+    for (const [key, child] of Object.entries(current.value as Record<string, unknown>).slice(0, 200)) {
+      const path = current.path ? `${current.path}.${key}` : key;
+      const scopeId = typedTenantScopeId(key, current.parentKey);
+      if (scopeId && (typeof child === "string" || typeof child === "number") && String(child) === expected) {
+        return { id: scopeId, path };
+      }
+      pending.push({ value: child, path, parentKey: key, depth: current.depth + 1 });
+    }
+  }
+  return undefined;
+}
+
+function typedTenantScopeId(key: string, parentKey: string | undefined): string | undefined {
+  if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(key)) return undefined;
+  if (isTypedTenantScopeName(key)) return key;
+  return key === "id" && parentKey && isTypedTenantScopeName(parentKey) ? parentKey : undefined;
+}
+
+function isTypedTenantScopeName(value: string): boolean {
+  const normalized = value.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[-\s]+/g, "_").toLowerCase();
+  return /^(?:workspace|organization|org|team|project|tenant|account|customer)s?(?:_?id)?$/.test(normalized);
 }
 
 function authProbeUrl(entryUrl: string): string {

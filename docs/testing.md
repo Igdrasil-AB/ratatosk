@@ -115,6 +115,11 @@ Before a Collector release, use the exact unpacked build and complete:
   immediate second run, and one real configured cadence.
 - One additional authorized semantic supplier with both filesystem and
   Igdrasil destinations.
+- One authorized observed-SPA discovery supplier with the filesystem
+  destination: the route must be discovered without revealing its private path
+  to the engine, then pass first run, immediate second run, and configured
+  cadence with zero page-owned downloads. This may be ClickUp when an
+  authorized dedicated account is available.
 - The synthetic local native-download archetype with both destinations. It
   must close as `browser_download_unsupported`, accept nothing, leave no file,
   and not touch an unrelated user download.
@@ -130,7 +135,7 @@ The command deliberately fails when the receipt is absent.
 
 For an unsupported supplier, open its signed-in home or billing page and select
 **Search This App**. Confirm Chrome names only that exact site, the active tab is
-not navigated/reloaded/scrolled/closed, and an inactive tab replays the exact
+not clicked/navigated/reloaded/scrolled/closed, and an inactive tab replays the exact
 entry once after the `document_start` observer is registered. The remaining
 inactive probes must stay within the selected global page/time budget and close
 afterward. For a fixture that withholds its invoice table while
@@ -140,18 +145,30 @@ manual user tab switch during the lease is never overridden. Connect the
 resulting semantic candidate and confirm verification keeps its disposable tab
 visible until controls are enumerated and document captures finish, then
 restores the prior tab before cleanup. Saturate the entry
-page with at least nine billing-shaped links and
-confirm a contextual/common route is still among the first three probes. Include
-an exact-origin opaque route such as `/app/section/42` labelled `Invoices` and
-confirm it is explored; the same path without semantic billing evidence must be
-ignored. Include a tenant URL such as `/<workspace-id>/home` and confirm
-`/<workspace-id>/settings/billing` is the first contextual fallback. Include
-`/dashboard/org/opaqueorganization/billing` and confirm the exact organization
-prefix is retained; `/dashboard/arbitrary/billing` must not become a tenant
-prefix. Verify an
-observed `Workspace settings` route survives as a lower-confidence bridge, and
-that a generic task/export PDF outside invoice context does not compile a
-candidate or consume the search deadline. The preview must show the supplier domain and possible-document count
+page with at least nine billing-shaped links and one observed, opaque SPA
+destination. Confirm the observed destination is probed before any generic
+route; the same opaque path without observed navigation must be ignored. Fast
+search must return `limit_reached` within ten seconds rather than starting deep
+search automatically. Confirm the card offers **Search Deeper**, states the
+remaining bound, and resumes the saved frontier without re-probing completed
+pages. Generic common billing routes may appear only in that explicit deep
+continuation. Include a root tenant route whose tenant value is also returned
+under a typed first-party scope key; confirm the preview stores a `{scope}`
+template rather than the tenant value, and **Connect & Collect** renders it only
+at run time. The same route without typed scope provenance must not preview.
+Add four top-level native menu buttons where only the last reveals Settings;
+confirm every reveal is non-mutating, the Settings item is selected only inside
+that revealed menu, and the branch reaches Billing. Repeat with Swedish, German,
+French, and Spanish Settings/Billing labels. Add a same-origin iframe whose JSON
+request exposes invoices and whose DOM contains a fake download control; the
+request may compile a network candidate, but the frame DOM control and route must
+not become a DOM candidate.
+Add a look-alike menu whose click attempts a mutating fetch/XHR, beacon, form,
+popup, and unsafe navigation. Every attempt must fail the probe and produce no
+candidate; an explicit read-only GraphQL query must remain permitted.
+Verify an observed `Workspace settings` route survives as a lower-confidence
+bridge, and that a generic task/export PDF outside invoice context does not
+compile a candidate or consume the search deadline. The preview must show the supplier domain and possible-document count
 without downloading. For an SPA fixture, issue an invoice-list fetch/XHR during
 page startup and verify a GET API and an explicit read-only GraphQL POST can both
 produce a network candidate through cold replay. Seed generic hydration JSON

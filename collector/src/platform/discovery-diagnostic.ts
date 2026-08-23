@@ -45,6 +45,7 @@ export type DiscoveryAttemptResult =
   | "unapproved_document_origin"
   | "no_documents"
   | "policy_rejected"
+  | "route_not_replayable"
   | "limit_reached";
 
 export type DiscoveryTermination = "page_cap" | "time_cap" | "queue_exhausted" | "coverage_incomplete" | "candidate_primary_found" | "candidate_set_complete";
@@ -455,6 +456,6 @@ function isAttemptResult(value: unknown): value is DiscoveryAttemptResult {
   return [
     "candidate_compiled", "no_candidate", "probe_failed", "auth_failed", "auth_expired", "auth_blocked", "auth_scope_denied", "transport_failed",
     "scope_failed", "list_failed", "too_many_documents", "invalid_identity", "invalid_document_path",
-    "unapproved_document_origin", "no_documents", "policy_rejected", "limit_reached",
+    "unapproved_document_origin", "no_documents", "policy_rejected", "route_not_replayable", "limit_reached",
   ].includes(String(value));
 }

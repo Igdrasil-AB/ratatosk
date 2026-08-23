@@ -5,7 +5,19 @@
  * serializes the function body without module closures. Keep this object free
  * of supplier names, selectors supplied by pages, and executable strings.
  */
+const SETTINGS_NAVIGATION = "(?:settings|preferences|inställningar|einstellungen|paramètres|configuración|configurações|impostazioni|instellingen)";
+const BILLING_NAVIGATION = "(?:account|billing|subscriptions?|invoice\\s+history|receipt\\s+history|billing\\s+history|past\\s+invoices?|fakturering|abonnemang|fakturahistorik|kvittohistorik|abrechnung|rechnungen?|rechnungshistorie|abonnements?|facturation|historique\\s+des\\s+factures|facturación|suscripciones|historial\\s+de\\s+facturas|faturamento|faturação|assinaturas|histórico\\s+de\\s+faturas|fatturazione|abbonamenti|cronologia\\s+fatture|facturering|abonnementen|factuurgeschiedenis)";
+
 export const DISCOVERY_DOM_POLICY = {
+  accessibleNameOrder: [
+    "aria-labelledby",
+    "aria-label",
+    "associated-label",
+    "title",
+    "alt",
+    "value",
+    "visible-text",
+  ] as const,
   controlSelector: [
     "button",
     "a:not([href])",
@@ -62,7 +74,11 @@ export const DISCOVERY_DOM_POLICY = {
   unsafeLabelPattern: "(?:\\b(?:delete|remove|cancel|pay|purchase|checkout|upgrade|downgrade|authorize|logout)\\b|sign\\s*out|log\\s*out)",
   unsafePathPattern: "(?:^|/)(?:logout|signout|delete|cancel|checkout|purchase|upgrade|downgrade|authorize|oauth)(?:/|$)",
   invoiceSectionPattern: "^(?:invoices?|invoice history|receipts?|receipt history|billing history|past invoices?)$",
-  semanticNavigationPattern: "^(?:(?:[^,]{1,80},\\s*)?(?:open\\s+)?(?:profile|account)(?:\\s+menu)?|settings|preferences|billing|subscriptions?|invoice\\s+history|receipt\\s+history|billing\\s+history|past\\s+invoices?)$",
+  semanticNavigationPattern: `^(?:(?:[^,]{1,80},\\s*)?(?:open\\s+)?(?:profile|account)(?:\\s+menu)?|${SETTINGS_NAVIGATION}|${BILLING_NAVIGATION})$`,
+  profileNavigationPattern: "(?:(?:open\\s+)?profile(?:\\s+menu)?|account\\s+menu)$",
+  settingsNavigationPattern: `^${SETTINGS_NAVIGATION}$`,
+  billingNavigationPattern: `^${BILLING_NAVIGATION}$`,
+  semanticNavigationTriggerPattern: "(?:(?:workspace|organization|account|company|team|profile).{0,80}(?:picker|switcher|menu|toggle)|(?:picker|switcher).{0,80}(?:workspace|organization|account|company|team|profile))",
   stableMs: 350,
 } as const;
 
@@ -143,6 +159,23 @@ export function isSafeSemanticNavigationLabel(
     !new RegExp(policy.unsafeLabelPattern, "i").test(label) &&
     new RegExp(policy.semanticNavigationPattern, "i").test(label),
   );
+}
+
+export interface SemanticNavigationTriggerEvidence {
+  structural: string;
+  hasPopupMenu: boolean;
+  visible: boolean;
+  enabled: boolean;
+  formBacked: boolean;
+}
+
+/** Opening a native menu is a reversible speculative reveal. It becomes route
+ * evidence only if the revealed popup contains a packaged Settings intent. */
+export function isSafeSemanticNavigationTrigger(
+  evidence: SemanticNavigationTriggerEvidence,
+  policy: typeof DISCOVERY_DOM_POLICY = DISCOVERY_DOM_POLICY,
+): boolean {
+  return evidence.hasPopupMenu && evidence.visible && evidence.enabled && !evidence.formBacked;
 }
 
 function bounded(value: string, maximum: number): string {

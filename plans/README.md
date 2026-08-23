@@ -17,6 +17,11 @@ That last premise was already stale: `igdrasil-accounting` PR #1575 had landed
 the token, revoke, and ingest surface, and the web app was already minting a
 scoped `rat_` credential against the exact reviewed origin. Plan 014 therefore
 corrected the shipped surface instead of rebuilding it — see its status row.
+Plan 015 was added on 2026-08-22 against Ratatosk commit `740c227` after a live
+ClickUp search spent its full 45-second deep budget on stale guessed routes and
+retained no candidate. It supersedes Plan 012 with a narrower evidence-first
+program built on the discovery, transaction, diagnostic, and route-memory code
+that has since landed.
 
 Read each plan fully before editing. Use clean feature worktrees, run every gate,
 honor STOP conditions, and update the status here after review. Do not place real
@@ -38,9 +43,10 @@ public repository.
 | [009](009-launch-guided-capture-missions.md) | Authorized contributors receive bounded capture missions and receipts | P2 | L | 007, 008 | REJECTED — removed in favor of Collector linking to the public GitHub contribution path |
 | [010](010-orchestrate-vendor-health-with-temporal.md) | Temporal TypeScript schedules supplier-health evaluation and follow-up | P1 | L | 004, 005, 008 | BLOCKED — the app, schema, and worker manifest are deployed, but production has no operational EKS/Temporal platform; the schedule remains unregistered and paused under the plan's STOP condition |
 | [011](011-cold-replay-and-semantic-download-parity.md) | Unknown SPA invoice routes are captured through exact-entry cold replay and semantic candidates reproduce during verification | P1 | L | — | IN PROGRESS — automated implementation and gates complete; live Supabase structure recognizes 8 invoice actions; end-to-end Supabase/ClickUp delivery and duplicate acceptance remains |
-| [012](012-build-adaptive-supplier-acquisition-fabric.md) | Proven supplier paths repair locally through a packaged capability grammar, diverse fallbacks, shadow proof, atomic promotion, and rollback | P1 | L | 011, 013 | TODO |
+| [012](012-build-adaptive-supplier-acquisition-fabric.md) | Historical adaptive-acquisition architecture | P1 | L | 011, 013 | REJECTED — superseded by Plan 015 after the original implementation scope drifted |
 | [013](013-enforce-transactional-dom-acquisition.md) | Every click-capable DOM document path runs after stable identity reservation and cannot leave a page-owned browser download | P0 | L | — | IN PROGRESS — shared transaction/controller, synthetic gates, CI, audit, build, package, and artifact verification pass; exact-build Chrome load and first/second/cadence live acceptance remain |
 | [014](014-connect-multiple-igdrasil-companies.md) | Ratatosk holds several connected Igdrasil companies, each supplier feeds exactly one, and the Igdrasil token/ingest surface exists | P0 | L | — | IN PROGRESS — all 16 acceptance rows automated and passing on both sides; the plan's "server side unbuilt" premise was one PR stale, so the shipped surface was corrected rather than rebuilt; live two-company acceptance remains |
+| [015](015-build-evidence-first-adaptive-acquisition.md) | Unknown supplier routes come from observed evidence, search budgets remain honest and resumable, and only replayable proved routes persist | P0 | L | 011 and 013 automated foundations; their live gates before release | IN PROGRESS — automated/mutation/package gates pass; exact-build Chrome and authorized ClickUp first/second/cadence acceptance remain |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or
 `REJECTED — <reason>`.
@@ -98,9 +104,12 @@ Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or
 009 guided capture missions: REJECTED, historical only, no downstream dependency
 
 011 automated semantic slice ──> 013 transactional DOM acquisition
-                                      |
-                                      ├─> 011 live acceptance
-                                      └─> 012 adaptive acquisition fabric
+              |                       |
+              └──────────┬────────────┘
+                         v
+              015 evidence-first acquisition
+
+012 adaptive acquisition fabric: REJECTED, superseded by 015
 
 014 multi-company Igdrasil destinations (independent; spans Ratatosk + Igdrasil)
 ```
@@ -111,12 +120,13 @@ clean worktrees and PRs per repository. Plan 009 is retained only as rejected
 historical context and must not be implemented or consumed. Plan 010 extends Svala's existing
 Temporal TypeScript foundation; it must not create another SDK stack. Plan 013
 is the P0 corrective prerequisite for Plan 011's remaining live duplicate
-acceptance. Plan 012 depends on both Plans 011 and 013 because repair cannot be
-trusted until cold observation, semantic search/verification, and document
-actions are reproducible and idempotent. Plan 014 spans Ratatosk and the
+acceptance. Plan 012 is retained as rejected historical context and must not be
+implemented. Plan 015 starts from the automated foundations of Plans 011 and
+013, then requires both plans' remaining exact-build live gates before release.
+Plan 014 spans Ratatosk and the
 `igdrasil-accounting` repository and must use separate clean worktrees and PRs
 per repository; it is independent of the acquisition track and may run in
-parallel with Plans 011–013.
+parallel with Plans 011, 013, and 015.
 
 ## Program invariants
 
@@ -148,10 +158,12 @@ Ratatosk, from the Ratatosk repository root:
 ```bash
 npm ci
 npm run typecheck
+npm run check:boundaries
 npm run validate
 npm test
-npm run build
-npm audit --audit-level=high
+npm run build:collector
+npm run audit:security
+git diff --check
 ```
 
 Svala, from `svala-app/` with Node 24 and a disposable test database:
@@ -179,3 +191,7 @@ external condition persists.
   policies to remain identical and fail closed; this supersedes the old deferral.
 - Automatic upload of rich fixtures or agent reports: rejected. Only the strict
   structural fingerprint submission may use automatic Svala delivery.
+- Supplier-specific guessed routes, JavaScript-bundle route mining, remote
+  repair instructions, broad Collector permissions, and general browser-agent
+  execution: rejected by Plan 015. Observed browser evidence and bounded packaged
+  primitives are the scalable boundary.

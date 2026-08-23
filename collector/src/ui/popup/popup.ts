@@ -600,7 +600,14 @@ function discoveryCard(): string {
     const title = emptyResult ? "No invoices found" : "Couldn’t check this supplier";
     // The finite reason belongs in the copyable diagnostic, not in three lines
     // of prose above the button that retries.
-    const detail = emptyResult
+    const deep = discovery.canSearchDeeper
+      ? `<button type="button" class="supplier-request-link" data-action="continue-discovery">Search Deeper</button><small>Up to ${Math.ceil((discovery.deepRemainingMs ?? 0) / 1_000)} more seconds. You can cancel anytime.</small>`
+      : "";
+    const detail = discovery.canSearchDeeper
+      ? "The quick search stopped safely before checking every observed route."
+      : discovery.reason === "not_found"
+      ? "Open the supplier's billing or invoice page, then search again."
+      : emptyResult
       ? "This account may not include billing access."
       : discovery.message;
     // One step instead of three. "Copy details" left a person holding a blob of
@@ -608,7 +615,8 @@ function discoveryCard(): string {
     const diagnostic = discovery.diagnosticAvailable
       ? `<button type="button" class="quiet-link compact" data-action="report-discovery">Report Issue</button>`
       : "";
-    return `<aside class="supplier-request discovery-failed" role="${emptyResult ? "status" : "alert"}"><span class="supplier-request-mark" aria-hidden="true">${emptyResult ? "–" : "!"}</span><span class="supplier-request-copy"><strong>${title}</strong><small>${esc(detail)}</small></span><span class="discovery-actions"><button type="button" class="supplier-request-link" data-action="retry-discovery">${emptyResult ? "Search Again" : "Try Again"}</button>${diagnostic}</span></aside>`;
+    const retry = discovery.reason === "not_found" ? "Open Billing Page &amp; Search Again" : emptyResult ? "Search Again" : "Try Again";
+    return `<aside class="supplier-request discovery-failed" role="${emptyResult ? "status" : "alert"}"><span class="supplier-request-mark" aria-hidden="true">${emptyResult ? "–" : "!"}</span><span class="supplier-request-copy"><strong>${title}</strong><small>${esc(detail)}</small></span><span class="discovery-actions">${deep}<button type="button" class="supplier-request-link" data-action="retry-discovery">${retry}</button>${diagnostic}</span></aside>`;
   }
   if (hasAnyDestination() && !page && !state.tabAwarenessEnabled) {
     return `<aside class="supplier-request tab-awareness" aria-labelledby="tab-awareness-title"><span class="supplier-request-mark" aria-hidden="true">${branchIcon()}</span><span class="supplier-request-copy"><strong id="tab-awareness-title">Find invoices on this site</strong><small>Chrome will ask once to recognize your active tab.</small></span><span class="discovery-actions"><button type="button" class="supplier-request-link" data-action="enable-tab-awareness" ${state.tabAwarenessRequestPending ? "disabled" : ""}>${state.tabAwarenessRequestPending ? "Preparing…" : "Find Invoices"}</button></span></aside>`;
@@ -865,6 +873,10 @@ app.addEventListener("click", (event) => {
   }
   if (action === "retry-discovery") {
     void retryDiscovery();
+    return;
+  }
+  if (action === "continue-discovery") {
+    void continueDiscovery();
     return;
   }
   if (action === "connect-discovery" && vendorId) {
@@ -1231,6 +1243,16 @@ function monthLabel(value: string): string {
 async function retryDiscovery(): Promise<void> {
   await send({ type: "cancelDiscovery" });
   await discoverFromUserGesture();
+}
+
+async function continueDiscovery(): Promise<void> {
+  const previous = state.discovery;
+  if (previous.stage !== "failed" || !previous.canSearchDeeper) return;
+  state.discovery = { stage: "scanning", origin: previous.origin ?? state.activeSupplierTab?.origin ?? "https://invalid.example" };
+  renderVendors();
+  const response = await send({ type: "continueDiscovery" });
+  if (!response.ok) toast(response.error);
+  await load();
 }
 
 /**

@@ -18,11 +18,15 @@ describe("interactive discovery envelope", () => {
     expect(waves).toBeLessThanOrEqual(4);
   });
 
-  it("starts a user-initiated scan in the interactive envelope and escalates only on failure", () => {
+  it("keeps a user-initiated scan in the interactive envelope until the person explicitly continues", () => {
     expect(worker).toContain('pending.checkpoint?.mode ?? "fast"');
-    expect(worker).toContain('scan("deep", undefined)');
-    expect(worker).toContain('error.diagnostic.coverage?.mode !== "fast"');
+    expect(worker).toContain('case "continueDiscovery"');
+    expect(worker).toContain("continueSupplierDiscovery()");
+    expect(worker).not.toContain('scan("deep", undefined)');
+    expect(worker).not.toContain("fast discovery found no candidate; escalating");
     expect(worker).not.toContain('pending.checkpoint?.mode ?? "deep"');
+    expect(worker).toContain("!failed.canSearchDeeper");
+    expect(worker).toContain('error.diagnostic.result === "not_found"');
   });
 
   it("stops the moment a previewed structured plan exists", () => {
@@ -42,20 +46,16 @@ describe("interactive discovery envelope", () => {
     expect(discoveryProofIsSufficient([], { entryExplored: true, exploredWaves: 3 })).toBe(false);
   });
 
-  it("funds the routes that can hold invoices and not the ones that only lead to them", () => {
-    const target = (url: string) => ({ url, source: "common_route" as const, depth: 1, score: 100 });
-    const billing = explorationProbeOptions(target("https://vendor.example/account/billing"));
-    const bridge = explorationProbeOptions(target("https://vendor.example/settings"));
+  it("funds observed routes by provenance and keeps generic guesses cheap", () => {
+    const observed = { url: "https://vendor.example/surface/r7", source: "linked" as const, hintSource: "semantic_navigation" as const, depth: 1, score: 100 };
+    const fallback = { url: "https://vendor.example/account/billing", source: "common_route" as const, hintSource: "common_fallback" as const, depth: 1, score: 100 };
 
-    for (const path of ["/billing", "/settings/billing", "/invoices", "/subscriptions", "/9012345678901/billing"]) {
-      expect(explorationProbeOptions(target(`https://vendor.example${path}`))).toEqual(billing);
-    }
-    expect(bridge.settleMs).toBeLessThan(billing.settleMs);
-    expect(bridge.deadlineMs).toBeLessThan(billing.deadlineMs);
+    expect(explorationProbeOptions(observed).settleMs).toBeGreaterThan(explorationProbeOptions(fallback).settleMs);
+    expect(explorationProbeOptions(observed).deadlineMs).toBeGreaterThan(explorationProbeOptions(fallback).deadlineMs);
   });
 
   it("makes the escalation more patient per route, not only wider", () => {
-    const target = { url: "https://vendor.example/account/billing", source: "common_route" as const, depth: 1, score: 100 };
+    const target = { url: "https://vendor.example/surface/r7", source: "linked" as const, hintSource: "semantic_navigation" as const, depth: 1, score: 100 };
 
     // A second pass that re-probes the same page with the same render window
     // would just reach the same conclusion more slowly.

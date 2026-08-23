@@ -59,6 +59,31 @@ describe("discovery route memory", () => {
 
     expect(Object.keys(await listRememberedRoutes())).toEqual([origin]);
     expect((await getRememberedRoute(origin))?.entryUrl).toBe(`${origin}/account/invoices`);
+    expect((await getRememberedRoute(origin))?.previousEntryUrl).toBe(`${origin}/billing`);
+  });
+
+  it("falls back once to the previous proved route after the active route repeatedly misses", async () => {
+    await rememberSupplierRoute(origin, `${origin}/billing`);
+    await rememberSupplierRoute(origin, `${origin}/account/invoices`);
+
+    await recordRouteMiss(origin);
+    await recordRouteMiss(origin);
+    await recordRouteMiss(origin);
+
+    await expect(getRememberedRoute(origin)).resolves.toMatchObject({
+      entryUrl: `${origin}/billing`,
+      misses: 0,
+    });
+  });
+
+  it("reads legacy v1 route memory before the next successful write migrates it", async () => {
+    values["discoveryRouteMemory.v1"] = {
+      [origin]: { entryUrl: `${origin}/billing`, confirmedAt: Date.now(), misses: 0 },
+    };
+
+    await expect(getRememberedRoute(origin)).resolves.toMatchObject({ entryUrl: `${origin}/billing` });
+    await rememberSupplierRoute(origin, `${origin}/account/invoices`);
+    expect(values["discoveryRouteMemory.v2"]).toBeDefined();
   });
 
   it("treats a different origin as a different supplier", async () => {
@@ -192,7 +217,7 @@ describe("discovery route memory", () => {
 
     // Retaining which suppliers a person uses, past the point they disconnected
     // them, is exactly the kind of thing that has to be stated and removable.
-    expect(privacy).toMatch(/one exact-origin page address\s+per supplier/i);
+    expect(privacy).toMatch(/active exact-origin page address and.*one previous proved/i);
     expect(privacy).toMatch(/kept when a supplier is disconnected/i);
     expect(privacy).toMatch(/never uploaded or shared/i);
     expect(privacy).toMatch(/Settings → Remembered billing pages/);

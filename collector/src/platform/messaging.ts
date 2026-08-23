@@ -26,6 +26,7 @@ export type Message =
   | { type: "getDiscoveryDiagnostic" }
   | { type: "beginDiscovery"; tabId: number; origin: string }
   | { type: "completeDiscovery" }
+  | { type: "continueDiscovery" }
   | { type: "cancelDiscovery" }
   | { type: "beginDiscoveryConnect"; vendorId: string; destinationId: DestinationId; fromMonth?: string }
   | { type: "completeDiscoveryConnect"; vendorId: string }

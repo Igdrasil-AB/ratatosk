@@ -244,10 +244,11 @@ describe("bounded same-origin discovery exploration", () => {
     expect(unsafe.some((target) => target.url.includes("/dashboard/settings/"))).toBe(false);
   });
 
-  it("gives a tenant-scoped ClickUp billing route an adaptive SPA evidence budget", () => {
+  it("gives an observed SPA route an adaptive evidence budget without naming its path", () => {
     const target = {
-      url: "https://app.clickup.com/9012345678/settings/billing",
-      source: "common_route" as const,
+      url: "https://app.vendor.example/surface/r7",
+      source: "linked" as const,
+      hintSource: "semantic_navigation" as const,
       depth: 1,
       score: 105,
     };
@@ -350,6 +351,33 @@ describe("bounded same-origin discovery exploration", () => {
     expect(planExplorationTargets({
       origin,
       links: [{ url: opaqueRoute, label: "Delete invoices" }],
+      visited: new Set(),
+      nextDepth: 1,
+    })).toEqual([]);
+  });
+
+  it("admits an opaque route only when same-document navigation actually exposed it", () => {
+    const origin = "https://portal.example";
+    const targets = planExplorationTargets({
+      origin,
+      links: [{ url: `${origin}/surface/r7`, hintSource: "semantic_navigation" }],
+      visited: new Set([`${origin}/home`]),
+      nextDepth: 1,
+    });
+
+    expect(targets).toContainEqual(expect.objectContaining({
+      url: `${origin}/surface/r7`,
+      hintSource: "semantic_navigation",
+    }));
+    expect(planExplorationTargets({
+      origin,
+      links: [{ url: `${origin}/surface/r7` }],
+      visited: new Set([`${origin}/home`]),
+      nextDepth: 1,
+    })).toEqual([]);
+    expect(planExplorationTargets({
+      origin,
+      links: [{ url: `${origin}/surface/delete-account`, hintSource: "semantic_navigation" }],
       visited: new Set(),
       nextDepth: 1,
     })).toEqual([]);

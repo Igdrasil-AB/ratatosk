@@ -66,6 +66,7 @@ import {
   checkpointSupplierDiscovery,
   clearSupplierDiscovery,
   completeSupplierDiscovery,
+  continueSupplierDiscovery,
   DISCOVERY_FAILURE_MESSAGES,
   failSupplierDiscovery,
   getPendingSupplierDiscoveryConnect,
@@ -514,6 +515,17 @@ async function handle(message: Message): Promise<Response> {
       await completeSupplierScan();
       return { ok: true, discovery: await getSupplierDiscoveryStatus() };
 
+    case "continueDiscovery": {
+      const continuation = await continueSupplierDiscovery();
+      if (!continuation) return { ok: false, error: "The deeper search is no longer available. Search again from the billing page." };
+      if (!(await chrome.permissions.contains({ origins: [`${continuation.origin}/*`] }))) {
+        await failSupplierDiscovery(continuation.runId, DISCOVERY_FAILURE_MESSAGES.pageChanged, [`${continuation.origin}/*`]);
+        return { ok: false, error: "Supplier access changed. Reopen the billing page and search again." };
+      }
+      void completeSupplierScan();
+      return { ok: true, discovery: await getSupplierDiscoveryStatus() };
+    }
+
     case "cancelDiscovery":
       await cancelCurrentDiscovery();
       return { ok: true };
@@ -631,17 +643,9 @@ async function completeSupplierScan(): Promise<void> {
           onCheckpoint: (next) => checkpointSupplierDiscovery(pending.runId, next).then(() => undefined),
           shouldContinue: () => canContinueSupplierDiscovery(pending.origin),
         });
-      // Someone is watching a spinner, so the first pass uses the interactive
-      // envelope and stops the moment a candidate is proven. A portal the fast
-      // pass cannot resolve is worth more time than a fast "not found", so it —
-      // and only it — escalates once to the deeper envelope.
-      const discovery = await scan(pending.checkpoint?.mode ?? "fast", pending.checkpoint)
-        .catch(async (error: unknown) => {
-          if (!(error instanceof SupplierDiscoveryError) || error.diagnostic.coverage?.mode !== "fast") throw error;
-          if (!(await canContinueSupplierDiscovery(pending.origin))) throw error;
-          console.info("[collector] fast discovery found no candidate; escalating to the deep envelope");
-          return scan("deep", undefined);
-        });
+      // Fast search is the visible interaction contract. Deep work starts only
+      // after the person explicitly continues from the saved frontier.
+      const discovery = await scan(pending.checkpoint?.mode ?? "fast", pending.checkpoint);
       const current = await getSupplierDiscoveryStatus();
       if (current.stage === "scanning" && current.origin === pending.origin) {
         await setSupplierDiscoveryPreview(pending.runId, discovery.candidates, discovery.diagnostic);
@@ -652,7 +656,7 @@ async function completeSupplierScan(): Promise<void> {
       // A whole search reaching no candidate is the signal that a remembered
       // route may have moved. Counted rather than acted on immediately: one
       // failure is far more often a signed-out session than a relocated page.
-      if (error instanceof SupplierDiscoveryError) {
+      if (error instanceof SupplierDiscoveryError && error.diagnostic.result === "not_found") {
         await recordRouteMiss(pending.origin).catch(() => undefined);
       }
       const changed = error instanceof Error && /tab changed|did not match/.test(error.message);
@@ -663,7 +667,12 @@ async function completeSupplierScan(): Promise<void> {
         [`${pending.origin}/*`],
         error instanceof SupplierDiscoveryError ? error.diagnostic : undefined,
       );
-      await revokeUnusedPermissions([`${pending.origin}/*`]);
+      // A capped fast run is deliberately resumable. Keep its one exact-origin
+      // grant until the person either continues or dismisses the result.
+      const failed = await getSupplierDiscoveryStatus();
+      if (failed.stage !== "failed" || !failed.canSearchDeeper) {
+        await revokeUnusedPermissions([`${pending.origin}/*`]);
+      }
     }
   })().finally(() => {
     supplierScanInFlight = undefined;
@@ -757,9 +766,18 @@ function completeDiscoveredConnect(vendorId: string, expectedRunId?: string): Pr
       });
       if (result.kind === "success") {
         const { profile, summary } = result;
+        await revokeUnusedPermissions(requiredOrigins);
         // A real document arrived from this page, which is the only evidence
         // worth shortening the next search with.
-        await rememberSupplierRoute(profile.primaryOrigin, profile.entryUrl).catch(() => undefined);
+        const rememberedRoute = profile.recipe.invoices.strategy === "dom"
+          ? profile.recipe.invoices.list.open
+          : profile.entryUrl;
+        // A scoped DOM template is a recipe capability, not a standalone route:
+        // it needs the profile's runtime config scope, so discovery memory never
+        // reduces it to the unsafe site root.
+        if (!rememberedRoute.includes("{")) {
+          await rememberSupplierRoute(profile.primaryOrigin, rememberedRoute).catch(() => undefined);
+        }
         // The collection itself succeeded. A transient session-state write must
         // not undo a delivered document or the now-proven local integration.
         try {
@@ -773,7 +791,6 @@ function completeDiscoveredConnect(vendorId: string, expectedRunId?: string): Pr
         } catch {
           await clearSupplierDiscovery().catch(() => undefined);
         }
-        await revokeUnusedPermissions(requiredOrigins);
         return { ok: true, summaries: [summary] };
       }
       if (

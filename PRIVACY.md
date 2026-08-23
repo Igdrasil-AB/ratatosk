@@ -1,6 +1,6 @@
 # Privacy Policy — Ratatosk Invoice Collector
 
-**Effective date:** 2026-07-19
+**Effective date:** 2026-08-23
 
 **Provided by:** Igdrasil AB
 
@@ -51,10 +51,19 @@ Collector handles only the data required for that purpose:
    billing route. It stores no page body, API response, cookie, or header.
 
 During Find Invoices, Collector temporarily inspects the active page and up to
-fourteen additional same-origin pages with strong billing or invoice intent, to depth
-three. It uses at most four inactive temporary tabs, performs only page navigation
-and bounded same-origin GET probes, never clicks controls or submits forms, and
-closes the tabs when the search ends. On those temporary pages, a packaged
+fourteen additional same-origin pages the application actually exposed, to depth
+three. The ten-second fast search starts from the active page, one cold replay,
+and observed links, SPA navigation, network, or inert-page evidence; it does not
+guess common billing URLs. If it reaches its safe cap, the person may explicitly
+continue the retained safe frontier under the remaining portion of a 45-second
+total envelope. It uses inactive temporary tabs, performs only page navigation
+and bounded same-origin GET probes. The active page remains passive; a disposable
+    replay may open up to four native menus and two localized Settings/Billing
+    controls, never activates a document control or
+    submits a form, and closes the tabs when the search ends. While those controls
+    are revealed, a temporary packaged guard permits only GET/HEAD and explicit
+    read-only GraphQL queries; it blocks mutating fetch/XHR, beacon, form, popup,
+    and unsafe navigation attempts and discards that probe. On those temporary pages, a packaged
 exact-origin observer may temporarily inspect bounded JSON fetch/XHR responses
 and the request structure needed to recognize an explicit read-only
 GraphQL query. Credential-named fields, credential-shaped values, and payment
@@ -67,6 +76,8 @@ run ends. It is never written to storage, and the approval card says so before
 you grant access. It does not initiate the page's POST requests. Bounded rendered-page snapshots and JSON
 evidence stay in memory, are not logged or uploaded, and are discarded after the
 packaged adapters produce up to three proof-ranked structural candidates. A
+same-origin embedded frame may contribute sanitized request evidence, but its
+DOM controls and routes are not admitted for automatic collection. A
 failed search or verification may retain a redacted diagnostic in session storage
 for up to 24 hours; it contains only hostnames, counts, candidate numbers,
 packaged adapter names, stable outcome codes, and privacy-safe route templates.
@@ -149,14 +160,14 @@ creditworthiness or for lending.
   the extension is uninstalled. Chrome removes extension storage on uninstall,
   subject to Chrome's own sync, backup, and device behavior.
 - After a supplier's invoices are collected, Collector remembers on this device
-  which page of that supplier they were found on — one exact-origin page address
-  per supplier, and nothing about the request, the response, or the invoices. It
-  shortens the next search for the same supplier, is re-checked like any other
-  candidate page, and is dropped after three searches fail to confirm it. It is
-  kept when a supplier is disconnected, because reconnecting is when it is most
-  useful. It is never uploaded or shared. Users can remove every remembered page
-  at any time under **Settings → Remembered billing pages**, and Chrome removes
-  it on uninstall.
+  the active exact-origin page address and, when it changes, one previous proved
+  page address per supplier. It stores nothing about the request, response, or
+  invoices. The active page shortens the next search and is re-checked like any
+  other candidate; after three misses, the previous proved page becomes active
+  once rather than guessing a new route. It is kept when a supplier is disconnected,
+  because reconnecting is when it is most useful. It is never uploaded or shared.
+  Users can remove every remembered page at any time under
+  **Settings → Remembered billing pages**, and Chrome removes it on uninstall.
 - Locally downloaded files remain until the user deletes them.
 - Documents delivered to Igdrasil are retained under the user's Igdrasil
   agreement and Igdrasil's applicable retention rules.
@@ -174,7 +185,8 @@ permission so the persistent side panel can identify the active tab after tab
 switches. Ratatosk reads only the current tab URL for this UI context, does not
 store a browsing history, and this permission does not authorize page inspection.
 After exact-origin approval, the bounded search may inspect up
-to fourteen additional same-origin billing-related pages. HTTPS supplier access is optional and Chrome
+to fourteen additional same-origin pages exposed by the application; generic
+billing guesses are reserved for an explicit deeper continuation. HTTPS supplier access is optional and Chrome
 asks for the exact origin when the user connects or tests it. During that explicit
 search, `scripting` also installs and removes the bounded exact-origin page-load
 observer described above. The optional

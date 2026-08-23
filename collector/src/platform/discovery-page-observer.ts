@@ -9,6 +9,7 @@ const MAX_REQUEST_BODY_CHARS = 65_536;
 const MAX_TOTAL_BODY_CHARS = 768_000;
 const MAX_OBSERVER_LIFETIME_MS = 180_000;
 const MAX_DOCUMENTS = 100;
+const MAX_ROUTES = 80;
 const MAX_INLINE_PDF_BYTES = 8 * 1024 * 1024;
 const MAX_INLINE_PDF_TOTAL_BYTES = 24 * 1024 * 1024;
 const DOCUMENT_HINT = /(?:invoice|receipt|statement|document|download|pdf)/i;
@@ -16,6 +17,7 @@ const DOCUMENT_JSON_FIELD = /(?:^|[._-])(?:(?:invoice|receipt|statement|document
 
 interface DiscoveryPageObserver {
   snapshot(): Promise<CapturedEntry[]>;
+  snapshotRoutes(): Promise<string[]>;
   snapshotDocuments(): Promise<string[]>;
   snapshotActionDocuments(): Promise<string[]>;
   beginDocumentAction(): void;
@@ -45,6 +47,8 @@ function installObserver(): void {
   const entries: CapturedEntry[] = [];
   const documents: string[] = [];
   const documentKeys = new Set<string>();
+  const routes: string[] = [];
+  const routeKeys = new Set<string>();
   const actionDocuments: string[] = [];
   const actionDocumentKeys = new Set<string>();
   const pending = new Set<Promise<void>>();
@@ -117,6 +121,28 @@ function installObserver(): void {
     if (documentKeys.has(value)) return;
     documentKeys.add(value);
     documents.push(value);
+  };
+
+  /** Record a same-origin route the application actually navigated to. The
+   * collector later applies its full route/action policy before this can enter
+   * the exploration frontier. Keep only structural, query-free routing data in
+   * page memory; no captured values cross into diagnostics or storage. */
+  const keepRoute = (raw: string): void => {
+    if (stopped || routes.length >= MAX_ROUTES || raw.length > 2_048) return;
+    let url: URL;
+    try { url = new URL(raw, location.href); } catch { return; }
+    if (url.protocol !== "https:" || url.origin !== location.origin || url.username || url.password) return;
+    for (const [key, value] of [...url.searchParams.entries()]) {
+      if (!/^(?:page|p|offset|start|per_page|limit)$/i.test(key) || !/^\d{1,6}$/.test(value)) {
+        url.searchParams.delete(key);
+      }
+    }
+    url.searchParams.sort();
+    url.hash = "";
+    const value = url.toString();
+    if (routeKeys.has(value)) return;
+    routeKeys.add(value);
+    routes.push(value);
   };
 
   const keepActionDocumentUrl = (raw: string): void => {
@@ -381,14 +407,44 @@ function installObserver(): void {
     rawEvent.preventDefault();
   };
 
+  const captureObservedNavigation: EventListener = (rawEvent): void => {
+    const event = rawEvent as Event & { destination?: { url?: string } };
+    const raw = event.destination?.url;
+    if (raw) keepRoute(raw);
+  };
+
+  const originalPushState = history.pushState;
+  const originalReplaceState = history.replaceState;
+  const captureHistoryRoute = (url: string | URL | null | undefined): void => {
+    if (url !== undefined && url !== null) keepRoute(String(url));
+  };
+  const wrappedPushState: typeof history.pushState = function(this: History, data, unused, url) {
+    const result = Reflect.apply(originalPushState, this, [data, unused, url]) as void;
+    captureHistoryRoute(url);
+    return result;
+  };
+  const wrappedReplaceState: typeof history.replaceState = function(this: History, data, unused, url) {
+    const result = Reflect.apply(originalReplaceState, this, [data, unused, url]) as void;
+    captureHistoryRoute(url);
+    return result;
+  };
+  const captureCurrentRoute = (): void => keepRoute(location.href);
+
   window.fetch = wrappedFetch;
   XMLHttpRequest.prototype.open = wrappedOpen;
   XMLHttpRequest.prototype.send = wrappedSend;
   XMLHttpRequest.prototype.setRequestHeader = wrappedSetRequestHeader;
   URL.createObjectURL = wrappedCreateObjectURL;
   window.open = wrappedWindowOpen;
+  if (!pageNavigation) {
+    history.pushState = wrappedPushState;
+    history.replaceState = wrappedReplaceState;
+  }
   document.addEventListener("click", captureGeneratedAnchor, true);
   pageNavigation?.addEventListener("navigate", captureActionNavigation);
+  pageNavigation?.addEventListener("navigate", captureObservedNavigation);
+  window.addEventListener("popstate", captureCurrentRoute);
+  window.addEventListener("hashchange", captureCurrentRoute);
   window[OBSERVER_KEY] = {
     async snapshot(): Promise<CapturedEntry[]> {
       const current = [...pending];
@@ -399,6 +455,9 @@ function installObserver(): void {
         ]);
       }
       return entries.map((entry) => structuredClone(entry));
+    },
+    async snapshotRoutes(): Promise<string[]> {
+      return [...routes];
     },
     async snapshotDocuments(): Promise<string[]> {
       const current = [...pending];
@@ -442,11 +501,18 @@ function installObserver(): void {
       }
       if (URL.createObjectURL === wrappedCreateObjectURL) URL.createObjectURL = originalCreateObjectURL;
       if (window.open === wrappedWindowOpen) window.open = originalWindowOpen;
+      if (!pageNavigation && history.pushState === wrappedPushState) history.pushState = originalPushState;
+      if (!pageNavigation && history.replaceState === wrappedReplaceState) history.replaceState = originalReplaceState;
       document.removeEventListener("click", captureGeneratedAnchor, true);
       pageNavigation?.removeEventListener("navigate", captureActionNavigation);
+      pageNavigation?.removeEventListener("navigate", captureObservedNavigation);
+      window.removeEventListener("popstate", captureCurrentRoute);
+      window.removeEventListener("hashchange", captureCurrentRoute);
       entries.length = 0;
       documents.length = 0;
       documentKeys.clear();
+      routes.length = 0;
+      routeKeys.clear();
       actionDocuments.length = 0;
       actionDocumentKeys.clear();
       pending.clear();
