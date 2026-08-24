@@ -35,13 +35,13 @@
   },
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.0.0-beta.28",
-    "@types/chrome": "^0.0.268",
-    "@types/node": "^20.19.43",
+    "@types/chrome": "^0.2.6",
+    "@types/node": "^26.2.0",
     "fflate": "^0.8.2",
-    "simple-icons": "^16.26.0",
-    "tsx": "^4.16.2",
-    "typescript": "^5.5.4",
-    "vite": "^8.1.4",
-    "vitest": "^4.1.10"
+    "simple-icons": "^16.28.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11"
   }
 }
