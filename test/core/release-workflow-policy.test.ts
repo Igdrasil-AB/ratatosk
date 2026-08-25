@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 describe("release metadata workflow policy", () => {
@@ -27,5 +28,21 @@ describe("release metadata workflow policy", () => {
     expect(steps.indexOf("npm run ci")).toBeLessThan(packageIndex - 1);
     expect(packageIndex).toBeLessThan(steps.indexOf("npm run validate:collector-release"));
     expect(scripts["validate:collector-release"]).toContain("npm run verify:collector-artifact");
+  });
+
+  it("prepares one exact live package before the hostname-only Chrome handoff", () => {
+    const scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts as Record<string, string>;
+    const prepare = scripts["prepare:live-supplier-test"].split(" && ");
+    expect(prepare[0]).toBe("npm run assert:release-source");
+    expect(prepare).toContain("npm run ci");
+    expect(prepare).toContain("npm run audit:security");
+    expect(prepare).toContain("npm run build:collector");
+    expect(prepare.at(-1)).toBe("tsx scripts/prepare-live-supplier-test.ts");
+
+    execFileSync("bash", ["-n", "scripts/live-supplier-test.sh"]);
+    const wizard = readFileSync("scripts/live-supplier-test.sh", "utf8");
+    expect(wizard).toContain("serviceWorkerChunk");
+    expect(wizard).toContain("approved-hosts.txt");
+    expect(wizard).not.toMatch(/HAR|page source|network body/i);
   });
 });

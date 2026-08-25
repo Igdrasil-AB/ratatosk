@@ -24,6 +24,25 @@ this test before naming a vendor as supported in a release.
 
 ## Iteration discipline for a live failure
 
+Run one deterministic built-browser shape repeatedly with:
+
+```bash
+npm run test:discovery-iteration -- --case semantic-replay-timeout --repeat 3
+```
+
+Prepare the committed package for the supplier tabs already open in Chrome,
+then follow the hostname-only wizard:
+
+```bash
+npm run prepare:live-supplier-test -- --browser chrome
+scripts/live-supplier-test.sh
+```
+
+The preparation command records the commit, ZIP checksum, unpacked-tree digest,
+service-worker chunk, and runtime revisions under ignored `artifacts/live/`.
+Chrome cannot let an extension reload itself, so the wizard pauses for that one
+explicit reload and rejects a copied ready line from any other build.
+
 Do not advance the package version, publish a ZIP, or describe a supplier as
 fixed until the exact built extension has passed the live acceptance loop below.
 One iteration must change only the narrowest failed boundary:
