@@ -39,7 +39,7 @@ describe("exact-entry cold replay", () => {
 
     expect(observerStart).toBeGreaterThan(0);
     expect(replayPlan).toBeGreaterThan(observerStart);
-    expect(discoverySource).toContain('target.source === "entry_replay"');
+    expect(discoverySource).toContain('source: "entry_replay"');
     expect(discoverySource).not.toMatch(/chrome\.tabs\.update\(tabId,\s*\{/);
     expect(discoverySource).toContain('allowSemanticNavigation: target.source !== "entry"');
     expect(discoverySource).toContain('allowScroll: target.source !== "entry"');

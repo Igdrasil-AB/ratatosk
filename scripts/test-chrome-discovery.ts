@@ -36,6 +36,7 @@ try {
     "-out", certPath,
   ], { stdio: "ignore" });
 
+  let opaqueDirectVisits = 0;
   const server = createServer({
     key: await readFile(keyPath),
     cert: await readFile(certPath),
@@ -63,6 +64,16 @@ try {
     if (path === "/telemetry") {
       response.writeHead(204);
       response.end();
+      return;
+    }
+    if (path === "/9012345678901/direct-billing") {
+      opaqueDirectVisits += 1;
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(opaqueDirectVisits === 1
+        ? `<!doctype html><html><head><title>Invoices | Active-only Fixture</title></head><body>
+            <main><h1>Invoices</h1><a href="/documents/invoice-1.pdf" aria-label="More"></a></main>
+          </body></html>`
+        : "<!doctype html><html><head><title>Workspace</title></head><body><main>Workspace home</main></body></html>");
       return;
     }
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -99,6 +110,7 @@ try {
       { name: "menus", route: "/menus" },
       { name: "semantic", route: "/semantic" },
       { name: "opaque-active", route: "/9012345678901/billing" },
+      { name: "opaque-direct-active", route: "/9012345678901/direct-billing" },
       { name: "blocked", route: "/blocked" },
     ] as const;
     for (const testCase of requestedCase ? cases.filter((item) => item.name === requestedCase) : cases) {

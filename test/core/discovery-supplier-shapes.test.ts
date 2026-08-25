@@ -401,4 +401,40 @@ describe("supplier discovery across portal shapes", () => {
     // The provider's hosted invoice page is rewritten to the direct document.
     expect(JSON.stringify(recipe.invoices.list.map.documentUrl)).toContain("pay.stripe.com");
   });
+
+  it("does not hang a resumed deep search on active-tab observer adoption", async () => {
+    const portal: Portal = {
+      name: "resumed deep search with an unresponsive active document",
+      origin: "https://deep-resume.example",
+      entryPath: "/home",
+      entryObserverAdoptHangs: true,
+      routes: [{ path: "/home", html: "<html><body>Home</body></html>" }],
+    };
+    const checkpoint = createExplorationCheckpoint({
+      mode: "deep",
+      pagesAttempted: 10,
+      linkedPagesAttempted: 8,
+      commonRoutePagesAttempted: 0,
+      elapsedMs: 10_000,
+      frontier: [],
+      completedTargetKeys: ["exact_entry|/home"],
+      attemptedFamilies: ["exact_entry", "observed_navigation"],
+      slicesCompleted: 0,
+    });
+    const simulation = createSimulation(portal);
+    active = simulation;
+    simulation.install();
+    try {
+      const outcome = await Promise.race([
+        discoverSupplierInTab(simulation.entryTabId, portal.origin, { mode: "deep", checkpoint })
+          .then(() => "resolved" as const, (error: unknown) => error),
+        new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 100)),
+      ]);
+
+      expect(outcome).toBeInstanceOf(SupplierDiscoveryError);
+    } finally {
+      simulation.restore();
+      active = undefined;
+    }
+  });
 });

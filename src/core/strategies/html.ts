@@ -39,7 +39,7 @@ export const htmlStrategy: Strategy = {
     const html = new TextDecoder().decode(await res.arrayBuffer());
     const rows = extractRows(spec, html);
     const refs = rows.map((row) => mapItem(recipe.id, spec.map, row));
-    // Row-regex links are usually page-relative (`/account/receipt/…`) — make them
+    // Row-regex links are usually page-relative (`/documents/…`) — make them
     // absolute against the page URL so the document fetch can follow them.
     const documentBaseUrl = res.url || renderedRequestUrl;
     for (const ref of refs) {

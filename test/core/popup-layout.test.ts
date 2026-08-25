@@ -190,7 +190,7 @@ describe("Collector popup layout regressions", () => {
     expect(popupStyles).toMatch(/\.tab-awareness \.discovery-actions \{[^}]*flex-direction:\s*row/s);
     expect(popupStyles).toContain("prefers-reduced-motion: reduce");
     expect(popupSource).toContain('data-action="retry-discovery"');
-    expect(popupSource).toContain("may not include billing access");
+    expect(popupSource).toContain("No safe unfinished route remains");
   });
 
   it("keeps invoice metadata truthful and collection controls available with history", () => {

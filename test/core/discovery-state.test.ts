@@ -98,11 +98,11 @@ describe("durable supplier discovery handoff", () => {
       mode: "deep",
       pagesAttempted: 4,
       linkedPagesAttempted: 2,
-      commonRoutePagesAttempted: 1,
+      commonRoutePagesAttempted: 0,
       elapsedMs: 2_000,
-      frontier: [{ key: "common_billing_route|/account/billing/history", family: "common_billing_route", score: 90, depth: 1 }],
-      completedTargetKeys: ["common_billing_route|/account/billing/history"],
-      attemptedFamilies: ["exact_entry", "observed_navigation", "common_billing_route"],
+      frontier: [{ key: "observed_navigation|/surface/r7", family: "observed_navigation", score: 90, depth: 1 }],
+      completedTargetKeys: ["observed_navigation|/surface/r6"],
+      attemptedFamilies: ["exact_entry", "observed_navigation"],
       slicesCompleted: 0,
     });
 
@@ -124,16 +124,16 @@ describe("durable supplier discovery handoff", () => {
       mode: "fast",
       pagesAttempted: 4,
       linkedPagesAttempted: 2,
-      commonRoutePagesAttempted: 1,
+      commonRoutePagesAttempted: 0,
       elapsedMs: 10_000,
       frontier: [{
-        key: "common_billing_route|/account/billing",
-        family: "common_billing_route",
+        key: "observed_navigation|/surface/r7",
+        family: "observed_navigation",
         score: 90,
         depth: 1,
-        route: "/account/billing",
-        source: "common_route",
-        hintSource: "common_fallback",
+        route: "/surface/r7",
+        source: "linked",
+        hintSource: "semantic_navigation",
       }],
       completedTargetKeys: ["exact_entry|/home"],
       attemptedFamilies: ["exact_entry", "observed_navigation"],
@@ -146,7 +146,7 @@ describe("durable supplier discovery handoff", () => {
       runtime: { collectorVersion: "0.8.50", discoveryEngine: 37 },
       limits: { pages: 15, depth: 3, durationMs: 10_000 },
       timing: { elapsedMs: 10_000 },
-      pages: { attempted: 4, linked: 2, commonRoutes: 1 },
+      pages: { attempted: 4, linked: 2, commonRoutes: 0 },
       evidence: { jsonResources: 0, observedRequests: 0, replayedRequests: 0, documentLinks: 0, structuredDataPages: 0, crossOriginHosts: [] },
       candidates: { compiled: 0, previewed: 0, retained: 0 },
       attempts: [],
@@ -165,7 +165,7 @@ describe("durable supplier discovery handoff", () => {
       runId,
       tabId: 42,
       origin: "https://vendor.example",
-      checkpoint: expect.objectContaining({ mode: "deep", elapsedMs: 10_000, frontier: [expect.objectContaining({ route: "/account/billing" })] }),
+      checkpoint: expect.objectContaining({ mode: "deep", elapsedMs: 10_000, frontier: [expect.objectContaining({ route: "/surface/r7" })] }),
     });
     expect(JSON.stringify((values["supplierDiscovery.v1"] as { checkpoint?: unknown }).checkpoint))
       .not.toMatch(/https?:|token|9012345678/i);
@@ -202,6 +202,51 @@ describe("durable supplier discovery handoff", () => {
       timing: { elapsedMs: 45_000 },
       pages: { attempted: 20, linked: 10, commonRoutes: 5 },
       evidence: { jsonResources: 0, observedRequests: 0, replayedRequests: 0, documentLinks: 0, structuredDataPages: 0, crossOriginHosts: [] },
+      candidates: { compiled: 0, previewed: 0, retained: 0 },
+      attempts: [],
+      termination: "time_cap",
+      result: "limit_reached",
+    });
+
+    await expect(getSupplierDiscoveryStatus()).resolves.toEqual({
+      stage: "failed",
+      message: DISCOVERY_FAILURE_MESSAGES.timeCap,
+      reason: "limit_reached",
+      diagnosticAvailable: true,
+    });
+    await expect(continueSupplierDiscovery()).resolves.toBeUndefined();
+  });
+
+  it("does not offer deep search when the unfinished routes cannot be reconstructed safely", async () => {
+    const runId = await beginSupplierDiscovery(42, "https://vendor.example");
+    await markSupplierDiscoveryScanning();
+    const checkpoint = createExplorationCheckpoint({
+      mode: "fast",
+      pagesAttempted: 10,
+      linkedPagesAttempted: 8,
+      commonRoutePagesAttempted: 0,
+      elapsedMs: 10_000,
+      frontier: [{
+        key: "observed_navigation|/:id/:segment/:segment",
+        family: "observed_navigation",
+        score: 100,
+        depth: 2,
+        source: "linked",
+        hintSource: "semantic_navigation",
+      }],
+      completedTargetKeys: ["exact_entry|/:id/:segment"],
+      attemptedFamilies: ["exact_entry", "observed_navigation"],
+      slicesCompleted: 0,
+    });
+    await checkpointSupplierDiscovery(runId, checkpoint);
+    await failSupplierDiscovery(runId, DISCOVERY_FAILURE_MESSAGES.timeCap, ["https://vendor.example/*"], {
+      schema: DISCOVERY_DIAGNOSTIC_SCHEMA,
+      site: "vendor.example",
+      runtime: { collectorVersion: "0.8.52", discoveryEngine: 41 },
+      limits: { pages: 15, depth: 3, durationMs: 10_000 },
+      timing: { elapsedMs: 10_000 },
+      pages: { attempted: 10, linked: 8, commonRoutes: 0 },
+      evidence: { jsonResources: 0, observedRequests: 0, replayedRequests: 0, documentLinks: 1, structuredDataPages: 0, crossOriginHosts: [] },
       candidates: { compiled: 0, previewed: 0, retained: 0 },
       attempts: [],
       termination: "time_cap",

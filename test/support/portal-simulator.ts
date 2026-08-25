@@ -100,6 +100,9 @@ export interface Portal {
   entryPath: string;
   /** Cost of a full page load in a fresh tab. */
   navMs?: number;
+  /** Regression hook: the active document refuses a late all-frame observer
+   * injection. A resumed frontier must not depend on adopting it again. */
+  entryObserverAdoptHangs?: boolean;
   routes: PortalRoute[];
   /** Serves what a compiled recipe replays during candidate preview. */
   endpoint?: (request: {
@@ -462,6 +465,9 @@ export function createSimulation(portal: Portal): Simulation {
         // Injecting the observer into an already-open document, as discovery
         // does for the tab the person is looking at.
         if (files?.length) {
+          if (portal.entryObserverAdoptHangs && target.tabId === entryTab.id) {
+            return new Promise<never>(() => undefined);
+          }
           tab.observed = observerRegistered;
           return [{ result: undefined }];
         }

@@ -95,7 +95,6 @@ const DOM_LINK_SELECTOR = [
   'a[href*=".pdf#" i]',
   'a[href*="/download" i]',
   'a[href*="/pdf" i]',
-  'a[href*="/account/receipt/" i]',
   ...PROVIDER_DOCUMENT_LINK_SELECTORS,
   'a[aria-label*="download" i][href]',
   'a[title*="download" i][href]',
@@ -251,7 +250,11 @@ export async function discoverSupplierInTab(
   const completedTargetKeys = new Set(resumed?.completedTargetKeys ?? []);
   const pageObserver = new DiscoveryPageObserverRegistration(expectedOrigin);
   const observerReady = await pageObserver.start();
-  if (observerReady) await pageObserver.adopt(tabId);
+  // A resumed frontier has already completed the active-entry lane. Reinjecting
+  // into that live SPA adds no evidence and can hang forever while Chrome waits
+  // on a navigating or unresponsive frame — exactly when Search Deeper must
+  // remain able to finish from its saved disposable-route frontier.
+  if (observerReady && !resumed) await pageObserver.adopt(tabId);
   // Resuming a checkpoint already carries its own frontier, so the shortcut is
   // only seeded when a search actually starts.
   const remembered = resumed ? undefined : (await getRememberedRoute(expectedOrigin))?.entryUrl;
@@ -380,11 +383,9 @@ export async function discoverSupplierInTab(
           if (target.source === "entry") {
             enqueueTargets(queue, known, planExplorationTargets({
               origin: expectedOrigin,
-              contextUrl: target.url,
               links: [],
               visited: known,
               nextDepth: 1,
-              includeCommonRoutes: mode !== "fast",
               limit: budget.pages - diagnostic.pages.attempted,
               maxDepth: budget.depth,
             }), completedTargetKeys);
@@ -517,11 +518,9 @@ export async function discoverSupplierInTab(
         if (target.depth < budget.depth) {
           const planned = planExplorationTargets({
             origin: expectedOrigin,
-            contextUrl: evidence.url,
             links: evidence.navigationUrls,
             visited: known,
             nextDepth: target.depth + 1,
-            includeCommonRoutes: mode !== "fast" && (target.source === "entry" || target.source === "entry_replay"),
             limit: budget.pages - diagnostic.pages.attempted,
             maxDepth: budget.depth,
           });
@@ -785,12 +784,14 @@ export function compileCandidates(
     admission: ["direct_document_link"],
   });
   const semanticEvidenceCount = evidence.stats.semanticControls + (evidence.stats.semanticSections ?? 0) +
-    (!domCandidate && (evidence.stats.semanticNavigationSteps ?? 0) > 0 ? evidence.stats.documentLinks : 0);
+    (!domCandidate && evidence.stats.documentLinks > 0 && (
+      (evidence.stats.semanticNavigationSteps ?? 0) > 0 || evidence.stats.semanticNavigationStatus === "disabled"
+    ) ? evidence.stats.documentLinks : 0);
   const semanticOpen: { url: string; config?: VendorRecipe["config"] } | null = domOpen ?? (() => {
     const replayProved = evidence.stats.semanticNavigationStatus === "complete" &&
       (evidence.stats.semanticNavigationSteps ?? 0) > 0;
     const userOpenedInvoiceSurface = evidence.stats.semanticNavigationStatus === "disabled" &&
-      (evidence.stats.semanticControls > 0 || (evidence.stats.semanticSections ?? 0) > 0);
+      (evidence.stats.documentLinks > 0 || evidence.stats.semanticControls > 0 || (evidence.stats.semanticSections ?? 0) > 0);
     if (!replayProved && !userOpenedInvoiceSurface) return null;
     try {
       return safeEntryUrl(openUrl) === openUrl && new URL(openUrl).origin === evidence.origin
@@ -800,7 +801,7 @@ export function compileCandidates(
       return null;
     }
   })();
-  const semanticCandidate = semanticEvidenceCount > 0 && semanticOpen
+  const semanticCandidate = !domCandidate && semanticEvidenceCount > 0 && semanticOpen
     ? semanticDomRecipe(
         evidence.origin,
         entryUrl,
@@ -1728,6 +1729,7 @@ export async function collectPageEvidenceInPage(
       }
     }
   };
+  const navigationRoutesBeforeReveal = await snapshotNavigationRoutes();
   let semanticNavigationStatus: NonNullable<PageEvidence["stats"]["semanticNavigationStatus"]> =
     topLevelFrame && options.allowSemanticNavigation !== false ? "complete" : "disabled";
   if (semanticNavigationStatus !== "disabled") {
@@ -1740,7 +1742,9 @@ export async function collectPageEvidenceInPage(
   } else {
     await waitForObservedEvidenceQuiescence();
   }
-  const observedNavigationRoutes = await snapshotNavigationRoutes();
+  const navigationRoutesAfterReveal = await snapshotNavigationRoutes();
+  const routesBeforeReveal = new Set(navigationRoutesBeforeReveal);
+  const observedNavigationRoutes = navigationRoutesAfterReveal.filter((route) => !routesBeforeReveal.has(route));
 
   const usefulEvidencePresent = () => Boolean(
     document.querySelector(routePolicy.documentSelector) ||
@@ -2637,10 +2641,9 @@ function findLikelyDocumentLinks(html: string, baseUrl: string, pageTitle?: stri
       const providerDocument = Boolean(documentProviderForUrl(url));
       const directDocument =
         path.endsWith(".pdf") || /(?:^|\/)download(?:\/|$)/i.test(path) ||
-        /(?:^|\/)pdf(?:\/|$)/i.test(path) || /^\/account\/receipt\//i.test(path) ||
+        /(?:^|\/)pdf(?:\/|$)/i.test(path) ||
         providerDocument;
-      const knownInvoiceDocument = /^\/account\/receipt\//i.test(path) ||
-        (url.hostname === "invoice.stripe.com" && /^\/i\/[^/]+\/[^/]+$/.test(path));
+      const knownInvoiceDocument = url.hostname === "invoice.stripe.com" && /^\/i\/[^/]+\/[^/]+$/.test(path);
       const linkHasInvoiceContext = invoiceContext.test(`${path} ${attributes}`);
       if (knownInvoiceDocument || ((explicitDownload || directDocument) && (pageHasInvoiceContext || linkHasInvoiceContext))) {
         links.add(url.toString());

@@ -227,8 +227,9 @@ supplier by adding another guessed page.
   credentials, and page HTML do not enter diagnostics, checkpoints, or route
   memory.
 - Candidate ranking is deterministic for identical sanitized evidence.
-- Static common routes remain bounded, generic, and lowest priority. This plan
-  adds no supplier-specific route literal.
+- Static common-route generation was removed in discovery engine 41. Common
+  billing words rank only application-exposed URLs and semantic context; no
+  unobserved route is assembled.
 - `safeEntryUrl` remains fail-closed. A replay fix must prove where a tenant
   binding comes from; it must not reclassify opaque path values as safe merely
   because a later segment says `billing`.

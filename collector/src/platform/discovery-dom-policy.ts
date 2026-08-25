@@ -20,6 +20,7 @@ export const DISCOVERY_DOM_POLICY = {
   ] as const,
   controlSelector: [
     "button",
+    "a[href]",
     "a:not([href])",
     '[role="button"]',
     '[role="menuitem"]',
@@ -64,7 +65,7 @@ export const DISCOVERY_DOM_POLICY = {
   ].join(","),
   contextSelector: 'tr,[role="row"],li,[role="listitem"],article,section',
   tableSelector: 'table,[role="table"],[role="grid"]',
-  explicitActionPattern: "(?:download|save|pdf|ladda\\s*ner|hämta|herunterladen|télécharger|descargar|baixar|scarica|downloaden)",
+  explicitActionPattern: "(?:download|save|get|pdf|ladda\\s*ner|hämta|herunterladen|télécharger|descargar|baixar|scarica|downloaden)",
   strongDocumentPattern: "(?:pdf|receipt|invoice|kvitto|faktura|beleg|rechnung|reçu|facture|recibo|factura|ricevuta|fattura)",
   documentIconPattern: "(?:^|[\\s_-])(?:download|file-down|file-text|receipt|scroll-text|document|invoice|pdf)(?:$|[\\s_-])",
   invoiceContextPattern: "(?:billing|past\\s+invoices?|invoice\\s+history|receipt\\s+history|statement|receipt|invoice|kvitto|faktura|beleg|rechnung|reçu|facture|recibo|factura|ricevuta|fattura)",

@@ -87,6 +87,36 @@ describe("discovery route fidelity", () => {
     }
   });
 
+  it("can verify an active-only direct link without persisting its opaque route", () => {
+    const candidates = compileCandidates(
+      {
+        ...base,
+        url: "https://vendor.example/9012345678901/private/billing",
+        html: '<html><body><h1>Invoices</h1><a href="/documents/invoice.pdf" aria-label="More"></a></body></html>',
+        resources: [],
+        stats: {
+          ...base.stats,
+          documentLinks: 1,
+          semanticControls: 0,
+          semanticNavigationSteps: 0,
+          semanticNavigationStatus: "disabled",
+        },
+      },
+      "https://vendor.example/",
+      "Example Vendor",
+      "https://vendor.example/",
+      null,
+    );
+
+    expect(candidates.map((candidate) => candidate.adapterId)).toEqual(["dom-actions"]);
+    const recipe = candidates[0]?.recipe;
+    expect(recipe?.invoices.strategy).toBe("dom");
+    if (recipe?.invoices.strategy === "dom") {
+      expect(recipe.invoices.list.open).toBe("https://vendor.example/");
+      expect(JSON.stringify(recipe)).not.toContain("9012345678901");
+    }
+  });
+
   it("keeps direct document links anchored to the requested route", () => {
     const candidates = compileCandidates(
       {

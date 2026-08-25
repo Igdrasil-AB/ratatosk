@@ -608,14 +608,14 @@ function discoveryCard(): string {
       : discovery.reason === "not_found"
       ? "Open the supplier's billing or invoice page, then search again."
       : emptyResult
-      ? "This account may not include billing access."
+      ? "No safe unfinished route remains. Open the supplier's billing or invoice page, then search again."
       : discovery.message;
     // One step instead of three. "Copy details" left a person holding a blob of
     // JSON and no idea where it was meant to go.
     const diagnostic = discovery.diagnosticAvailable
       ? `<button type="button" class="quiet-link compact" data-action="report-discovery">Report Issue</button>`
       : "";
-    const retry = discovery.reason === "not_found" ? "Open Billing Page &amp; Search Again" : emptyResult ? "Search Again" : "Try Again";
+    const retry = emptyResult && !discovery.canSearchDeeper ? "Open Billing Page &amp; Search Again" : emptyResult ? "Search Again" : "Try Again";
     return `<aside class="supplier-request discovery-failed" role="${emptyResult ? "status" : "alert"}"><span class="supplier-request-mark" aria-hidden="true">${emptyResult ? "–" : "!"}</span><span class="supplier-request-copy"><strong>${title}</strong><small>${esc(detail)}</small></span><span class="discovery-actions">${deep}<button type="button" class="supplier-request-link" data-action="retry-discovery">${retry}</button>${diagnostic}</span></aside>`;
   }
   if (hasAnyDestination() && !page && !state.tabAwarenessEnabled) {
