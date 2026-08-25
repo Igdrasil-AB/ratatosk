@@ -186,6 +186,7 @@ finish() {
 TOTAL_STAGES=4
 SESSION_FILE="artifacts/live/session.json"
 RESULT_FILE="artifacts/live/results.tsv"
+SNAPSHOT_FILE="artifacts/live/snapshots.ndjson"
 
 [[ -f "$SESSION_FILE" ]] || {
   printf 'Run npm run prepare:live-supplier-test -- --browser chrome first.\n' >&2
@@ -195,6 +196,23 @@ RESULT_FILE="artifacts/live/results.tsv"
 EXTENSION_PATH=$(node -e 'const s=require("./artifacts/live/session.json"); process.stdout.write(s.extensionPath)')
 EXPECTED_RUNTIME=$(node -e 'const s=require("./artifacts/live/session.json"); process.stdout.write("v"+s.collectorVersion+" discovery-engine="+s.discoveryEngine+" document-acquisition="+s.documentAcquisition)')
 EXPECTED_CHUNK=$(node -e 'const s=require("./artifacts/live/session.json"); process.stdout.write(s.serviceWorkerChunk.split("/").pop())')
+ACCEPTANCE_NONCE=$(node -e 'process.stdout.write(require("./artifacts/live/session.json").acceptanceNonce)')
+
+capture_snapshot() {
+  local host="$1" stage="$2"
+  step "In the Ratatosk service-worker console, run: chrome.runtime.sendMessage({type:'getLiveAcceptanceSnapshot',hostname:'$host',sessionNonce:'$ACCEPTANCE_NONCE'}).then(r=>copy(JSON.stringify(r.acceptanceSnapshot)))"
+  ask SNAPSHOT_JSON "Paste the copied $stage snapshot:"
+  CAPTURED_SNAPSHOT=$(printf '%s' "$SNAPSHOT_JSON" | npx tsx scripts/validate-live-acceptance-snapshot.ts \
+    --hostname "$host" --stage "$stage" \
+    --collector-version "$(node -e 'process.stdout.write(require("./artifacts/live/session.json").collectorVersion)')" \
+    --discovery-revision "$(node -e 'process.stdout.write(String(require("./artifacts/live/session.json").discoveryEngine))')" \
+    --acquisition-revision "$(node -e 'process.stdout.write(String(require("./artifacts/live/session.json").documentAcquisition))')" \
+    --session-nonce "$ACCEPTANCE_NONCE") || {
+      warn "snapshot did not match the approved hostname, stage, or prepared runtime"
+      return 1
+    }
+  printf '%s\n' "$CAPTURED_SNAPSHOT" >> "$SNAPSHOT_FILE"
+}
 
 banner "Ratatosk live supplier test"
 
@@ -226,6 +244,7 @@ step "Use comma-separated hostnames only — no paths, query strings, account na
 ask SUPPLIER_HOSTS "Supplier hostnames:"
 IFS=',' read -r -a HOSTS <<< "$SUPPLIER_HOSTS"
 : > "$RESULT_FILE"
+: > "$SNAPSHOT_FILE"
 : > "artifacts/live/approved-hosts.txt"
 for raw in "${HOSTS[@]}"; do
   host=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | xargs)
@@ -238,7 +257,7 @@ done
 sort -u "artifacts/live/approved-hosts.txt" -o "artifacts/live/approved-hosts.txt"
 
 stage "Run the bounded supplier matrix"
-printf 'hostname\tfamily\tdestination\tdiscovery\tboundary\tfirst_status\tfirst_accepted\tfirst_actions\tfirst_ledger\tdestination_readback\timmediate_accepted\timmediate_actions\timmediate_ledger\tcadence_accepted\tcadence_actions\tcadence_ledger\tpage_owned_downloads\tresult\n' > "$RESULT_FILE"
+printf 'hostname\tfamily\tdestination_readback\tresult\tboundary\n' > "$RESULT_FILE"
 while IFS= read -r host; do
   say "Supplier: $host"
   step "Switch to the already-open tab for this hostname."
@@ -250,65 +269,58 @@ while IFS= read -r host; do
     step "From the sanitized log or report, copy only result@phase/result (for example list_failed@menu_reveal/not_present)."
     ask BOUNDARY "Closed first boundary:"
     [[ "$BOUNDARY" =~ ^[a-z_]+(@[a-z_]+/[a-z_]+)?$ ]] || { warn "invalid closed boundary"; exit 1; }
-    printf '%s\tna\tna\tfailed\t%s\tna\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\tfailed\n' "$host" "$BOUNDARY" >> "$RESULT_FILE"
+    printf '%s\tna\t0\tfailed\t%s\n' "$host" "$BOUNDARY" >> "$RESULT_FILE"
     continue
   fi
   if [[ "$OUTCOME" == "blocked" ]]; then
-    printf '%s\tna\tna\tblocked\tmanual_handoff\tna\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\tblocked\n' "$host" >> "$RESULT_FILE"
+    printf '%s\tna\t0\tblocked\tmanual_handoff\n' "$host" >> "$RESULT_FILE"
     continue
   fi
 
   ask SUPPLIER_FAMILY "Family (opaque_semantic_spa, server_rendered_documents, or structured_api):"
   [[ "$SUPPLIER_FAMILY" =~ ^(opaque_semantic_spa|server_rendered_documents|structured_api)$ ]] || { warn "invalid supplier family"; exit 1; }
-  ask DESTINATION_KIND "Destination kind (filesystem or igdrasil):"
-  [[ "$DESTINATION_KIND" =~ ^(filesystem|igdrasil)$ ]] || { warn "invalid destination kind"; exit 1; }
-  step "Choose that destination in Ratatosk, then select Connect & Collect."
-  step "When the run ends, use only its sanitized status and numeric counts; do not copy invoice data."
-  ask FIRST_STATUS "First status (ok, partial, or failed):"
-  [[ "$FIRST_STATUS" =~ ^(ok|partial|failed)$ ]] || { warn "invalid first status"; exit 1; }
-  if [[ "$FIRST_STATUS" == "failed" ]]; then
-    ask BOUNDARY "Closed first boundary:"
-    [[ "$BOUNDARY" =~ ^[a-z_]+(@[a-z_]+/[a-z_]+)?$ ]] || { warn "invalid closed boundary"; exit 1; }
-    printf '%s\t%s\t%s\tpreview\t%s\tfailed\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\tfailed\n' "$host" "$SUPPLIER_FAMILY" "$DESTINATION_KIND" "$BOUNDARY" >> "$RESULT_FILE"
+  if ! capture_snapshot "$host" preview; then
+    printf '%s\t%s\t0\tblocked\tsnapshot_invalid\n' "$host" "$SUPPLIER_FAMILY" >> "$RESULT_FILE"
     continue
   fi
-  ask FIRST_ACCEPTED "First-run accepted documents:"
-  ask FIRST_ACTIONS "First-run semantic actions:"
-  ask FIRST_LEDGER "First-run extension ledger delta:"
-  ask DESTINATION_READBACK "First-run destination readback count:"
-  [[ "$FIRST_ACCEPTED" =~ ^[0-9]{1,5}$ && "$FIRST_ACTIONS" =~ ^[0-9]{1,5}$ && "$FIRST_LEDGER" =~ ^[0-9]{1,5}$ && "$DESTINATION_READBACK" =~ ^[0-9]{1,5}$ ]] || { warn "counts must be integers from 0 to 99999"; exit 1; }
+  step "Choose the intended destination in Ratatosk, then select Connect & Collect."
+  step "Wait for the first run to finish, then capture its extension-generated snapshot."
+  if ! capture_snapshot "$host" connected; then
+    ask BOUNDARY "Closed first-run boundary:"
+    [[ "$BOUNDARY" =~ ^[a-z_]+(@[a-z_]+/[a-z_]+)?$ ]] || BOUNDARY="snapshot_invalid"
+    printf '%s\t%s\t0\tfailed\t%s\n' "$host" "$SUPPLIER_FAMILY" "$BOUNDARY" >> "$RESULT_FILE"
+    continue
+  fi
+  ask DESTINATION_READBACK "Documents confirmed in the selected destination:"
+  if [[ ! "$DESTINATION_READBACK" =~ ^[0-9]{1,5}$ ]]; then
+    warn "readback must be an integer from 0 to 99999"
+    printf '%s\t%s\t0\tblocked\tdestination_readback_invalid\n' "$host" "$SUPPLIER_FAMILY" >> "$RESULT_FILE"
+    continue
+  fi
 
   step "Run this connected supplier again immediately."
-  ask IMMEDIATE_ACCEPTED "Immediate accepted documents:"
-  ask IMMEDIATE_ACTIONS "Immediate semantic actions:"
-  ask IMMEDIATE_LEDGER "Immediate ledger delta:"
-  [[ "$IMMEDIATE_ACCEPTED" =~ ^[0-9]{1,5}$ && "$IMMEDIATE_ACTIONS" =~ ^[0-9]{1,5}$ && "$IMMEDIATE_LEDGER" =~ ^[0-9]{1,5}$ ]] || { warn "counts must be integers from 0 to 99999"; exit 1; }
+  step "Wait for it to finish, then capture the next extension-generated snapshot."
+  if ! capture_snapshot "$host" connected; then
+    ask BOUNDARY "Closed immediate-run boundary:"
+    [[ "$BOUNDARY" =~ ^[a-z_]+(@[a-z_]+/[a-z_]+)?$ ]] || BOUNDARY="snapshot_invalid"
+    printf '%s\t%s\t%s\tfailed\t%s\n' "$host" "$SUPPLIER_FAMILY" "$DESTINATION_READBACK" "$BOUNDARY" >> "$RESULT_FILE"
+    continue
+  fi
 
   step "In the Ratatosk service-worker console, run: chrome.alarms.create('collector-sync', { when: Date.now() + 1000 })"
-  step "Wait for the scheduled run to finish, then read the same sanitized counts."
-  ask CADENCE_ACCEPTED "Cadence accepted documents:"
-  ask CADENCE_ACTIONS "Cadence semantic actions:"
-  ask CADENCE_LEDGER "Cadence ledger delta:"
-  ask PAGE_OWNED_DOWNLOADS "Unexpected page-owned downloads across all three runs:"
-  [[ "$CADENCE_ACCEPTED" =~ ^[0-9]{1,5}$ && "$CADENCE_ACTIONS" =~ ^[0-9]{1,5}$ && "$CADENCE_LEDGER" =~ ^[0-9]{1,5}$ && "$PAGE_OWNED_DOWNLOADS" =~ ^[0-9]{1,5}$ ]] || {
-    warn "counts must be integers from 0 to 99999"
-    exit 1
-  }
-
-  MATRIX_RESULT="failed"
-  if (( FIRST_ACCEPTED > 0 && FIRST_LEDGER == FIRST_ACCEPTED && DESTINATION_READBACK == FIRST_ACCEPTED && IMMEDIATE_ACCEPTED == 0 && IMMEDIATE_ACTIONS == 0 && IMMEDIATE_LEDGER == 0 && CADENCE_ACCEPTED == 0 && CADENCE_ACTIONS == 0 && CADENCE_LEDGER == 0 && PAGE_OWNED_DOWNLOADS == 0 )); then
-    MATRIX_RESULT="pass"
-  elif (( FIRST_ACCEPTED == 0 )); then
-    MATRIX_RESULT="blocked_preexisting_history"
+  step "Wait for the scheduled run to finish, then capture the final extension-generated snapshot."
+  if ! capture_snapshot "$host" connected; then
+    ask BOUNDARY "Closed cadence-run boundary:"
+    [[ "$BOUNDARY" =~ ^[a-z_]+(@[a-z_]+/[a-z_]+)?$ ]] || BOUNDARY="snapshot_invalid"
+    printf '%s\t%s\t%s\tfailed\t%s\n' "$host" "$SUPPLIER_FAMILY" "$DESTINATION_READBACK" "$BOUNDARY" >> "$RESULT_FILE"
+    continue
   fi
-  printf '%s\t%s\t%s\tpreview\tnone\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$host" "$SUPPLIER_FAMILY" "$DESTINATION_KIND" "$FIRST_STATUS" "$FIRST_ACCEPTED" "$FIRST_ACTIONS" \
-    "$FIRST_LEDGER" "$DESTINATION_READBACK" "$IMMEDIATE_ACCEPTED" "$IMMEDIATE_ACTIONS" "$IMMEDIATE_LEDGER" \
-    "$CADENCE_ACCEPTED" "$CADENCE_ACTIONS" "$CADENCE_LEDGER" \
-    "$PAGE_OWNED_DOWNLOADS" "$MATRIX_RESULT" >> "$RESULT_FILE"
-  printf '  %s✓ recorded privacy-safe end-to-end outcome: %s%s\n' "$GREEN" "$MATRIX_RESULT" "$RESET"
+  printf '%s\t%s\t%s\tcaptured\tnone\n' "$host" "$SUPPLIER_FAMILY" "$DESTINATION_READBACK" >> "$RESULT_FILE"
+  printf '  %s✓ recorded four privacy-safe extension snapshots%s\n' "$GREEN" "$RESET"
 done < "artifacts/live/approved-hosts.txt"
+
+node -e 'const fs=require("node:fs"); const rows=fs.readFileSync("artifacts/live/results.tsv","utf8").trim().split("\n").slice(1).map(line=>line.split("\t")); const totals={approved:rows.length,captured:rows.filter(row=>row[3]==="captured").length,failed:rows.filter(row=>row[3]==="failed").length,blocked:rows.filter(row=>row[3]==="blocked").length}; fs.writeFileSync("artifacts/live/summary.json",JSON.stringify(totals,null,2)+"\n"); console.log("Session totals: "+JSON.stringify(totals));'
 
 finish
 note "Sanitized session results: $RESULT_FILE"
-note "When every required family says pass, run: npm run build:live-acceptance-receipt"
+note "When every required family is captured, run: npm run build:live-acceptance-receipt"

@@ -168,9 +168,9 @@ a more precise closed cause and a red browser case reproduces it.
 
 - `npm test` does not execute Chrome injection, DNR, service-worker lifetime, or
   a real destination.
-- `scripts/test-chrome-discovery.ts` currently stops at discovery preview; it
-  does not prove PDF resolution, destination acceptance, duplicate commit, or
-  cadence behavior.
+- the discovery mode of `scripts/test-chrome-discovery.ts` stops at preview;
+  its acquisition mode separately proves PDF resolution, destination
+  acceptance, duplicate commit, and cadence behavior.
 - A compiled candidate does not prove its list can reopen.
 - A retained candidate does not prove a valid PDF arrives.
 - A first delivery does not prove the immediate or cadence run is idempotent.
@@ -411,8 +411,9 @@ page source, screenshot containing invoices, or DevTools network body.
   bounded `--repeat`; twenty consecutive `semantic-replay-timeout` runs ended
   at `invoice_section_select/time_cap` in 9.3–9.6 seconds each;
 - the runner rejects terminal-signature drift, enforces a 15-second ceiling,
-  and its `finally` cleanup left no Chromium, fixture server, profile, or
-  temporary directory after both a deliberately failing and a passing run;
+  and its parent trap plus in-process cleanup left no Chromium, fixture server,
+  profile, or temporary directory after passing, failing, and explicit SIGINT
+  exit-130 runs;
 - `prepare:live-supplier-test` requires committed clean source, runs CI and the
   security/package gates, records the exact commit and artifact checksum, and
   mirrors a byte-matching unpacked tree under ignored `artifacts/live/`;
@@ -620,11 +621,14 @@ skip a red supplier-shape case.
   wrapper class, four-menu order, and hydration delay; `blind-synthetic` still
   delivered `1/0/0` documents and activated semantic controls `1/0/0` across
   first, immediate, and real-alarm cadence runs without rebuilding;
-- the signed-in wrapper processes every approved hostname independently and now
-  records family, destination kind, discovery boundary, first/immediate/cadence
-  accepted/action/ledger counts, destination readback, and page-owned download
-  count. It marks zero-first-run evidence as blocked instead of pretending an
-  already-seen document proves acquisition;
+- the signed-in wrapper processes every approved hostname independently and
+  accepts only extension-generated preview/first/immediate/cadence snapshots.
+  Those snapshots bind the runtime, plan count/kinds, selected plan, opaque
+  destination identity, per-session nonce, timestamps, accepted/action/ledger
+  counts, and the action-scope's observed page-owned download count; only the
+  external destination readback count remains an explicit operator observation.
+  A malformed or failed supplier row is isolated and later approved hosts still
+  run;
 - Chrome-control diagnostics found Google Chrome running, but the currently
   selected profile does not have the ChatGPT browser-control extension enabled.
   The wrapper remains the safe fallback, but no supplier tab was exercised in
@@ -657,12 +661,16 @@ verification.
 - `validate:collector-release` reruns acquisition, verifies the ZIP, and then
   requires receipt schema v2 bound to the exact artifact SHA, Collector version,
   discovery revision, acquisition revision, and a seven-day completion window;
-- the validator requires opaque semantic SPA, server-rendered document, and
-  structured API families, at least one Igdrasil readback, positive first-run
+- the validator requires explicit ClickUp completion, distinct opaque supplier
+  tokens, opaque semantic SPA, server-rendered document, and structured API
+  families, at least one Igdrasil readback, positive first-run
   destination/ledger agreement, and zero immediate/cadence accepted documents,
   actions, ledger rows, or page-owned downloads;
-- `build:live-acceptance-receipt` accepts only an all-pass hostname-only TSV,
-  strips every hostname, and writes the ignored release receipt. A transient
+- `build:live-acceptance-receipt` accepts only four ordered extension snapshots
+  per distinct approved hostname, verifies run/destination identity and count
+  deltas, requires ClickUp explicitly, rejects snapshots older than the runtime
+  match or carrying another session nonce, strips every hostname behind a salted
+  opaque token, and writes the ignored release receipt. A transient
   three-family fixture proved builder/validator compatibility and was deleted;
 - release validation still fails closed because no authorized live receipt is
   present. Upload, submission, and publication remain outside this plan and

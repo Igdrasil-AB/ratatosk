@@ -54,7 +54,7 @@ import {
   createIgdrasilConnectIntent,
   validateIgdrasilConnectIntent,
 } from "./igdrasil-connect-intent";
-import type { Message, Response, SourceView } from "./messaging";
+import type { LiveAcceptanceSnapshot, Message, Response, SourceView } from "./messaging";
 import pkg from "../../../package.json";
 import { buildCollectorDiagnostic } from "./diagnostics";
 import { discoverSupplierInTab, removeStaleDiscoveryObserverRegistration, SupplierDiscoveryError } from "./discovery";
@@ -85,9 +85,10 @@ import {
   upsertDiscoveredSupplier,
 } from "./discovered-suppliers";
 import { listCollectorSources, resolveCollectorSource } from "./source-catalog";
-import { formatCollectorRuntimeIdentity } from "./collector-runtime-identity";
+import { COLLECTOR_RUNTIME_IDENTITY, formatCollectorRuntimeIdentity } from "./collector-runtime-identity";
 import { operationalOutcomeLabel } from "../../../src/core/errors";
-import { requiredCandidateOrigins } from "../../../src/core/discovery";
+import { replayPlanKindForRecipe, requiredCandidateOrigins } from "../../../src/core/discovery";
+import { isPublicHostname } from "../../../src/core/origin-policy";
 import { collectFirstWorkingCandidate } from "./discovery-candidates";
 import { withCandidateVerification } from "./discovery-diagnostic";
 import { canContinueSupplierDiscovery } from "./discovery-continuation";
@@ -96,6 +97,7 @@ import { isIgdrasilApiBase } from "../../../src/ingest/igdrasil-sink";
 import { disconnectIgdrasil } from "./igdrasil-disconnect";
 import { isSyncMonth } from "../../../src/core/sync-window";
 import { removeStaleNativeDownloadGuards } from "./document-action-controller";
+import { parseLiveAcceptanceSnapshot } from "../../../src/core/live-acceptance";
 
 console.info(`[collector] ready ${formatCollectorRuntimeIdentity()}`);
 void initializeHostTokenStorage().catch((error: unknown) => {
@@ -477,6 +479,53 @@ async function handle(message: Message): Promise<Response> {
       };
     }
 
+    case "getLiveAcceptanceSnapshot": {
+      const hostname = message.hostname.trim().toLowerCase();
+      if (hostname !== message.hostname || !isPublicHostname(hostname) || !/^[a-f0-9]{32}$/.test(message.sessionNonce)) {
+        return { ok: false, error: "Choose a valid supplier hostname." };
+      }
+      const discovery = await getSupplierDiscoveryStatus();
+      const ledger = await getLedger();
+      if (discovery.stage === "preview" && new URL(discovery.origin).hostname === hostname) {
+        const snapshot: LiveAcceptanceSnapshot = {
+          ...liveAcceptanceEnvelope(hostname, message.sessionNonce),
+          stage: "preview",
+          vendorId: discovery.vendorId,
+          planCount: discovery.planCount,
+          planKinds: [...discovery.planKinds],
+          invoiceClueCount: discovery.candidateCount,
+          baselineLedgerCount: ledger.filter((entry) => entry.vendorId === discovery.vendorId).length,
+        };
+        return { ok: true, acceptanceSnapshot: parseLiveAcceptanceSnapshot(snapshot) };
+      }
+      const source = (await listCollectorSources()).find((candidate) => {
+        try { return new URL(candidate.primaryOrigin).hostname === hostname; } catch { return false; }
+      });
+      const connection = source ? (await getConnections())[source.recipe.id] : undefined;
+      const destination = connection?.destinationId ? await getDestination(connection.destinationId) : undefined;
+      if (
+        !source || source.kind !== "discovered" || !connection || !connection.lastStatus ||
+        !connection.lastAttemptAt || !destination || destination.kind === "unavailable"
+      ) return { ok: false, error: "No completed discovered-supplier run is available for that hostname." };
+      const snapshot: LiveAcceptanceSnapshot = {
+        ...liveAcceptanceEnvelope(hostname, message.sessionNonce),
+        stage: "connected",
+        vendorId: source.recipe.id,
+        selectedPlanKind: replayPlanKindForRecipe(source.recipe),
+        destinationKind: destination.kind,
+        destinationToken: await boundedIdentityToken(connection.destinationId!),
+        run: {
+          recordedAt: new Date(connection.lastAttemptAt).toISOString(),
+          status: connection.lastStatus,
+          acceptedCount: connection.lastCount ?? 0,
+          actionCount: connection.lastDocumentActionCount ?? 0,
+          ledgerCount: ledger.filter((entry) => entry.vendorId === source.recipe.id).length,
+          pageOwnedDownloadDelta: connection.lastPageOwnedDownloadCount ?? 0,
+        },
+      };
+      return { ok: true, acceptanceSnapshot: parseLiveAcceptanceSnapshot(snapshot) };
+    }
+
     case "getDiscoveryStatus":
       return { ok: true, discovery: await getSupplierDiscoveryStatus() };
 
@@ -564,6 +613,28 @@ async function handle(message: Message): Promise<Response> {
       await setSyncSchedule(message.schedule);
       return { ok: true, schedule: await getScheduleInfo() };
   }
+}
+
+function liveAcceptanceEnvelope(
+  hostname: string,
+  sessionNonce: string,
+): Pick<LiveAcceptanceSnapshot, "schema" | "runtime" | "hostname" | "capturedAt" | "sessionNonce"> {
+  return {
+    schema: "ratatosk.live-acceptance-snapshot.v1",
+    runtime: {
+      collectorVersion: COLLECTOR_RUNTIME_IDENTITY.collectorVersion,
+      discoveryRevision: COLLECTOR_RUNTIME_IDENTITY.discoveryEngine,
+      acquisitionRevision: COLLECTOR_RUNTIME_IDENTITY.documentAcquisition,
+    },
+    hostname,
+    capturedAt: new Date().toISOString(),
+    sessionNonce,
+  };
+}
+
+async function boundedIdentityToken(value: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
+  return [...digest.slice(0, 12)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 const connectionInFlight = new Map<string, Promise<Response>>();

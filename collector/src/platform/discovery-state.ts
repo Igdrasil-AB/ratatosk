@@ -4,6 +4,7 @@ import {
   parseDiscoveredSupplierProfile,
   requiredCandidateOrigins,
   extendCandidateDocumentOrigins,
+  replayPlanKindForRecipe,
   type DiscoveredSupplierCandidateSetV1,
   type DiscoveredSupplierProfileV1,
 } from "../../../src/core/discovery";
@@ -18,6 +19,7 @@ import {
 } from "./discovery-explorer";
 import { isSyncMonth } from "../../../src/core/sync-window";
 import { LOCAL_DESTINATION_ID, type DestinationId } from "./storage";
+import type { ReplayPlanKind } from "../../../src/core/types";
 
 const KEY = "supplierDiscovery.v1";
 const ACTIVE_TTL_MS = 15 * 60_000;
@@ -81,6 +83,8 @@ export type DiscoveryStatusView =
     name: string;
     origin: string;
     candidateCount: number;
+    planCount: number;
+    planKinds: readonly ReplayPlanKind[];
     adapterId: DiscoveredSupplierProfileV1["adapter"]["id"];
     requiredOrigins: readonly string[];
     /** A retained plan re-mints the short-lived token this site issues to
@@ -334,6 +338,8 @@ export async function getSupplierDiscoveryStatus(): Promise<DiscoveryStatusView>
       name: state.candidates.displayName,
       origin: state.candidates.primaryOrigin,
       candidateCount: state.candidates.candidates[0].candidateCount,
+      planCount: state.candidates.candidates.length,
+      planKinds: [...new Set(state.candidates.candidates.map((candidate) => replayPlanKindForRecipe(candidate.recipe)))],
       adapterId: state.candidates.candidates[0].adapter.id,
       requiredOrigins: requiredCandidateOrigins(state.candidates),
       // Any retained candidate may be the one that runs, so the disclosure

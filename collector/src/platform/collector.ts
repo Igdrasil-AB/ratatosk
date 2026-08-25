@@ -40,6 +40,8 @@ export interface VendorRunSummary {
   verifiedCount?: number;
   /** Privacy-safe count of semantic document controls activated in this run. */
   documentActionCount?: number;
+  /** Page-owned download responses observed and rejected during this run. */
+  pageOwnedDownloadCount?: number;
   retrieval?: RetrievalCompleteness;
   retrievalProof?: RetrievalProof;
   syncWindow?: SyncWindowStats;
@@ -132,18 +134,25 @@ async function executeRecipeRun(
   }
 
   const { ctx, dispose } = buildRunContext(sinkCompanyId(destination), recipe, fromMonth);
-  const acquisitionMetrics = { documentActions: 0 };
+  const acquisitionMetrics = { documentActions: 0, pageOwnedDownloads: 0 };
   const strategies = buildStrategies(recipe, {
     onSemanticDocumentAction: () => {
       acquisitionMetrics.documentActions = Math.min(10_000, acquisitionMetrics.documentActions + 1);
     },
+    onPageOwnedDownloadObservation: (attempted) => {
+      if (attempted) acquisitionMetrics.pageOwnedDownloads = Math.min(10_000, acquisitionMetrics.pageOwnedDownloads + 1);
+    },
   });
-  const runMetrics = () => ({ documentActionCount: acquisitionMetrics.documentActions });
+  const runMetrics = () => ({
+    documentActionCount: acquisitionMetrics.documentActions,
+    pageOwnedDownloadCount: acquisitionMetrics.pageOwnedDownloads,
+  });
   const recordRunOutcome = (
     patch: Parameters<typeof recordRun>[1],
   ): Promise<void> => recordRun(vendorId, {
     ...patch,
     lastDocumentActionCount: acquisitionMetrics.documentActions,
+    lastPageOwnedDownloadCount: acquisitionMetrics.pageOwnedDownloads,
   });
 
   console.info(`[collector] running "${vendorId}"…`);

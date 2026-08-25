@@ -15,6 +15,7 @@ describe("live acquisition release acceptance", () => {
       acquisitionRevision: 3,
       artifactSha256,
       runtimeIdentityMatched: true,
+      clickupAccepted: true,
       cases: expect.arrayContaining([
         expect.objectContaining({ family: "opaque_semantic_spa" }),
         expect.objectContaining({ family: "server_rendered_documents" }),
@@ -34,16 +35,24 @@ describe("live acquisition release acceptance", () => {
     expect(() => parseSemanticDomAcceptanceReceipt(anotherBuild, "0.8.53", 43, 3, artifactSha256)).toThrow(/artifact SHA-256/);
 
     const missingFamily = receipt();
-    missingFamily.cases[1] = { ...missingFamily.cases[0] };
+    missingFamily.cases[1].family = "opaque_semantic_spa" as never;
     expect(() => parseSemanticDomAcceptanceReceipt(missingFamily, "0.8.53", 43, 3, artifactSha256)).toThrow(/server_rendered_documents/);
 
     const noIgdrasil = receipt();
     noIgdrasil.cases.forEach((entry) => { entry.destinationKind = "filesystem"; });
     expect(() => parseSemanticDomAcceptanceReceipt(noIgdrasil, "0.8.53", 43, 3, artifactSha256)).toThrow(/Igdrasil/);
 
+    const noClickUp = receipt();
+    noClickUp.clickupAccepted = false as never;
+    expect(() => parseSemanticDomAcceptanceReceipt(noClickUp, "0.8.53", 43, 3, artifactSha256)).toThrow(/ClickUp/);
+
     const repeated = receipt();
     repeated.cases[0].cadenceRunActionCount = 1 as never;
     expect(() => parseSemanticDomAcceptanceReceipt(repeated, "0.8.53", 43, 3, artifactSha256)).toThrow(/idempotent/);
+
+    const pageDownload = receipt();
+    pageDownload.cases[0].pageOwnedDownloadDelta = 1 as never;
+    expect(() => parseSemanticDomAcceptanceReceipt(pageDownload, "0.8.53", 43, 3, artifactSha256)).toThrow(/idempotent/);
 
     const wrongReadback = receipt();
     wrongReadback.cases[0].destinationReadbackCount = 0;
@@ -79,12 +88,12 @@ function receipt() {
     acquisitionRevision: 3,
     artifactSha256: "a".repeat(64),
     runtimeIdentityMatched: true as const,
-    unrelatedUserDownloadSameUrlUntouched: true as const,
+    clickupAccepted: true as const,
     completedAt: "2026-08-26T09:00:00.000Z",
     cases: [
-      { ...common, family: "opaque_semantic_spa" as const, destinationKind: "filesystem" as "filesystem" | "igdrasil", firstRunActionCount: 1 },
-      { ...common, family: "server_rendered_documents" as const, destinationKind: "filesystem" as "filesystem" | "igdrasil" },
-      { ...common, family: "structured_api" as const, destinationKind: "igdrasil" as "filesystem" | "igdrasil" },
+      { ...common, supplierToken: "a".repeat(24), family: "opaque_semantic_spa" as const, planCount: 1, planKinds: ["semantic_dom" as const], selectedPlanKind: "semantic_dom" as const, destinationKind: "filesystem" as "filesystem" | "igdrasil", destinationToken: "1".repeat(24), firstRunActionCount: 1 },
+      { ...common, supplierToken: "b".repeat(24), family: "server_rendered_documents" as const, planCount: 1, planKinds: ["exact_dom" as const], selectedPlanKind: "exact_dom" as const, destinationKind: "filesystem" as "filesystem" | "igdrasil", destinationToken: "1".repeat(24) },
+      { ...common, supplierToken: "c".repeat(24), family: "structured_api" as const, planCount: 1, planKinds: ["network" as const], selectedPlanKind: "network" as const, destinationKind: "igdrasil" as "filesystem" | "igdrasil", destinationToken: "2".repeat(24) },
     ],
   };
 }

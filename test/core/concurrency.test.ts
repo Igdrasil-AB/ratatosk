@@ -5,6 +5,7 @@ describe("bounded concurrency", () => {
   it("keeps speculative work bounded and commits exclusive", () => {
     expect(DEFAULT_SAFE_CONCURRENCY).toEqual({
       routeProbes: 4,
+      frameProbes: 2,
       candidatePreviews: 2,
       documentFetches: 3,
       sinkCommits: 1,

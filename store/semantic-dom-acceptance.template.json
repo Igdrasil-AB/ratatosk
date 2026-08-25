@@ -5,12 +5,17 @@
   "acquisitionRevision": 3,
   "artifactSha256": "REPLACE_WITH_EXACT_64_CHARACTER_LOWERCASE_SHA256",
   "runtimeIdentityMatched": true,
-  "unrelatedUserDownloadSameUrlUntouched": true,
+  "clickupAccepted": true,
   "completedAt": "REPLACE_WITH_CURRENT_ISO_TIMESTAMP",
   "cases": [
     {
+      "supplierToken": "REPLACE_WITH_24_CHARACTER_OPAQUE_SUPPLIER_TOKEN",
       "family": "opaque_semantic_spa",
+      "planCount": 1,
+      "planKinds": ["semantic_dom"],
+      "selectedPlanKind": "semantic_dom",
       "destinationKind": "igdrasil",
+      "destinationToken": "REPLACE_WITH_24_CHARACTER_DESTINATION_TOKEN",
       "firstRunAcceptedCount": 1,
       "firstRunActionCount": 1,
       "firstRunLedgerDelta": 1,
@@ -26,8 +31,13 @@
       "pass": true
     },
     {
+      "supplierToken": "REPLACE_WITH_DIFFERENT_24_CHARACTER_OPAQUE_SUPPLIER_TOKEN",
       "family": "server_rendered_documents",
+      "planCount": 1,
+      "planKinds": ["exact_dom"],
+      "selectedPlanKind": "exact_dom",
       "destinationKind": "filesystem",
+      "destinationToken": "REPLACE_WITH_24_CHARACTER_DESTINATION_TOKEN",
       "firstRunAcceptedCount": 1,
       "firstRunActionCount": 0,
       "firstRunLedgerDelta": 1,
@@ -43,8 +53,13 @@
       "pass": true
     },
     {
+      "supplierToken": "REPLACE_WITH_THIRD_24_CHARACTER_OPAQUE_SUPPLIER_TOKEN",
       "family": "structured_api",
+      "planCount": 1,
+      "planKinds": ["network"],
+      "selectedPlanKind": "network",
       "destinationKind": "filesystem",
+      "destinationToken": "REPLACE_WITH_24_CHARACTER_DESTINATION_TOKEN",
       "firstRunAcceptedCount": 1,
       "firstRunActionCount": 0,
       "firstRunLedgerDelta": 1,

@@ -6,10 +6,12 @@ import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium, type BrowserContext, type Page, type Worker } from "playwright-core";
+import type { LiveAcceptanceSnapshot } from "../src/core/live-acceptance";
 
 const FIXTURE_HOST = "discovery-fixture.ratatosk.test";
 const FIXTURE_ORIGIN = `https://${FIXTURE_HOST}`;
 const blindSeed = randomBytes(6).toString("hex");
+const acceptanceNonce = randomBytes(16).toString("hex");
 const BLIND_ROUTE = `/x${blindSeed.slice(0, 6)}/z${blindSeed.slice(6)}`;
 const BLIND_WRAPPER = `w${blindSeed}`;
 const BLIND_DELAY_MS = 200 + Number.parseInt(blindSeed.slice(0, 2), 16) % 700;
@@ -68,8 +70,28 @@ const iterationResults: Array<{
   firstFailure?: { phase: string; result: string };
 }> = [];
 
-const temporary = await mkdtemp(join(tmpdir(), "ratatosk-chrome-discovery-"));
+const suppliedTemporary = process.env.RATATOSK_CHROME_TEST_DIRECTORY;
+const temporary = suppliedTemporary
+  ? validatedTestDirectory(suppliedTemporary)
+  : await mkdtemp(join(tmpdir(), "ratatosk-chrome-discovery-"));
 let context: BrowserContext | undefined;
+let server: ReturnType<typeof createServer> | undefined;
+let cleanupPromise: Promise<void> | undefined;
+const cleanupResources = (): Promise<void> => cleanupPromise ??= (async () => {
+  const activeContext = context;
+  context = undefined;
+  await activeContext?.close().catch(() => undefined);
+  if (server?.listening) {
+    await new Promise<void>((resolvePromise) => server?.close(() => resolvePromise()));
+  }
+  server = undefined;
+  await rm(temporary, { recursive: true, force: true });
+})();
+const stopAfterCleanup = (code: number): void => { void cleanupResources().finally(() => process.exit(code)); };
+const onInterrupt = (): void => stopAfterCleanup(130);
+const onTerminate = (): void => stopAfterCleanup(143);
+process.once("SIGINT", onInterrupt);
+process.once("SIGTERM", onTerminate);
 try {
   const extensionPath = join(temporary, "collector");
   await cp(resolve("dist/collector"), extensionPath, { recursive: true });
@@ -94,7 +116,7 @@ try {
   let opaqueDirectVisits = 0;
   let replayFailureVisits = 0;
   const documentRequests = new Map<string, number>();
-  const server = createServer({
+  server = createServer({
     key: await readFile(keyPath),
     cert: await readFile(certPath),
   }, (request, response) => {
@@ -172,11 +194,12 @@ try {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(fixturePage(path));
   });
+  const fixtureServer = server;
   await new Promise<void>((resolvePromise, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolvePromise);
+    fixtureServer.once("error", reject);
+    fixtureServer.listen(0, "127.0.0.1", resolvePromise);
   });
-  const address = server.address();
+  const address = fixtureServer.address();
   assert(address && typeof address === "object", "fixture server did not bind");
 
   try {
@@ -312,13 +335,12 @@ try {
       await writeFile(join(temporary, "iteration-result.json"), `${JSON.stringify({ results: iterationResults }, null, 2)}\n`);
     }
   } finally {
-    await context?.close();
-    context = undefined;
-    await new Promise<void>((resolvePromise) => server.close(() => resolvePromise()));
+    await cleanupResources();
   }
 } finally {
-  await context?.close();
-  await rm(temporary, { recursive: true, force: true });
+  process.removeListener("SIGINT", onInterrupt);
+  process.removeListener("SIGTERM", onTerminate);
+  await cleanupResources();
 }
 
 function parseIterationOptions(args: readonly string[]): { caseName?: string; repeat: number; acquisition: boolean } {
@@ -331,6 +353,15 @@ function parseIterationOptions(args: readonly string[]): { caseName?: string; re
   if (caseName !== undefined && !/^[a-z0-9-]{1,80}$/.test(caseName)) throw new Error("invalid discovery case name");
   if (!Number.isInteger(repeat) || repeat < 1 || repeat > 20) throw new Error("repeat must be an integer from 1 to 20");
   return { ...(caseName ? { caseName } : {}), repeat, acquisition: args.includes("--acquisition") };
+}
+
+function validatedTestDirectory(value: string): string {
+  const directory = resolve(value);
+  const root = resolve(tmpdir());
+  if (!directory.startsWith(`${root}/ratatosk-chrome-discovery-`)) {
+    throw new Error("browser test directory must be a dedicated temporary directory");
+  }
+  return directory;
 }
 
 async function inspectFixtureFrames(page: Page): Promise<unknown> {
@@ -418,6 +449,11 @@ async function runAcquisition(
   if (preview.stage !== "preview" || !preview.vendorId || preview.adapterId !== expectedAdapter) {
     throw new Error(`unexpected acquisition preview ${JSON.stringify(preview)}`);
   }
+  const hostname = new URL(origin).hostname;
+  const previewSnapshot = (await sendExtensionMessage(extensionPage, {
+    type: "getLiveAcceptanceSnapshot", hostname, sessionNonce: acceptanceNonce,
+  })).acceptanceSnapshot as LiveAcceptanceSnapshot;
+  assert.equal(previewSnapshot.stage, "preview", "live snapshot did not preserve preview evidence");
   await sendExtensionMessage(extensionPage, { type: "beginDiscoveryConnect", vendorId: preview.vendorId, destinationId: "local" });
   const connected = await sendExtensionMessage(extensionPage, { type: "completeDiscoveryConnect", vendorId: preview.vendorId });
   let first = (connected.summaries as RunSummary[] | undefined)?.[0];
@@ -439,10 +475,16 @@ async function runAcquisition(
     }
   }
   if (!first) throw new Error("discovered connection returned no first-run result");
+  const firstSnapshot = (await sendExtensionMessage(extensionPage, {
+    type: "getLiveAcceptanceSnapshot", hostname, sessionNonce: acceptanceNonce,
+  })).acceptanceSnapshot as LiveAcceptanceSnapshot;
 
   const immediateReply = await sendExtensionMessage(extensionPage, { type: "runNow", vendorId: preview.vendorId });
   const immediate = (immediateReply.summaries as RunSummary[] | undefined)?.[0];
   if (!immediate) throw new Error("immediate rerun returned no summary");
+  const immediateSnapshot = (await sendExtensionMessage(extensionPage, {
+    type: "getLiveAcceptanceSnapshot", hostname, sessionNonce: acceptanceNonce,
+  })).acceptanceSnapshot as LiveAcceptanceSnapshot;
   const sourceBeforeCadence = ((await sendExtensionMessage(extensionPage, { type: "listSources" })).sources as Source[])
     .find((source) => source.id === preview.vendorId);
   const attemptBeforeCadence = sourceBeforeCadence?.connection?.lastAttemptAt ?? 0;
@@ -465,6 +507,19 @@ async function runAcquisition(
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
   }
   if (cadenceActionCount === undefined) throw new Error("scheduled acquisition did not complete");
+  const cadenceSnapshot = (await sendExtensionMessage(extensionPage, {
+    type: "getLiveAcceptanceSnapshot", hostname, sessionNonce: acceptanceNonce,
+  })).acceptanceSnapshot as LiveAcceptanceSnapshot;
+  if (
+    previewSnapshot.stage !== "preview" || firstSnapshot.stage !== "connected" ||
+    immediateSnapshot.stage !== "connected" || cadenceSnapshot.stage !== "connected" ||
+    previewSnapshot.planCount < 1 || !previewSnapshot.planKinds.includes(firstSnapshot.selectedPlanKind) ||
+    firstSnapshot.destinationToken !== immediateSnapshot.destinationToken ||
+    firstSnapshot.destinationToken !== cadenceSnapshot.destinationToken ||
+    firstSnapshot.run.acceptedCount !== 1 || immediateSnapshot.run.acceptedCount !== 0 ||
+    immediateSnapshot.run.actionCount !== 0 || cadenceSnapshot.run.acceptedCount !== 0 ||
+    cadenceSnapshot.run.actionCount !== 0
+  ) throw new Error("extension-generated live acceptance snapshots were inconsistent");
   const ledgerAfter = ((await sendExtensionMessage(extensionPage, { type: "getLedger" })).ledger as unknown[]).length;
   const downloadsAfter = await extensionDownloadCount(extensionPage);
   return {

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import pkg from "../package.json";
 import { DOCUMENT_ACQUISITION_REVISION } from "../collector/src/platform/acquisition-revision";
+import type { ReplayPlanKind } from "../src/core/types";
 
 export const SEMANTIC_DOM_ACCEPTANCE_SCHEMA = "ratatosk.semantic-dom-acceptance.v2" as const;
 
@@ -17,8 +18,13 @@ type SupplierFamily = typeof FAMILIES[number];
 type DestinationKind = typeof DESTINATIONS[number];
 
 export interface SemanticDomAcceptanceCase {
+  supplierToken: string;
   family: SupplierFamily;
+  planCount: number;
+  planKinds: ReplayPlanKind[];
+  selectedPlanKind: ReplayPlanKind;
   destinationKind: DestinationKind;
+  destinationToken: string;
   firstRunAcceptedCount: number;
   firstRunActionCount: number;
   firstRunLedgerDelta: number;
@@ -41,7 +47,7 @@ export interface SemanticDomAcceptanceReceipt {
   acquisitionRevision: number;
   artifactSha256: string;
   runtimeIdentityMatched: true;
-  unrelatedUserDownloadSameUrlUntouched: true;
+  clickupAccepted: true;
   completedAt: string;
   cases: SemanticDomAcceptanceCase[];
 }
@@ -57,7 +63,7 @@ export function parseSemanticDomAcceptanceReceipt(
   const raw = value as Record<string, unknown>;
   exactKeys(raw, [
     "schema", "collectorVersion", "discoveryRevision", "acquisitionRevision",
-    "artifactSha256", "runtimeIdentityMatched", "unrelatedUserDownloadSameUrlUntouched",
+    "artifactSha256", "runtimeIdentityMatched", "clickupAccepted",
     "completedAt", "cases",
   ], "receipt");
   if (raw.schema !== SEMANTIC_DOM_ACCEPTANCE_SCHEMA) throw new Error("receipt schema is invalid");
@@ -74,9 +80,7 @@ export function parseSemanticDomAcceptanceReceipt(
     raw.artifactSha256 !== expectedArtifactSha256
   ) throw new Error("receipt must match the exact Collector artifact SHA-256");
   if (raw.runtimeIdentityMatched !== true) throw new Error("receipt must prove the prepared runtime identity");
-  if (raw.unrelatedUserDownloadSameUrlUntouched !== true) {
-    throw new Error("receipt must prove the same-URL unrelated user download remained untouched");
-  }
+  if (raw.clickupAccepted !== true) throw new Error("receipt must prove ClickUp live acceptance");
   if (typeof raw.completedAt !== "string" || !isRecentIsoDate(raw.completedAt, 7)) {
     throw new Error("receipt completion date must be a valid ISO date from the last 7 days");
   }
@@ -84,6 +88,9 @@ export function parseSemanticDomAcceptanceReceipt(
     throw new Error("receipt must contain 3 to 12 bounded live cases");
   }
   const cases = raw.cases.map(parseCase);
+  if (new Set(cases.map((entry) => entry.supplierToken)).size !== cases.length) {
+    throw new Error("receipt supplier cases must be distinct");
+  }
   for (const family of FAMILIES) {
     if (!cases.some((entry) => entry.family === family)) throw new Error(`missing ${family} live acceptance case`);
   }
@@ -97,7 +104,7 @@ export function parseSemanticDomAcceptanceReceipt(
     acquisitionRevision: expectedAcquisitionRevision,
     artifactSha256: raw.artifactSha256,
     runtimeIdentityMatched: true,
-    unrelatedUserDownloadSameUrlUntouched: true,
+    clickupAccepted: true,
     completedAt: raw.completedAt,
     cases,
   };
@@ -107,7 +114,8 @@ function parseCase(value: unknown): SemanticDomAcceptanceCase {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("acceptance case is invalid");
   const raw = value as Record<string, unknown>;
   exactKeys(raw, [
-    "family", "destinationKind", "firstRunAcceptedCount", "firstRunActionCount",
+    "supplierToken", "family", "planCount", "planKinds", "selectedPlanKind",
+    "destinationKind", "destinationToken", "firstRunAcceptedCount", "firstRunActionCount",
     "firstRunLedgerDelta", "destinationReadbackCount", "immediateRunAcceptedCount",
     "immediateRunActionCount", "immediateRunLedgerDelta", "cadenceRunAcceptedCount",
     "cadenceRunActionCount", "cadenceRunLedgerDelta", "pageOwnedDownloadDelta",
@@ -115,6 +123,15 @@ function parseCase(value: unknown): SemanticDomAcceptanceCase {
   ], "acceptance case");
   if (!FAMILIES.includes(raw.family as SupplierFamily)) throw new Error("acceptance family is invalid");
   if (!DESTINATIONS.includes(raw.destinationKind as DestinationKind)) throw new Error("acceptance destination is invalid");
+  const planKinds = Array.isArray(raw.planKinds) ? [...new Set(raw.planKinds)] : [];
+  const allowedPlanKinds: ReplayPlanKind[] = ["network", "embedded", "exact_dom", "typed_dom", "semantic_dom"];
+  if (
+    typeof raw.supplierToken !== "string" || !/^[a-f0-9]{24}$/.test(raw.supplierToken) ||
+    !Number.isInteger(raw.planCount) || Number(raw.planCount) < 1 || Number(raw.planCount) > 3 ||
+    planKinds.length < 1 || planKinds.length > Number(raw.planCount) || planKinds.some((kind) => !allowedPlanKinds.includes(kind as ReplayPlanKind)) ||
+    !allowedPlanKinds.includes(raw.selectedPlanKind as ReplayPlanKind) || !planKinds.includes(raw.selectedPlanKind) ||
+    typeof raw.destinationToken !== "string" || !/^[a-f0-9]{24}$/.test(raw.destinationToken)
+  ) throw new Error("acceptance plan or destination identity is invalid");
   for (const field of [
     "firstRunAcceptedCount", "firstRunActionCount", "firstRunLedgerDelta",
     "destinationReadbackCount", "immediateRunAcceptedCount", "immediateRunActionCount",
