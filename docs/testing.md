@@ -1,5 +1,11 @@
 # Testing a supplier live
 
+For a discovery or replay failure that requires iterative implementation, follow
+[`plans/016-build-iterative-end-to-end-acquisition-lab.md`](../plans/016-build-iterative-end-to-end-acquisition-lab.md).
+That plan defines the red-case, supplier-shape, exact-build, delivery, duplicate,
+cadence, iteration-ledger, and promotion gates. The procedure below is the live
+operator branch of that loop.
+
 ## Built-extension discovery gate
 
 `npm run test:chrome-discovery` builds Collector, loads that unpacked output in
