@@ -44,10 +44,15 @@ describe("release metadata workflow policy", () => {
     execFileSync("bash", ["-n", "scripts/live-supplier-test.sh"]);
     const wizard = readFileSync("scripts/live-supplier-test.sh", "utf8");
     expect(wizard).toContain("serviceWorkerChunk");
+    expect(wizard).toContain('s.state="runtime_matched"');
     expect(wizard).toContain("approved-hosts.txt");
     expect(wizard).toContain("destination_readback");
     expect(wizard).toContain("cadence_accepted");
     expect(wizard).toContain("page_owned_downloads");
     expect(wizard).not.toMatch(/HAR|page source|network body/i);
+
+    const receiptBuilder = readFileSync("scripts/build-live-acceptance-receipt.ts", "utf8");
+    expect(receiptBuilder).toContain('session.state !== "runtime_matched"');
+    expect(receiptBuilder).toContain("new Set(hosts).size !== hosts.length");
   });
 });

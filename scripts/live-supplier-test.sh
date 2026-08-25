@@ -218,6 +218,7 @@ ask RUNTIME_LINE "Paste the ready line:"
   exit 1
 }
 printf '  %s✓ runtime identity matched%s\n' "$GREEN" "$RESET"
+node -e 'const fs=require("node:fs"); const p="artifacts/live/session.json"; const s=JSON.parse(fs.readFileSync(p,"utf8")); s.state="runtime_matched"; s.runtimeMatchedAt=new Date().toISOString(); fs.writeFileSync(p,JSON.stringify(s,null,2)+"\n")'
 
 stage "Approve the supplier tabs"
 step "List the hostnames of the supplier tabs already open and signed in."
