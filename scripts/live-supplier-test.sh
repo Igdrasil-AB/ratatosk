@@ -237,6 +237,7 @@ done
 sort -u "artifacts/live/approved-hosts.txt" -o "artifacts/live/approved-hosts.txt"
 
 stage "Run the bounded supplier matrix"
+printf 'hostname\tfamily\tdestination\tdiscovery\tboundary\tfirst_status\tfirst_accepted\tfirst_actions\tfirst_ledger\tdestination_readback\timmediate_accepted\timmediate_actions\timmediate_ledger\tcadence_accepted\tcadence_actions\tcadence_ledger\tpage_owned_downloads\tresult\n' > "$RESULT_FILE"
 while IFS= read -r host; do
   say "Supplier: $host"
   step "Switch to the already-open tab for this hostname."
@@ -248,9 +249,63 @@ while IFS= read -r host; do
     step "From the sanitized log or report, copy only result@phase/result (for example list_failed@menu_reveal/not_present)."
     ask BOUNDARY "Closed first boundary:"
     [[ "$BOUNDARY" =~ ^[a-z_]+(@[a-z_]+/[a-z_]+)?$ ]] || { warn "invalid closed boundary"; exit 1; }
+    printf '%s\tna\tna\tfailed\t%s\tna\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\tfailed\n' "$host" "$BOUNDARY" >> "$RESULT_FILE"
+    continue
   fi
-  printf '%s\t%s\t%s\n' "$host" "$OUTCOME" "$BOUNDARY" >> "$RESULT_FILE"
-  printf '  %s✓ recorded hostname-only outcome%s\n' "$GREEN" "$RESET"
+  if [[ "$OUTCOME" == "blocked" ]]; then
+    printf '%s\tna\tna\tblocked\tmanual_handoff\tna\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\tblocked\n' "$host" >> "$RESULT_FILE"
+    continue
+  fi
+
+  ask SUPPLIER_FAMILY "Family (opaque_semantic_spa, server_rendered_documents, or structured_api):"
+  [[ "$SUPPLIER_FAMILY" =~ ^(opaque_semantic_spa|server_rendered_documents|structured_api)$ ]] || { warn "invalid supplier family"; exit 1; }
+  ask DESTINATION_KIND "Destination kind (filesystem or igdrasil):"
+  [[ "$DESTINATION_KIND" =~ ^(filesystem|igdrasil)$ ]] || { warn "invalid destination kind"; exit 1; }
+  step "Choose that destination in Ratatosk, then select Connect & Collect."
+  step "When the run ends, use only its sanitized status and numeric counts; do not copy invoice data."
+  ask FIRST_STATUS "First status (ok, partial, or failed):"
+  [[ "$FIRST_STATUS" =~ ^(ok|partial|failed)$ ]] || { warn "invalid first status"; exit 1; }
+  if [[ "$FIRST_STATUS" == "failed" ]]; then
+    ask BOUNDARY "Closed first boundary:"
+    [[ "$BOUNDARY" =~ ^[a-z_]+(@[a-z_]+/[a-z_]+)?$ ]] || { warn "invalid closed boundary"; exit 1; }
+    printf '%s\t%s\t%s\tpreview\t%s\tfailed\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\tfailed\n' "$host" "$SUPPLIER_FAMILY" "$DESTINATION_KIND" "$BOUNDARY" >> "$RESULT_FILE"
+    continue
+  fi
+  ask FIRST_ACCEPTED "First-run accepted documents:"
+  ask FIRST_ACTIONS "First-run semantic actions:"
+  ask FIRST_LEDGER "First-run extension ledger delta:"
+  ask DESTINATION_READBACK "First-run destination readback count:"
+  [[ "$FIRST_ACCEPTED" =~ ^[0-9]{1,5}$ && "$FIRST_ACTIONS" =~ ^[0-9]{1,5}$ && "$FIRST_LEDGER" =~ ^[0-9]{1,5}$ && "$DESTINATION_READBACK" =~ ^[0-9]{1,5}$ ]] || { warn "counts must be integers from 0 to 99999"; exit 1; }
+
+  step "Run this connected supplier again immediately."
+  ask IMMEDIATE_ACCEPTED "Immediate accepted documents:"
+  ask IMMEDIATE_ACTIONS "Immediate semantic actions:"
+  ask IMMEDIATE_LEDGER "Immediate ledger delta:"
+  [[ "$IMMEDIATE_ACCEPTED" =~ ^[0-9]{1,5}$ && "$IMMEDIATE_ACTIONS" =~ ^[0-9]{1,5}$ && "$IMMEDIATE_LEDGER" =~ ^[0-9]{1,5}$ ]] || { warn "counts must be integers from 0 to 99999"; exit 1; }
+
+  step "In the Ratatosk service-worker console, run: chrome.alarms.create('collector-sync', { when: Date.now() + 1000 })"
+  step "Wait for the scheduled run to finish, then read the same sanitized counts."
+  ask CADENCE_ACCEPTED "Cadence accepted documents:"
+  ask CADENCE_ACTIONS "Cadence semantic actions:"
+  ask CADENCE_LEDGER "Cadence ledger delta:"
+  ask PAGE_OWNED_DOWNLOADS "Unexpected page-owned downloads across all three runs:"
+  [[ "$CADENCE_ACCEPTED" =~ ^[0-9]{1,5}$ && "$CADENCE_ACTIONS" =~ ^[0-9]{1,5}$ && "$CADENCE_LEDGER" =~ ^[0-9]{1,5}$ && "$PAGE_OWNED_DOWNLOADS" =~ ^[0-9]{1,5}$ ]] || {
+    warn "counts must be integers from 0 to 99999"
+    exit 1
+  }
+
+  MATRIX_RESULT="failed"
+  if (( FIRST_ACCEPTED > 0 && FIRST_LEDGER == FIRST_ACCEPTED && DESTINATION_READBACK == FIRST_ACCEPTED && IMMEDIATE_ACCEPTED == 0 && IMMEDIATE_ACTIONS == 0 && IMMEDIATE_LEDGER == 0 && CADENCE_ACCEPTED == 0 && CADENCE_ACTIONS == 0 && CADENCE_LEDGER == 0 && PAGE_OWNED_DOWNLOADS == 0 )); then
+    MATRIX_RESULT="pass"
+  elif (( FIRST_ACCEPTED == 0 )); then
+    MATRIX_RESULT="blocked_preexisting_history"
+  fi
+  printf '%s\t%s\t%s\tpreview\tnone\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$host" "$SUPPLIER_FAMILY" "$DESTINATION_KIND" "$FIRST_STATUS" "$FIRST_ACCEPTED" "$FIRST_ACTIONS" \
+    "$FIRST_LEDGER" "$DESTINATION_READBACK" "$IMMEDIATE_ACCEPTED" "$IMMEDIATE_ACTIONS" "$IMMEDIATE_LEDGER" \
+    "$CADENCE_ACCEPTED" "$CADENCE_ACTIONS" "$CADENCE_LEDGER" \
+    "$PAGE_OWNED_DOWNLOADS" "$MATRIX_RESULT" >> "$RESULT_FILE"
+  printf '  %s✓ recorded privacy-safe end-to-end outcome: %s%s\n' "$GREEN" "$MATRIX_RESULT" "$RESET"
 done < "artifacts/live/approved-hosts.txt"
 
 finish

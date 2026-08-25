@@ -616,6 +616,24 @@ skip a red supplier-shape case.
 - ClickUp first/second/cadence acceptance passes from an ordinary page;
 - no acceptance artifact contains account or invoice data.
 
+### Phase 5 evidence (2026-08-26, partial)
+
+- after Collector was already built, the harness generated a new neutral route,
+  wrapper class, four-menu order, and hydration delay; `blind-synthetic` still
+  delivered `1/0/0` documents and activated semantic controls `1/0/0` across
+  first, immediate, and real-alarm cadence runs without rebuilding;
+- the signed-in wrapper processes every approved hostname independently and now
+  records family, destination kind, discovery boundary, first/immediate/cadence
+  accepted/action/ledger counts, destination readback, and page-owned download
+  count. It marks zero-first-run evidence as blocked instead of pretending an
+  already-seen document proves acquisition;
+- Chrome-control diagnostics found Google Chrome running, but the currently
+  selected profile does not have the ChatGPT browser-control extension enabled.
+  The wrapper remains the safe fallback, but no supplier tab was exercised in
+  this run;
+- the authorized three-family and ClickUp rows therefore remain open. No live
+  receipt or release claim was created from synthetic evidence.
+
 ## Phase 6 — Make the learning loop release-blocking
 
 Wire the end-to-end Chromium command and a fresh sanitized live receipt into

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
@@ -8,11 +9,18 @@ import { chromium, type BrowserContext, type Page, type Worker } from "playwrigh
 
 const FIXTURE_HOST = "discovery-fixture.ratatosk.test";
 const FIXTURE_ORIGIN = `https://${FIXTURE_HOST}`;
+const blindSeed = randomBytes(6).toString("hex");
+const BLIND_ROUTE = `/x${blindSeed.slice(0, 6)}/z${blindSeed.slice(6)}`;
+const BLIND_WRAPPER = `w${blindSeed}`;
+const BLIND_DELAY_MS = 200 + Number.parseInt(blindSeed.slice(0, 2), 16) % 700;
+const BLIND_MENU_ORDER = [1, 2, 3, 4].map((value, index, values) =>
+  values[(index + Number.parseInt(blindSeed.slice(2, 4), 16)) % values.length]);
 const ACQUISITION_CASES = [
   { name: "network", host: "network-acquisition.ratatosk.test", route: "/network-acquisition", adapterId: "network-json", expectedActions: 0, fallback: false },
   { name: "direct-dom", host: "direct-acquisition.ratatosk.test", route: "/direct-acquisition", adapterId: "dom-links", expectedActions: 0, fallback: false },
   { name: "semantic-dom", host: "semantic-acquisition.ratatosk.test", route: "/semantic-acquisition", adapterId: "dom-actions", expectedActions: 1, fallback: false },
   { name: "candidate-fallback", host: "fallback-acquisition.ratatosk.test", route: "/fallback-acquisition", adapterId: "network-json", expectedActions: 0, fallback: true },
+  { name: "blind-synthetic", host: "blind-acquisition.ratatosk.test", route: "/blind-home", adapterId: "dom-actions", expectedActions: 1, fallback: false },
 ] as const;
 const NEGATIVE_ACQUISITION_CASES = [
   { name: "invalid-pdf", host: "invalid-acquisition.ratatosk.test", route: "/invalid-acquisition", adapterId: "dom-links", result: "document_invalid" },
@@ -609,6 +617,33 @@ function fixturePage(path: string): string {
   if (path === "/destination-acquisition") {
     return `<!doctype html><html><head><title>Invoices | Destination Retry</title></head><body>
       <h1>Invoices</h1><a href="/documents/destination-retry.pdf">Download invoice</a></body></html>`;
+  }
+  if (path === "/blind-home") {
+    return `<!doctype html><html><head><title>Workspace | Blind Shape</title></head><body>
+      <header>${BLIND_MENU_ORDER.map((value) => `<button aria-haspopup="menu" data-menu="${value}" class="${BLIND_WRAPPER}-${value}">Workspace ${value}</button>`).join("")}</header>
+      <div id="overlay"></div><main id="main"><h1>Workspace home</h1></main>
+      <script>
+        document.querySelectorAll('[data-menu]').forEach(button => button.addEventListener('click', () => {
+          document.querySelector('#overlay').innerHTML = button.getAttribute('data-menu') === '4'
+            ? '<div role="menu"><button id="blind-settings">Settings</button></div>'
+            : '<div role="menu"><button>Activity</button></div>';
+          document.querySelector('#blind-settings')?.addEventListener('click', () => {
+            document.querySelector('#overlay').innerHTML = '<button id="blind-billing">Billing</button>';
+            document.querySelector('#blind-billing').addEventListener('click', () => {
+              setTimeout(() => {
+                history.pushState({}, '', '${BLIND_ROUTE}');
+                document.querySelector('#main').innerHTML = '<h1>Invoices</h1><table><tr data-invoice-id="blind-1"><td>BLIND-1</td><td><button id="blind-download">Download invoice</button></td></tr></table>';
+                document.querySelector('#blind-download').addEventListener('click', () => { fetch('/documents/blind.pdf').catch(() => undefined); });
+              }, ${BLIND_DELAY_MS});
+            });
+          });
+        }));
+      </script></body></html>`;
+  }
+  if (path === BLIND_ROUTE) {
+    return `<!doctype html><html><head><title>Invoices | Blind Shape</title></head><body class="${BLIND_WRAPPER}">
+      <h1>Invoices</h1><table><tr data-invoice-id="blind-1"><td>BLIND-1</td><td><button id="blind-download">Download invoice</button></td></tr></table>
+      <script>document.querySelector('#blind-download').addEventListener('click', () => { fetch('/documents/blind.pdf').catch(() => undefined); });</script></body></html>`;
   }
   if (path === "/") {
     return activeFixtureCase === "semantic-replay-timeout"

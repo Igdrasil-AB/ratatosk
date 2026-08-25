@@ -43,6 +43,9 @@ describe("release metadata workflow policy", () => {
     const wizard = readFileSync("scripts/live-supplier-test.sh", "utf8");
     expect(wizard).toContain("serviceWorkerChunk");
     expect(wizard).toContain("approved-hosts.txt");
+    expect(wizard).toContain("destination_readback");
+    expect(wizard).toContain("cadence_accepted");
+    expect(wizard).toContain("page_owned_downloads");
     expect(wizard).not.toMatch(/HAR|page source|network body/i);
   });
 });
