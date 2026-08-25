@@ -250,6 +250,7 @@ try {
     } else {
       const requestedCase = iterationOptions.caseName ?? process.env.RATATOSK_CHROME_CASE;
     const cases = [
+      { name: "semantic-replay-timeout", route: "/9012345678901/replay-timeout", expected: "failed" },
       { name: "server", route: "/server", expected: "preview" },
       { name: "delayed", route: "/delayed", expected: "preview" },
       { name: "frame", route: "/frame", expected: "preview" },
@@ -258,7 +259,6 @@ try {
       { name: "avatar-menus", route: "/avatar-menus", expected: "preview" },
       { name: "opaque-active", route: "/9012345678901/billing", expected: "preview" },
       { name: "opaque-direct-active", route: "/9012345678901/direct-billing", expected: "preview" },
-      { name: "semantic-replay-timeout", route: "/9012345678901/replay-timeout", expected: "failed" },
       { name: "blocked", route: "/blocked", expected: "preview" },
     ] as const;
     const selectedCases = requestedCase ? cases.filter((item) => item.name === requestedCase) : cases;
