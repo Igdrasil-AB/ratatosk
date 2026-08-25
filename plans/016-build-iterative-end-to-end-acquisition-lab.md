@@ -46,12 +46,12 @@
 - **Supersedes**: Plan 015's remaining iterative debugging and live-release work
 - **Category**: correctness, testing, diagnostics, performance, release safety
 - **Planned at**: commit `b4a84d3`, 2026-08-25
-- **Implementation status**: IN PROGRESS — Phases 0–3 now provide closed replay
+- **Implementation status**: IN PROGRESS — Phases 0–4 now provide closed replay
   tracing, deterministic built-Chromium/live-package control, and the generic
-  supplier-shape corpus on one preview/collection replay executor in Collector
-  0.8.53 / discovery 43. Authorized ClickUp trace readback and Phases 4–6 remain;
-  no exact build has
-  passed delivery, immediate duplicate, and cadence acceptance end to end
+  supplier-shape corpus on one preview/collection replay executor, plus built
+  browser delivery and duplicate proof, in Collector 0.8.53 / discovery 43.
+  Authorized multi-supplier acceptance and Phases 5–6 remain; no exact build has
+  passed that live multi-supplier gate end to end
 
 ## Goal
 
@@ -553,6 +553,27 @@ sink acceptance must not commit identity.
 - a rejected destination is retried on the next run;
 - the test uses the built extension and public message/storage contracts, not a
   direct call into the engine.
+
+### Phase 4 evidence (2026-08-26)
+
+- `npm run test:chrome-acquisition` extends the existing persistent-Chromium
+  harness and drives the built MV3 popup/service worker through public messages;
+- structured-network, direct-DOM, and click-resolved semantic-DOM families each
+  accept and ledger exactly one valid PDF on the first run, then accept zero and
+  create zero downloads on the immediate rerun and a real `collector-sync`
+  Chrome alarm rerun;
+- semantic control activation is exactly `1/0/0`; every other family is
+  `0/0/0`, and total Chrome download delta equals accepted filesystem delivery,
+  proving zero extra page-owned downloads;
+- an invalid PDF closes as `document_invalid`, incomplete cursor traversal as
+  `retrieval_incomplete`, and both leave zero ledger, download, supplier, or
+  seen evidence;
+- a failed network candidate reaches a retained direct-DOM fallback and delivers
+  once; a full pending delivery journal forces `destination_unavailable`, then
+  clearing the destination fault retries and accepts the same document, proving
+  failure before sink acceptance did not commit its identity;
+- teardown leaves no fixture server, browser process, profile, download folder,
+  or temporary extension tree.
 
 ## Phase 5 — Blind and authorized acceptance
 

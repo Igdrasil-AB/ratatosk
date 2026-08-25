@@ -18,6 +18,14 @@ Every case must find a candidate inside the ten-second fast envelope. This gate
 is required by CI and `validate:collector-release`; it complements rather than
 replaces the authorized ClickUp first/second/cadence acceptance below.
 
+`npm run test:chrome-acquisition` uses the same built-extension harness and
+drives the public discovery, connection, run, ledger, schedule, storage, and
+Chrome download contracts through structured-network, direct-DOM, and semantic
+DOM delivery. It requires one first-run file and ledger entry, then zero files
+and zero accepted actions on both an immediate rerun and an actual Chrome alarm
+rerun. It also fails closed for invalid PDFs and incomplete traversal, proves
+candidate fallback, and retries a document after destination rejection.
+
 Fixture tests prove mapping and engine behavior. They cannot prove that a current
 vendor endpoint, browser auth flow, or bot-protection rule still works. Complete
 this test before naming a vendor as supported in a release.
