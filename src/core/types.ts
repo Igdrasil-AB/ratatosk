@@ -115,6 +115,38 @@ export interface RetrievalProof {
 export interface InvoiceListResult {
   refs: InvoiceRef[];
   retrieval: RetrievalProof;
+  /** Privacy-safe browser replay phases. Platform adapters may provide this;
+   * network and embedded strategies omit it. */
+  replay?: ReplayTrace;
+}
+
+export type ReplayPlanKind = "network" | "embedded" | "exact_dom" | "typed_dom" | "semantic_dom";
+export type ReplayPhase =
+  | "shell_create"
+  | "supplier_commit"
+  | "menu_reveal"
+  | "settings_select"
+  | "billing_select"
+  | "invoice_section_select"
+  | "document_enumeration"
+  | "identity_validation";
+export type ReplayPhaseResult =
+  | "complete"
+  | "not_present"
+  | "time_cap"
+  | "action_cap"
+  | "mutation_blocked"
+  | "ambiguous"
+  | "page_left_origin";
+export interface ReplayPhaseAttempt {
+  phase: ReplayPhase;
+  result: ReplayPhaseResult;
+  durationMs: number;
+}
+export interface ReplayTrace {
+  planKind: ReplayPlanKind;
+  phases: ReplayPhaseAttempt[];
+  firstFailure?: Pick<ReplayPhaseAttempt, "phase" | "result">;
 }
 
 /** User-selected invoice issue-month range. Both endpoints are inclusive. */

@@ -1,16 +1,24 @@
-import type { InvoiceMetadataEvidence } from "../../../src/core/types";
+import type {
+  InvoiceMetadataEvidence,
+  ReplayPhase,
+  ReplayPhaseAttempt,
+  ReplayPhaseResult,
+  ReplayTrace,
+} from "../../../src/core/types";
 import {
   AuthExpired,
   AuthFailure,
   DocumentActionFailed,
   DocumentPermissionRequired,
   DomActionFailed,
+  type DocumentActionFailureKind,
 } from "../../../src/core/errors";
 import { exactPublicHttpsOriginPattern } from "../../../src/core/origin-policy";
 import { acquireForegroundTabVisibility } from "./tab-visibility";
 import { SemanticActionObserver } from "./semantic-action-observer";
 import discoveryPageObserverScript from "./discovery-page-observer?script&iife";
 import type { DISCOVERY_DOM_POLICY } from "./discovery-dom-policy";
+import { parseReplayTrace } from "./discovery-diagnostic";
 
 export interface SemanticDocumentActionReference {
   actionId: string;
@@ -29,6 +37,14 @@ export interface SemanticEnumerationResult {
   truncated: boolean;
   navigationSteps: number;
   sectionObserved: boolean;
+  replay: ReplayTrace;
+}
+
+export class ReplayPhaseFailed extends DocumentActionFailed {
+  constructor(kind: DocumentActionFailureKind, readonly replay: ReplayTrace) {
+    super(kind);
+    this.name = "ReplayPhaseFailed";
+  }
 }
 
 export type SemanticResolutionResult =
@@ -52,6 +68,7 @@ type SemanticPageResult =
   | { ok: true; kind: "inline_pdf"; dataUrl: string }
   | {
       ok: false;
+      replay: ReplayTrace;
       code:
         | "auth_expired"
         | "blocked_or_challenged"
@@ -99,27 +116,47 @@ export class DocumentActionController {
     semanticPolicy: typeof DISCOVERY_DOM_POLICY,
     runDeadline: number | null,
   ): Promise<SemanticEnumerationResult> {
-    return this.runGuardedOnTab(tabId, "document_action_side_effect", async () => {
-      const [injection] = await withinDeadline(chrome.scripting.executeScript({
-        target: { tabId },
-        world: "MAIN",
-        func: runSemanticDocumentOperationInPage,
-        args: [
-          { kind: "enumerate", maximumActions } satisfies SemanticPageOperation,
-          [...this.allowedOrigins],
-          semanticPolicy,
-          runDeadline,
-        ],
-      }), runDeadline);
-      const result = parseSemanticEnumeration(injection?.result, this.allowedOrigins);
-      if (result.ambiguousItems > 0) {
-        throw new DocumentActionFailed("document_action_ambiguous", this.vendorId);
+    try {
+      return await this.runGuardedOnTab(tabId, "document_action_side_effect", async () => {
+        const [injection] = await withinDeadline(chrome.scripting.executeScript({
+          target: { tabId },
+          world: "MAIN",
+          func: runSemanticDocumentOperationInPage,
+          args: [
+            { kind: "enumerate", maximumActions } satisfies SemanticPageOperation,
+            [...this.allowedOrigins],
+            semanticPolicy,
+            runDeadline,
+          ],
+        }), runDeadline);
+        const result = parseSemanticEnumeration(injection?.result, this.allowedOrigins);
+        if (result.ambiguousItems > 0) {
+          throw new ReplayPhaseFailed("document_action_ambiguous", withReplayFailure(
+            result.replay, "identity_validation", "ambiguous",
+          ));
+        }
+        if (result.unstableItems > 0) {
+          throw new ReplayPhaseFailed("unstable_action_identity", withReplayFailure(
+            result.replay, "identity_validation", "ambiguous",
+          ));
+        }
+        return result;
+      });
+    } catch (error) {
+      if (error instanceof ReplayPhaseFailed) throw error;
+      if (error instanceof DocumentActionFailed) {
+        const phase = await readCurrentReplayPhase(tabId) ?? "document_enumeration";
+        const result: ReplayPhaseResult = error.kind === "document_action_timeout"
+          ? "time_cap"
+          : error.kind === "document_action_side_effect" ? "mutation_blocked"
+            : error.kind === "document_action_ambiguous" || error.kind === "unstable_action_identity"
+              ? "ambiguous" : "not_present";
+        throw new ReplayPhaseFailed(error.kind, failureReplayTrace(phase, result));
       }
-      if (result.unstableItems > 0) {
-        throw new DocumentActionFailed("unstable_action_identity", this.vendorId);
-      }
-      return result;
-    });
+      throw error;
+    } finally {
+      await clearCurrentReplayPhase(tabId);
+    }
   }
 
   async resolve(
@@ -320,12 +357,67 @@ export class DocumentActionController {
   }
 }
 
+function failureReplayTrace(phase: ReplayPhase, result: ReplayPhaseResult): ReplayTrace {
+  return {
+    planKind: "semantic_dom",
+    phases: [{ phase, result, durationMs: 0 }],
+    firstFailure: { phase, result },
+  };
+}
+
+function withReplayFailure(
+  replay: ReplayTrace,
+  phase: ReplayPhase,
+  result: ReplayPhaseResult,
+): ReplayTrace {
+  const phases = [...replay.phases.filter((item) => item.phase !== phase), { phase, result, durationMs: 0 }];
+  const firstFailure = phases.find((item) => item.result !== "complete");
+  return {
+    ...replay,
+    phases,
+    ...(firstFailure ? { firstFailure: { phase: firstFailure.phase, result: firstFailure.result } } : {}),
+  };
+}
+
+async function readCurrentReplayPhase(tabId: number): Promise<ReplayPhase | undefined> {
+  try {
+    const [injection] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: (): string | undefined => (window as Window & {
+        __ratatoskReplayPhaseV1?: { phase?: string };
+      }).__ratatoskReplayPhaseV1?.phase,
+    });
+    const phase = injection?.result;
+    return phase === "menu_reveal" || phase === "settings_select" || phase === "billing_select" ||
+      phase === "invoice_section_select" || phase === "document_enumeration"
+      ? phase
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function clearCurrentReplayPhase(tabId: number): Promise<void> {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: (): void => {
+      delete (window as Window & { __ratatoskReplayPhaseV1?: unknown }).__ratatoskReplayPhaseV1;
+    },
+  }).catch(() => undefined);
+}
+
 function parseSemanticEnumeration(
   value: unknown,
   allowedOrigins: ReadonlySet<string>,
 ): SemanticEnumerationResult {
   const parsed = parseSemanticPageResult(value, allowedOrigins);
-  if (!parsed.ok) throw semanticPageError(parsed.code);
+  if (!parsed.ok) {
+    const error = semanticPageError(parsed.code);
+    if (error instanceof DocumentActionFailed) throw new ReplayPhaseFailed(error.kind, parsed.replay);
+    throw error;
+  }
   if (parsed.kind !== "enumeration") throw new Error("semantic enumeration result is invalid");
   return {
     directDocuments: parsed.directDocuments,
@@ -338,6 +430,7 @@ function parseSemanticEnumeration(
     truncated: parsed.truncated,
     navigationSteps: parsed.navigationSteps,
     sectionObserved: parsed.sectionObserved,
+    replay: parsed.replay,
   };
 }
 
@@ -358,7 +451,8 @@ function parseSemanticPageResult(
       "action_failed",
     ]);
     if (!codes.has(String(raw.code))) return invalid();
-    return { ok: false, code: raw.code as Extract<SemanticPageResult, { ok: false }>["code"] };
+    const replay = parseReplayTrace(raw.replay as ReplayTrace);
+    return { ok: false, code: raw.code as Extract<SemanticPageResult, { ok: false }>["code"], replay };
   }
   if (raw.ok !== true) return invalid();
   if (raw.kind === "url") {
@@ -374,6 +468,7 @@ function parseSemanticPageResult(
     return { ok: true, kind: "inline_pdf", dataUrl: raw.dataUrl };
   }
   if (raw.kind !== "enumeration") return invalid();
+  const replay = parseReplayTrace(raw.replay as ReplayTrace);
   for (const field of [
     "observedItems",
     "resolvedItems",
@@ -405,6 +500,7 @@ function parseSemanticPageResult(
     truncated: raw.truncated,
     navigationSteps: Number(raw.navigationSteps),
     sectionObserved: raw.sectionObserved,
+    replay,
   };
 }
 
@@ -723,6 +819,26 @@ export async function runSemanticDocumentOperationInPage(
   const billingNavigation = new RegExp(semanticPolicy.billingNavigationPattern, "i");
   const allowed = new Set(allowedOrigins.slice(0, 9));
   const deadline = Math.min(Date.now() + 30_000, runDeadline ?? Number.POSITIVE_INFINITY);
+  const replayPhases: ReplayPhaseAttempt[] = [];
+  const replayWindow = window as Window & { __ratatoskReplayPhaseV1?: { phase: ReplayPhase } };
+  const beginReplayPhase = (phase: ReplayPhase): number => {
+    replayWindow.__ratatoskReplayPhaseV1 = { phase };
+    return Date.now();
+  };
+  const finishReplayPhase = (phase: ReplayPhase, result: ReplayPhaseResult, startedAt: number): void => {
+    const attempt = { phase, result, durationMs: Math.max(0, Math.min(60_000, Date.now() - startedAt)) };
+    const existing = replayPhases.findIndex((item) => item.phase === phase);
+    if (existing >= 0) replayPhases[existing] = attempt;
+    else replayPhases.push(attempt);
+  };
+  const replayTrace = (): ReplayTrace => {
+    const firstFailure = replayPhases.find((item) => item.result !== "complete");
+    return {
+      planKind: "semantic_dom",
+      phases: replayPhases,
+      ...(firstFailure ? { firstFailure: { phase: firstFailure.phase, result: firstFailure.result } } : {}),
+    };
+  };
   const normalize = (value: string | null | undefined, maximum = 500): string =>
     (value ?? "").replace(/\s+/g, " ").trim().slice(0, maximum);
   const visible = (element: HTMLElement): boolean => {
@@ -885,64 +1001,97 @@ export async function runSemanticDocumentOperationInPage(
   let navigationSteps = 0;
   const revealBillingSurface = async (): Promise<void> => {
     if (downloadControls().length > 0) return;
-    let settings: HTMLElement | undefined;
-    for (const trigger of menuTriggers()) {
-      if (Date.now() >= deadline || navigationSteps >= 4) return;
-      safeNavigationClick(trigger);
-      navigationSteps += 1;
-      const menuDeadline = Math.min(deadline, Date.now() + 600);
-      let emptyMenuObservedAt: number | undefined;
-      while (!settings && Date.now() < menuDeadline) {
-        settings = settingsAfterMenu(trigger);
-        if (settings) break;
-        const visibleMenu = Array.from(document.querySelectorAll<HTMLElement>('[role="menu"]')).some(visible);
-        if (visibleMenu) emptyMenuObservedAt ??= Date.now();
-        if (emptyMenuObservedAt !== undefined && Date.now() - emptyMenuObservedAt >= 100) break;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      if (settings) break;
-      (document.activeElement ?? document).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    }
-    if (settings && navigationSteps < 6) {
-      safeNavigationClick(settings);
-      navigationSteps += 1;
-      const billingDeadline = Math.min(deadline, Date.now() + 1_500);
-      let billing = navigationControl(billingNavigation);
-      while (!billing && Date.now() < billingDeadline) {
-        if (downloadControls().length) return;
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        billing = navigationControl(billingNavigation);
-      }
-      if (billing && navigationSteps < 6) {
-        safeNavigationClick(billing);
+    const startedAt = beginReplayPhase("menu_reveal");
+    let menuRevealed = false;
+    let settingsSelected = false;
+    let billingSelected = false;
+    try {
+      let settings: HTMLElement | undefined;
+      for (const trigger of menuTriggers()) {
+        if (Date.now() >= deadline || navigationSteps >= 4) return;
+        safeNavigationClick(trigger);
+        menuRevealed = true;
         navigationSteps += 1;
-        return;
+        const menuDeadline = Math.min(deadline, Date.now() + 600);
+        let emptyMenuObservedAt: number | undefined;
+        while (!settings && Date.now() < menuDeadline) {
+          settings = settingsAfterMenu(trigger);
+          if (settings) break;
+          const visibleMenu = Array.from(document.querySelectorAll<HTMLElement>('[role="menu"]')).some(visible);
+          if (visibleMenu) emptyMenuObservedAt ??= Date.now();
+          if (emptyMenuObservedAt !== undefined && Date.now() - emptyMenuObservedAt >= 100) break;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        if (settings) break;
+        (document.activeElement ?? document).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       }
-    }
-    const tiers = [
-      profileNavigation,
-      settingsNavigation,
-      billingNavigation,
-    ];
-    let mounting = true;
-    for (const tier of tiers) {
-      if (Date.now() >= deadline || navigationSteps >= 3) return;
-      const tierDeadline = mounting ? Math.min(deadline, Date.now() + 3_000) : 0;
-      let control = navigationControl(tier);
-      while (!control && Date.now() < tierDeadline) {
-        if (downloadControls().length) return;
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        control = navigationControl(tier);
+      if (settings && navigationSteps < 6) {
+        const settingsStartedAt = beginReplayPhase("settings_select");
+        safeNavigationClick(settings);
+        settingsSelected = true;
+        finishReplayPhase("settings_select", "complete", settingsStartedAt);
+        navigationSteps += 1;
+        const billingStartedAt = beginReplayPhase("billing_select");
+        const billingDeadline = Math.min(deadline, Date.now() + 1_500);
+        let billing = navigationControl(billingNavigation);
+        while (!billing && Date.now() < billingDeadline) {
+          if (downloadControls().length) {
+            billingSelected = true;
+            finishReplayPhase("billing_select", "complete", billingStartedAt);
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          billing = navigationControl(billingNavigation);
+        }
+        if (billing && navigationSteps < 6) {
+          safeNavigationClick(billing);
+          billingSelected = true;
+          finishReplayPhase("billing_select", "complete", billingStartedAt);
+          navigationSteps += 1;
+          return;
+        }
+        finishReplayPhase("billing_select", Date.now() >= deadline ? "time_cap" : "not_present", billingStartedAt);
       }
-      mounting = Boolean(control);
-      if (!control) continue;
-      safeNavigationClick(control);
-      navigationSteps += 1;
+      const tiers = [profileNavigation, settingsNavigation, billingNavigation];
+      let mounting = true;
+      for (const [index, tier] of tiers.entries()) {
+        if (Date.now() >= deadline || navigationSteps >= 3) return;
+        const tierStartedAt = beginReplayPhase(index === 0 ? "menu_reveal" : index === 1 ? "settings_select" : "billing_select");
+        const tierDeadline = mounting ? Math.min(deadline, Date.now() + 3_000) : 0;
+        let control = navigationControl(tier);
+        while (!control && Date.now() < tierDeadline) {
+          if (downloadControls().length) return;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          control = navigationControl(tier);
+        }
+        mounting = Boolean(control);
+        if (!control) {
+          finishReplayPhase(index === 0 ? "menu_reveal" : index === 1 ? "settings_select" : "billing_select",
+            Date.now() >= deadline ? "time_cap" : "not_present", tierStartedAt);
+          continue;
+        }
+        safeNavigationClick(control);
+        if (index === 0) menuRevealed = true;
+        if (index === 1) settingsSelected = true;
+        if (index === 2) billingSelected = true;
+        finishReplayPhase(index === 0 ? "menu_reveal" : index === 1 ? "settings_select" : "billing_select", "complete", tierStartedAt);
+        navigationSteps += 1;
+      }
+    } finally {
+      const stopped = Date.now() >= deadline ? "time_cap" : "not_present";
+      if (!replayPhases.some((item) => item.phase === "menu_reveal")) finishReplayPhase("menu_reveal", menuRevealed ? "complete" : stopped, startedAt);
+      if (menuRevealed && !replayPhases.some((item) => item.phase === "settings_select")) {
+        finishReplayPhase("settings_select", settingsSelected ? "complete" : stopped, startedAt);
+      }
+      if (settingsSelected && !replayPhases.some((item) => item.phase === "billing_select")) {
+        finishReplayPhase("billing_select", billingSelected ? "complete" : stopped, startedAt);
+      }
     }
   };
   let sectionObserved = false;
   const revealInvoiceSection = async (): Promise<void> => {
     if (downloadControls().length > 0) return;
+    const startedAt = beginReplayPhase("invoice_section_select");
     const section = Array.from(document.querySelectorAll<HTMLElement>(
       semanticPolicy.sectionSelector,
     )).find((element) => {
@@ -960,13 +1109,18 @@ export async function runSemanticDocumentOperationInPage(
       }
       return true;
     });
-    if (!section) return;
+    if (!section) {
+      finishReplayPhase("invoice_section_select", Date.now() >= deadline ? "time_cap" : "not_present", startedAt);
+      return;
+    }
     sectionObserved = true;
     if (section.getAttribute("aria-selected") !== "true") safeNavigationClick(section);
+    finishReplayPhase("invoice_section_select", "complete", startedAt);
   };
   const waitForControls = async (): Promise<HTMLElement[]> => {
     await revealBillingSurface();
     await revealInvoiceSection();
+    const startedAt = beginReplayPhase("document_enumeration");
     let controls = downloadControls();
     let stableCount = -1;
     let stableSince = Date.now();
@@ -982,6 +1136,7 @@ export async function runSemanticDocumentOperationInPage(
       if (!sectionObserved) await revealInvoiceSection();
       controls = downloadControls();
     }
+    finishReplayPhase("document_enumeration", controls.length ? "complete" : Date.now() >= deadline ? "time_cap" : "not_present", startedAt);
     return controls;
   };
   const metadataForElement = (element: Element): InvoiceMetadataEvidence[] => {
@@ -1097,9 +1252,9 @@ export async function runSemanticDocumentOperationInPage(
     return `data:application/pdf;base64,${btoa(binary)}`;
   };
   const controls = await waitForControls();
-  if (Date.now() >= deadline) return { ok: false, code: "document_action_timeout" };
-  if (looksLoggedOut()) return { ok: false, code: "auth_expired" };
-  if (looksChallenged()) return { ok: false, code: "blocked_or_challenged" };
+  if (Date.now() >= deadline) return { ok: false, code: "document_action_timeout", replay: replayTrace() };
+  if (looksLoggedOut()) return { ok: false, code: "auth_expired", replay: replayTrace() };
+  if (looksChallenged()) return { ok: false, code: "blocked_or_challenged", replay: replayTrace() };
 
   const candidates: Array<{
     control: HTMLElement;
@@ -1161,18 +1316,19 @@ export async function runSemanticDocumentOperationInPage(
       truncated: stableActions.length > actions.length,
       navigationSteps,
       sectionObserved,
+      replay: replayTrace(),
     };
   }
 
   const matches = candidates.filter((candidate) => candidate.actionId === operation.actionId);
   if (matches.length !== 1) {
-    return { ok: false, code: matches.length ? "document_action_ambiguous" : "unstable_action_identity" };
+    return { ok: false, code: matches.length ? "document_action_ambiguous" : "unstable_action_identity", replay: replayTrace() };
   }
   const candidate = matches[0];
   if (candidate.control instanceof HTMLAnchorElement && candidate.control.href) {
     let target: URL;
     try { target = new URL(candidate.control.href, location.href); } catch {
-      return { ok: false, code: "action_failed" };
+      return { ok: false, code: "action_failed", replay: replayTrace() };
     }
     if (target.protocol === "blob:" && target.origin === location.origin) {
       const captured = await window.fetch(target.toString())
@@ -1181,19 +1337,19 @@ export async function runSemanticDocumentOperationInPage(
         .catch(() => undefined);
       return captured
         ? { ok: true, kind: "inline_pdf", dataUrl: captured }
-        : { ok: false, code: "action_failed" };
+        : { ok: false, code: "action_failed", replay: replayTrace() };
     }
   }
   if (
     candidate.url || !visible(candidate.control) || candidate.control.closest("form") ||
     unsafe.test(labelOf(candidate.control))
-  ) return { ok: false, code: "document_action_ambiguous" };
+  ) return { ok: false, code: "document_action_ambiguous", replay: replayTrace() };
   const observer = actionObserver();
   if (
     typeof observer?.beginDocumentAction !== "function" ||
     typeof observer.snapshotActionDocuments !== "function" ||
     typeof observer.endDocumentAction !== "function"
-  ) return { ok: false, code: "action_failed" };
+  ) return { ok: false, code: "action_failed", replay: replayTrace() };
   observer.beginDocumentAction();
   try {
     candidate.control.click();
@@ -1210,19 +1366,19 @@ export async function runSemanticDocumentOperationInPage(
     documents = await Promise.resolve(observer.snapshotActionDocuments());
     const unique = [...new Set(documents)].slice(0, 3);
     if (unique.length !== 1) {
-      return { ok: false, code: unique.length > 1 ? "document_action_ambiguous" : "document_action_timeout" };
+      return { ok: false, code: unique.length > 1 ? "document_action_ambiguous" : "document_action_timeout", replay: replayTrace() };
     }
     const value = unique[0];
     if (value.startsWith("data:application/pdf;base64,JVBER")) {
       return { ok: true, kind: "inline_pdf", dataUrl: value };
     }
     let url: URL;
-    try { url = new URL(value); } catch { return { ok: false, code: "action_failed" }; }
-    if (url.protocol !== "https:" || url.username || url.password) return { ok: false, code: "action_failed" };
+    try { url = new URL(value); } catch { return { ok: false, code: "action_failed", replay: replayTrace() }; }
+    if (url.protocol !== "https:" || url.username || url.password) return { ok: false, code: "action_failed", replay: replayTrace() };
     url.hash = "";
     return { ok: true, kind: "url", url: url.toString() };
   } catch {
-    return { ok: false, code: "action_failed" };
+    return { ok: false, code: "action_failed", replay: replayTrace() };
   } finally {
     observer.endDocumentAction();
   }

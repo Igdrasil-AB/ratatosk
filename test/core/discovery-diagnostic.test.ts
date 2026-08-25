@@ -218,6 +218,51 @@ describe("redacted supplier-discovery diagnostics", () => {
     })).toThrow(/probe cause/);
   });
 
+  it("retains a closed candidate replay trace and rejects free-form phase data", () => {
+    const base = {
+      schema: DISCOVERY_DIAGNOSTIC_SCHEMA,
+      site: "vendor.example",
+      runtime: { collectorVersion: "0.8.52", discoveryEngine: 42 },
+      limits: { pages: 15, depth: 3, durationMs: 10_000 },
+      timing: { elapsedMs: 9_700 },
+      pages: { attempted: 1, linked: 0, commonRoutes: 0 },
+      evidence: { jsonResources: 0, observedRequests: 0, replayedRequests: 0, documentLinks: 1, structuredDataPages: 0, crossOriginHosts: [] },
+      candidates: { compiled: 1, previewed: 1, retained: 0 },
+      attempts: [{
+        page: 1,
+        source: "entry",
+        route: "/:id/:segment",
+        adapter: "dom-actions",
+        result: "list_failed",
+        durationMs: 9_600,
+        admission: ["direct_document_link"],
+        replay: {
+          planKind: "semantic_dom",
+          phases: [
+            { phase: "shell_create", result: "complete", durationMs: 20 },
+            { phase: "supplier_commit", result: "complete", durationMs: 400 },
+            { phase: "document_enumeration", result: "time_cap", durationMs: 8_000 },
+          ],
+          firstFailure: { phase: "document_enumeration", result: "time_cap" },
+        },
+      }],
+      termination: "time_cap",
+      result: "limit_reached",
+    } as const;
+
+    expect(parseDiscoveryDiagnostic(base).attempts[0].replay).toEqual(base.attempts[0].replay);
+    expect(() => parseDiscoveryDiagnostic({
+      ...base,
+      attempts: [{
+        ...base.attempts[0],
+        replay: {
+          ...base.attempts[0].replay,
+          phases: [{ phase: "clicked Acme workspace", result: "timeout at /private", durationMs: 1 }],
+        },
+      }],
+    })).toThrow(/replay/i);
+  });
+
   it("accepts the bounded aggregate of per-page document-link counts", () => {
     expect(parseDiscoveryDiagnostic({
       schema: DISCOVERY_DIAGNOSTIC_SCHEMA,

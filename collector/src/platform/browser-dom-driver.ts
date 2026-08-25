@@ -2,6 +2,8 @@ import type {
   DomContinuationSpec,
   DomStep,
   InvoiceMetadataEvidence,
+  ReplayPhaseAttempt,
+  ReplayTrace,
   VendorRecipe,
 } from "../../../src/core/types";
 import type {
@@ -35,6 +37,7 @@ import {
 import { acquireForegroundTabVisibility, type ReleaseForegroundTab } from "./tab-visibility";
 import {
   DocumentActionController,
+  ReplayPhaseFailed,
   type SemanticDocumentActionReference,
 } from "./document-action-controller";
 export { parseDomAdvanceResult } from "./document-action-controller";
@@ -48,6 +51,7 @@ type PageDomRunResult =
       documents?: DomDocumentObservation[];
       actions?: SemanticDocumentActionReference[];
       retrieval: DomPageRetrievalEvidence;
+      replay?: ReplayTrace;
       timedOut?: boolean;
       actionCapReached?: boolean;
     }
@@ -105,6 +109,7 @@ export class BrowserDomDriver implements DomDriver {
       : undefined;
     let exactTab: { tabId: number; created: boolean } | undefined;
     let releaseForegroundTab: ReleaseForegroundTab = async () => undefined;
+    const replayPrefix: ReplayPhaseAttempt[] = [];
     try {
       if (usesSemanticActions) {
         // Some browser applications defer or omit their billing UI when the
@@ -112,17 +117,20 @@ export class BrowserDomDriver implements DomDriver {
         // shell first, foreground it, and only then navigate to the supplier.
         // The document-start observer is already registered for that later
         // navigation.
+        const shellStartedAt = Date.now();
         const shellDeadline = this.deadline(20_000);
         const shell = await withinRunDeadline(
           chrome.tabs.create({ url: "about:blank", active: false }),
           shellDeadline,
         );
         if (shell.id == null) throw new Error("could not open the supplier billing page");
+        replayPrefix.push({ phase: "shell_create", result: "complete", durationMs: Date.now() - shellStartedAt });
         exactTab = { tabId: shell.id, created: true };
         releaseForegroundTab = await acquireForegroundTabVisibility(shell.id);
 
         // Navigation and action execution are independently bounded. Slow SPA
         // startup must not consume the semantic-control budget.
+        const commitStartedAt = Date.now();
         const navigationDeadline = this.deadline(Math.max(20_000, policy?.timeoutMs ?? 0));
         await withinRunDeadline(
           chrome.tabs.update(shell.id, { url: page.toString(), active: true }),
@@ -136,6 +144,7 @@ export class BrowserDomDriver implements DomDriver {
           page.toString(),
           remainingRunMs(navigationDeadline),
         );
+        replayPrefix.push({ phase: "supplier_commit", result: "complete", durationMs: Date.now() - commitStartedAt });
       } else {
         const navigationDeadline = this.deadline(Math.max(20_000, policy?.timeoutMs ?? 0));
         exactTab = await ensureExactTab(
@@ -172,6 +181,7 @@ export class BrowserDomDriver implements DomDriver {
     let termination: "explicit_end" | "continuation_failed" | "repeated_state" | "action_cap" | "document_cap" | "time_cap" = "explicit_end";
     let startedAt = Date.now();
     let runDeadline: number | null = null;
+    let replay: ReplayTrace | undefined;
     try {
       startedAt = Date.now();
       runDeadline = policy ? this.deadline(policy.timeoutMs) : this.expiresAt ?? null;
@@ -208,6 +218,7 @@ export class BrowserDomDriver implements DomDriver {
                 resolvedItems: semantic.resolvedItems,
                 unresolvedItems: semantic.unresolvedItems,
               },
+              replay: withReplayPrefix(semantic.replay, replayPrefix),
               ...(semantic.truncated ? { actionCapReached: true } : {}),
             };
           } else {
@@ -220,6 +231,9 @@ export class BrowserDomDriver implements DomDriver {
             result = parseDomRunResult(injection?.result, this.allowedOrigins);
           }
         } catch (error) {
+          if (error instanceof ReplayPhaseFailed) {
+            throw new ReplayPhaseFailed(error.kind, withReplayPrefix(error.replay, replayPrefix));
+          }
           if (error instanceof DomRunDeadlineExceeded) {
             termination = "time_cap";
             break;
@@ -228,6 +242,7 @@ export class BrowserDomDriver implements DomDriver {
           throw error;
         }
         if (!result.ok) throwDomRunError(result.code, this.recipe.id);
+        if (result.replay) replay = result.replay;
         observedItems += result.retrieval.observedItems;
         resolvedItems += result.retrieval.resolvedItems;
         unresolvedItems += result.retrieval.unresolvedItems;
@@ -328,6 +343,7 @@ export class BrowserDomDriver implements DomDriver {
           resolvedItems,
           unresolvedItems,
         }),
+        ...(replay ? { replay } : {}),
       };
     } finally {
       await releaseForegroundTab();
@@ -884,6 +900,16 @@ function mergeDocumentObservations(
 
 function collectedSize(collected: Record<string, Set<string>>): number {
   return Math.max(0, ...Object.values(collected).map((values) => values.size));
+}
+
+function withReplayPrefix(replay: ReplayTrace, prefix: readonly ReplayPhaseAttempt[]): ReplayTrace {
+  const phases = [...prefix, ...replay.phases.filter((item) => !prefix.some((prefixItem) => prefixItem.phase === item.phase))];
+  const firstFailure = phases.find((item) => item.result !== "complete");
+  return {
+    ...replay,
+    phases,
+    ...(firstFailure ? { firstFailure: { phase: firstFailure.phase, result: firstFailure.result } } : {}),
+  };
 }
 
 function throwDomRunError(code: DomRunErrorCode, vendorId: string): never {

@@ -46,10 +46,10 @@
 - **Supersedes**: Plan 015's remaining iterative debugging and live-release work
 - **Category**: correctness, testing, diagnostics, performance, release safety
 - **Planned at**: commit `b4a84d3`, 2026-08-25
-- **Implementation status**: IN PROGRESS — the existing built-extension harness
-  proves discovery preview across synthetic shapes, but authorized ClickUp still
-  ends at candidate replay `list_failed`; no exact build has passed delivery,
-  immediate duplicate, and cadence acceptance end to end
+- **Implementation status**: IN PROGRESS — Phase 0 replay tracing and the red
+  built-Chromium case are complete locally in Collector 0.8.53 / discovery 43.
+  Authorized ClickUp trace readback and Phases 1–6 remain; no exact build has
+  passed delivery, immediate duplicate, and cadence acceptance end to end
 
 ## Goal
 
@@ -347,6 +347,19 @@ popup support flow.
 - its diagnostic identifies exactly one first failed replay phase;
 - the same trace excludes route, label, selector, tenant, and document values;
 - no discovery behavior changed in this phase.
+
+### Phase 0 evidence (2026-08-26)
+
+- `semantic-replay-timeout` reproduces active evidence, empty cold replay, and
+  failed semantic candidate replay in the built extension;
+- its closed timeline is `shell_create:complete`,
+  `supplier_commit:complete`, `invoice_section_select:time_cap`;
+- `ReplayTrace` is validated by diagnostic schema v11 and rejects free-form
+  phase/result data;
+- console and issue summaries expose only plan kind, closed phase/result, and
+  bounded duration;
+- focused diagnostic/browser/preview/report tests and the full built-browser
+  discovery corpus pass; authorized ClickUp must still read back the new trace.
 
 ## Phase 1 — Add one command for an iteration
 

@@ -70,7 +70,7 @@ describe("candidate preview", () => {
   });
 
   it("verifies a DOM candidate through its on-page document listing without a redundant page GET", async () => {
-    await expect(previewCandidate(recipe)).resolves.toBe(1);
+    await expect(previewCandidate(recipe)).resolves.toMatchObject({ count: 1 });
     expect(runtime.fetch).not.toHaveBeenCalled();
     expect(runtime.list).toHaveBeenCalledOnce();
     const previewRecipe = runtime.list.mock.calls[0][0] as VendorRecipe;
