@@ -109,6 +109,7 @@ try {
       { name: "frame", route: "/frame" },
       { name: "menus", route: "/menus" },
       { name: "semantic", route: "/semantic" },
+      { name: "avatar-menus", route: "/avatar-menus" },
       { name: "opaque-active", route: "/9012345678901/billing" },
       { name: "opaque-direct-active", route: "/9012345678901/direct-billing" },
       { name: "blocked", route: "/blocked" },
@@ -237,6 +238,26 @@ function fixturePage(path: string): string {
             });
           });
         }));
+      </script></body></html>`;
+  }
+  if (path === "/avatar-menus") {
+    return `<!doctype html><html><head><title>Workspace | Avatar Fixture</title></head><body>
+      <header><button role="button" data-testid="personal-avatar-menu">Personal</button>
+        <button role="button" data-testid="workspace-avatar">Acme</button></header>
+      <div id="overlay"></div><main id="main"><h1>Workspace home</h1></main>
+      <script>
+        document.querySelector('[data-testid="personal-avatar-menu"]').addEventListener('click', () => {
+          document.querySelector('#overlay').innerHTML = '<div role="menu"><button>Settings</button></div>';
+        });
+        document.querySelector('[data-testid="workspace-avatar"]').addEventListener('click', () => {
+          document.querySelector('#overlay').innerHTML = '<div role="menu"><button id="workspace-settings">Settings</button></div>';
+          document.querySelector('#workspace-settings').addEventListener('click', () => {
+            document.querySelector('#overlay').innerHTML = '<button id="workspace-billing">Billing</button>';
+            document.querySelector('#workspace-billing').addEventListener('click', () => {
+              document.querySelector('#main').innerHTML = '<h1>Invoices</h1><button data-href="/documents/invoice-1.pdf">Download invoice</button>';
+            });
+          });
+        });
       </script></body></html>`;
   }
   if (path === "/blocked") {

@@ -4,6 +4,7 @@ import {
   deriveSupplierDisplayName,
   exactOriginPattern,
   isBoundedTenantIdentifierSegment,
+  isSafeReadOnlyGraphqlRequest,
   MAX_DISCOVERY_CANDIDATES,
   safeEntryUrl,
   reuseDiscoveredSupplierIdentity,
@@ -20,7 +21,7 @@ import { getArray } from "../../../src/core/jsonpath";
 import { inferRecipe } from "../../../src/core/recorder/infer";
 import type { CapturedEntry, DraftRecipe } from "../../../src/core/recorder/types";
 import { validateRecipe } from "../../../src/core/schema";
-import type { InvoiceRef, VendorRecipe } from "../../../src/core/types";
+import type { InvoiceRef, RequestSpec, VendorRecipe } from "../../../src/core/types";
 import { DEFAULT_SAFE_CONCURRENCY, mapConcurrentInSettleOrder, mapConcurrentOrdered } from "../../../src/core/concurrency";
 import {
   canonicalDocumentProviderUrl,
@@ -1441,16 +1442,21 @@ export async function collectPageEvidenceInPage(
     );
   });
   const semanticMenuTriggers = (): HTMLElement[] => Array.from(document.querySelectorAll<HTMLElement>(
-    'button[aria-haspopup="menu"],button[aria-haspopup="true"],[role="button"][aria-haspopup="menu"],[role="button"][aria-haspopup="true"]',
+    'button,[role="button"],[aria-haspopup="menu"],[aria-haspopup="true"]',
   )).filter((element) => {
     const labels = semanticNavigationLabelsOf(element);
-    return !labels.some((label) => unsafeLabel.test(label)) && !element.closest("form,[role=menu]") &&
+    const declaredMenu = element.getAttribute("aria-haspopup") === "menu" || element.getAttribute("aria-haspopup") === "true";
+    const semanticTrigger = semanticNavigationTrigger.test(structuralNavigationMaterialOf(element));
+    return (declaredMenu || semanticTrigger) && !labels.some((label) => unsafeLabel.test(label)) && !element.closest("form,[role=menu]") &&
       visible(element) && !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true";
   }).sort((left, right) => {
-    const score = (element: HTMLElement): number =>
-      (semanticNavigationTrigger.test(structuralNavigationMaterialOf(element)) ? 100 : 0) +
-      (element.closest('nav,header,[role="navigation"]') ? 20 : 0) +
-      (element.hasAttribute("aria-controls") ? 5 : 0);
+    const score = (element: HTMLElement): number => {
+      const material = structuralNavigationMaterialOf(element);
+      return (semanticNavigationTrigger.test(material) ? 100 : 0) +
+        (/(?:workspace|organization|company|team)/i.test(material) ? 50 : 0) +
+        (element.closest('nav,header,[role="navigation"]') ? 20 : 0) +
+        (element.hasAttribute("aria-controls") ? 5 : 0);
+    };
     return score(right) - score(left);
   }).slice(0, 4);
   const settingsControlAfterMenu = (trigger: HTMLElement): HTMLElement | undefined => {
@@ -2675,6 +2681,9 @@ function directDomRecipe(
         }
       }
     }
+    for (const option of config ?? []) {
+      hosts.add(exactOriginPattern(new URL(option.discover.request.url).origin));
+    }
     return validateRecipe({
       id: "discovered-candidate",
       name: displayName,
@@ -2803,14 +2812,31 @@ function replayableDomOpen(
   const tenantIndex = tenantIndexes[0];
   let tenant: string;
   try { tenant = decodeURIComponent(segments[tenantIndex]); } catch { return null; }
+  const allowedResourceOrigins = new Set([
+    evidence.origin,
+    ...evidence.crossOriginHosts.map((host) => `https://${host}`),
+  ]);
   for (const resource of evidence.resources) {
-    if (
-      (resource.method ?? "GET") !== "GET" || resource.requestBody ||
-      (resource.requestHeaders && Object.keys(resource.requestHeaders).length > 0)
-    ) continue;
     let source: URL;
     try { source = new URL(resource.url); } catch { continue; }
-    if (source.origin !== evidence.origin || source.search || source.hash) continue;
+    if (!allowedResourceOrigins.has(source.origin) || source.hash || source.toString().includes("REDACTED")) continue;
+    let sourceMaterial: string;
+    try { sourceMaterial = decodeURIComponent(`${source.pathname}${source.search}`); } catch { continue; }
+    if (sourceMaterial.includes(tenant)) continue;
+    const method = resource.method ?? "GET";
+    let request: RequestSpec;
+    if (method === "GET") {
+      if (resource.requestBody || (resource.requestHeaders && Object.keys(resource.requestHeaders).length > 0)) continue;
+      request = { url: source.toString() };
+    } else {
+      request = {
+        url: source.toString(),
+        method: "POST",
+        ...(resource.requestHeaders ? { headers: resource.requestHeaders } : {}),
+        ...(resource.requestBody ? { body: resource.requestBody } : {}),
+      };
+      if (!isSafeReadOnlyGraphqlRequest(request) || request.body?.includes(tenant)) continue;
+    }
     let binding: { id: string; path: string } | undefined;
     try { binding = findTypedTenantBinding(JSON.parse(resource.body), tenant); } catch { continue; }
     if (!binding) continue;
@@ -2823,7 +2849,7 @@ function replayableDomOpen(
       url: openUrl,
       config: [{
         id: binding.id,
-        discover: { request: { url: source.toString() }, value: binding.path },
+        discover: { request, value: binding.path },
       }],
     };
   }

@@ -349,6 +349,63 @@ describe("supplier discovery across portal shapes", () => {
     expect(JSON.stringify(profile)).not.toContain(tenant);
   });
 
+  it("templates an opaque route from an observed cross-origin read-only GraphQL scope", async () => {
+    const tenant = "9012345678901";
+    const origin = "https://app.graphql-scope.example";
+    const scopeUrl = "https://api.graphql-scope.example/graphql?operationName=Workspace";
+    const requestBody = JSON.stringify({ query: "query Workspace { viewer { workspace { id } } }", operationName: "Workspace" });
+    const scopeBody = JSON.stringify({ data: { viewer: { workspace: { id: tenant } } } });
+    const portal: Portal = {
+      name: "opaque route with cross-origin GraphQL scope",
+      origin,
+      entryPath: `/${tenant}/home`,
+      routes: [
+        {
+          path: `/${tenant}/home`,
+          hydrateMs: 100,
+          navigations: [{ href: `/${tenant}/surface/r7`, label: "Billing and invoices" }],
+          html: "<html><body>Home</body></html>",
+        },
+        {
+          path: `/${tenant}/surface/r7`,
+          title: "Invoices | GraphQL Scope",
+          hydrateMs: 300,
+          calls: [{
+            url: scopeUrl,
+            method: "POST",
+            requestBody,
+            requestHeaders: { "content-type": "application/json" },
+            body: scopeBody,
+          }],
+          html: '<html><body><h1>Invoices</h1><a href="/documents/july.pdf">Download</a></body></html>',
+        },
+      ],
+      endpoint: (request) => request.url === scopeUrl && request.method === "POST"
+        ? { body: scopeBody }
+        : undefined,
+    };
+
+    const { result } = await discover(portal);
+    const profile = result.candidates.candidates.find((candidate) => candidate.adapter.id === "dom-links")!;
+    expect(profile.recipe.invoices).toMatchObject({
+      strategy: "dom",
+      list: { open: `${origin}/{workspace}/surface/r7` },
+    });
+    expect(profile.recipe.config).toEqual([{
+      id: "workspace",
+      discover: {
+        request: {
+          url: scopeUrl,
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: requestBody,
+        },
+        value: "data.viewer.workspace.id",
+      },
+    }]);
+    expect(JSON.stringify(profile)).not.toContain(tenant);
+  });
+
   it("does not preview a root tenant DOM route when typed scope provenance is absent", async () => {
     const tenant = "9012345678901";
     const portal: Portal = {

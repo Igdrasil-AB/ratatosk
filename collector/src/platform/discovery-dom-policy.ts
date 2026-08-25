@@ -79,7 +79,7 @@ export const DISCOVERY_DOM_POLICY = {
   profileNavigationPattern: "(?:(?:open\\s+)?profile(?:\\s+menu)?|account\\s+menu)$",
   settingsNavigationPattern: `^${SETTINGS_NAVIGATION}$`,
   billingNavigationPattern: `^${BILLING_NAVIGATION}$`,
-  semanticNavigationTriggerPattern: "(?:(?:workspace|organization|account|company|team|profile).{0,80}(?:picker|switcher|menu|toggle)|(?:picker|switcher).{0,80}(?:workspace|organization|account|company|team|profile))",
+  semanticNavigationTriggerPattern: "(?:(?:workspace|organization|account|company|team|profile|personal).{0,80}(?:picker|switcher|menu|toggle|avatar)|(?:picker|switcher|menu|toggle|avatar).{0,80}(?:workspace|organization|account|company|team|profile|personal))",
   stableMs: 350,
 } as const;
 

@@ -227,7 +227,8 @@ supplier by adding another guessed page.
   credentials, and page HTML do not enter diagnostics, checkpoints, or route
   memory.
 - Candidate ranking is deterministic for identical sanitized evidence.
-- Static common-route generation was removed in discovery engine 41. Common
+- Static common-route generation was removed in discovery engine 41 and remains
+  absent in later revisions. Common
   billing words rank only application-exposed URLs and semantic context; no
   unobserved route is assembled.
 - `safeEntryUrl` remains fail-closed. A replay fix must prove where a tenant

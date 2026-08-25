@@ -853,15 +853,21 @@ export async function runSemanticDocumentOperationInPage(
     );
   });
   const menuTriggers = (): HTMLElement[] => Array.from(document.querySelectorAll<HTMLElement>(
-    'button[aria-haspopup="menu"],button[aria-haspopup="true"],[role="button"][aria-haspopup="menu"],[role="button"][aria-haspopup="true"]',
+    'button,[role="button"],[aria-haspopup="menu"],[aria-haspopup="true"]',
   )).filter((element) => {
     const labels = navigationLabelsOf(element);
-    return !labels.some((label) => unsafe.test(label)) && !element.closest("form,[role=menu]") && visible(element);
+    const declaredMenu = element.getAttribute("aria-haspopup") === "menu" || element.getAttribute("aria-haspopup") === "true";
+    const semanticTrigger = semanticNavigationTrigger.test(labelOf(element));
+    return (declaredMenu || semanticTrigger) && !labels.some((label) => unsafe.test(label)) &&
+      !element.closest("form,[role=menu]") && visible(element);
   }).sort((left, right) => {
-    const score = (element: HTMLElement): number =>
-      (semanticNavigationTrigger.test(labelOf(element)) ? 100 : 0) +
-      (element.closest('nav,header,[role="navigation"]') ? 20 : 0) +
-      (element.hasAttribute("aria-controls") ? 5 : 0);
+    const score = (element: HTMLElement): number => {
+      const material = labelOf(element);
+      return (semanticNavigationTrigger.test(material) ? 100 : 0) +
+        (/(?:workspace|organization|company|team)/i.test(material) ? 50 : 0) +
+        (element.closest('nav,header,[role="navigation"]') ? 20 : 0) +
+        (element.hasAttribute("aria-controls") ? 5 : 0);
+    };
     return score(right) - score(left);
   }).slice(0, 4);
   const settingsAfterMenu = (trigger: HTMLElement): HTMLElement | undefined => {
