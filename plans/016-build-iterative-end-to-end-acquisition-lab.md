@@ -87,6 +87,66 @@ The system has learned from a failure only when:
 Changing a timeout, route, selector, or supplier branch without those five
 proofs is not learning.
 
+## Browser and package control
+
+The lab has two explicit browser lanes. They share the same package and outcome
+contract but have different control boundaries.
+
+| Capability | Controlled Chromium lane | Existing signed-in Chrome lane |
+| --- | --- | --- |
+| Build, test, package, checksum | automatic | automatic |
+| Mirror unpacked package to a stable folder | automatic | automatic |
+| Load/reload extension | automatic through Playwright persistent context | automatic only while the Chrome-control connection is healthy; otherwise pause for one user reload |
+| Open supplier tabs | automatic fixture URLs | use already-open authorized tabs; open a URL only when the user supplies it |
+| Read tab state | full synthetic fixture state | hostname, active state, and extension UI only; never cookies, storage, page source, or network bodies |
+| Login, CAPTCHA, MFA | synthetic session | user-owned handoff; the runner never handles credentials |
+| Host permission prompt | automatic test manifest for the synthetic host | user confirms Chrome's exact-origin prompt when required |
+| Run extension UI/service worker | automatic | automatic when Chrome control is healthy; otherwise one guided action per supplier |
+| Verify local destination | isolated temporary Downloads profile | closed extension ledger counts plus user confirmation; do not inspect real invoice contents |
+| Verify Igdrasil destination | local fake in synthetic lane | selected-company ingest receipt and bounded ledger/inbox readback |
+| Immediate and cadence reruns | automatic | automatic after the initial user handoff when browser control remains connected |
+
+### Package-update preflight
+
+Every synthetic or authorized session begins with one command that:
+
+1. verifies the canonical worktree and records the exact commit;
+2. runs the required focused and full gates;
+3. builds `dist/collector`;
+4. packages the ZIP and verifies its SHA-256;
+5. mirrors the unpacked build into one stable development folder;
+6. reloads the extension in the selected browser lane;
+7. reads the service-worker runtime identity;
+8. refuses to continue unless version, discovery revision, acquisition revision,
+   manifest version, and built chunk identity match the prepared artifact.
+
+The public extension cannot reload itself. Existing signed-in Chrome therefore
+requires either the connected Chrome-control channel or one explicit user click
+on Reload in `chrome://extensions`. The runner must report this as a handoff,
+not as an automated success.
+
+### Multi-supplier session
+
+The authorized lane accepts several supplier tabs already open in one Chrome
+profile. It enumerates only hostnames and asks the user to approve the bounded
+test set. For each approved tab, in stable order, it records:
+
+```text
+hostname
+  -> runtime identity matched
+  -> discovery terminal phase
+  -> candidate plan kind/count
+  -> connected destination identity
+  -> first run accepted/action counts
+  -> immediate rerun accepted/action counts
+  -> cadence rerun accepted/action counts
+  -> page-owned download delta
+```
+
+The session report contains no tab URL, title, route, account value, invoice
+identifier, amount, filename, document bytes, or credential. One supplier
+failure is recorded and isolated; it does not skip the remaining approved tabs.
+
 ## Current red baseline
 
 The authoritative live result for Collector `0.8.52`, discovery engine `42`, on
@@ -309,6 +369,17 @@ The runner must:
 7. print one compact phase timeline;
 8. leave no fixture server, profile, download, or temporary extension behind.
 
+Add a preparation command for the authorized lane:
+
+```sh
+npm run prepare:live-supplier-test -- --browser chrome
+```
+
+It performs the package-update preflight above, then either connects to the
+existing Chrome session and lists hostname-only candidate tabs or pauses with
+the exact stable extension folder and one Reload instruction. After reload it
+must verify the runtime identity before enabling supplier tests.
+
 Add a human-in-the-loop wrapper only for authorized signed-in suppliers. It must
 show the exact folder and runtime identity, ask the person to perform one action,
 and accept only the copied sanitized diagnostic. It must never request a HAR,
@@ -429,7 +500,8 @@ must still pass.
 
 ### Authorized supplier acceptance
 
-Use dedicated non-sensitive test accounts for at least:
+Use the approved supplier tabs already open in the user's Chrome profile. Prefer
+dedicated non-sensitive test accounts. The minimum breadth is:
 
 1. one opaque-route semantic SPA (ClickUp-class);
 2. one server-rendered receipt portal (GitHub-class);
@@ -439,6 +511,11 @@ For each supplier, start from an ordinary signed-in page without revealing a
 private route to the engine. Record only the sanitized receipt fields. A supplier
 is not accepted on candidate preview; it must pass delivery, immediate duplicate,
 and cadence duplicate behavior.
+
+The runner processes every approved hostname even when an earlier supplier
+fails. It reports a per-supplier first boundary and a session total. Login, MFA,
+CAPTCHA, an unavailable Chrome-control connection, or an unexpected permission
+prompt pauses only that supplier and requests the smallest user handoff.
 
 Every live miss returns to Step 1 of the learning loop. No live-only patch may
 skip a red supplier-shape case.
@@ -490,6 +567,8 @@ verification.
 | L16 | Cadence is idempotent | real schedule path, zero actions/files |
 | L17 | Live breadth exists | three unrelated authorized supplier families |
 | L18 | Release is exact | artifact SHA plus fresh validated receipt |
+| L19 | Browser runs the prepared package | build identity read back from the service worker after reload |
+| L20 | Several open suppliers are exercised | hostname-only live matrix with isolated per-supplier outcomes |
 
 ## Iteration ledger
 
@@ -513,7 +592,7 @@ data.
 ## Done criteria
 
 - [ ] Phases 0–6 are merged as separate reviewed PRs from clean worktrees.
-- [ ] Acceptance rows L1–L18 have retained non-sensitive evidence.
+- [ ] Acceptance rows L1–L20 have retained non-sensitive evidence.
 - [ ] The current ClickUp replay failure is reproducible by one agent command.
 - [ ] Every live failure accepted during the work exists as a generic shape.
 - [ ] Preview, connected enumeration, and document resolution use one replay
@@ -522,6 +601,10 @@ data.
       deduplication—not candidate preview alone.
 - [ ] Blind route/DOM mutations pass after build without supplier code.
 - [ ] Three unrelated authorized supplier families pass the exact artifact.
+- [ ] The authorized runner processes every approved open supplier tab and
+      isolates failures without retaining browser/account data.
+- [ ] Package mirroring, extension reload, and runtime identity readback pass in
+      both the controlled lane and a connected existing-Chrome lane.
 - [ ] ClickUp passes first/second/cadence acceptance from an ordinary page.
 - [ ] Full CI, browser acquisition, security audit, package verification, and
       release validation pass.
