@@ -27,6 +27,8 @@ import { createSyncMonthWindow, syncMonthWindowVars } from "../../../src/core/sy
 export interface StrategyInstrumentation {
   /** Privacy-safe count only; no action or supplier data crosses this hook. */
   onSemanticDocumentAction?: () => void;
+  /** Optional absolute cap used by no-sink discovery verification. */
+  expiresAt?: number;
 }
 
 export function buildStrategies(
@@ -40,6 +42,7 @@ export function buildStrategies(
           recipe,
           undefined,
           instrumentation.onSemanticDocumentAction,
+          instrumentation.expiresAt,
         ))
       : unavailableDomStrategy,
     html: htmlStrategy,

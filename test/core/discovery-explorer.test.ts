@@ -7,6 +7,7 @@ import {
   MAX_EXPLORATION_DEPTH,
   MAX_EXPLORATION_PAGES,
   explorationProbeOptions,
+  explorationProbeTiming,
   planExplorationTargets,
   rankExplorationQueue,
   runWithinExplorationBudget,
@@ -169,6 +170,23 @@ describe("bounded same-origin discovery exploration", () => {
     expect(parseExplorationCheckpoint({ ...checkpoint, completedTargetKeys: ["tenant_contextual_route|https://app.vendor.example/private"] })).toBeUndefined();
   });
 
+  it("does not collapse distinct replayable routes that share one diagnostic shape", () => {
+    const first = explorationTargetKey({
+      url: "https://app.vendor.example/surface/r7",
+      source: "linked",
+      family: "observed_navigation",
+    });
+    const second = explorationTargetKey({
+      url: "https://app.vendor.example/surface/x2",
+      source: "linked",
+      family: "observed_navigation",
+    });
+
+    expect(first).not.toBe(second);
+    expect(first).toBe("observed_navigation|/surface/r7");
+    expect(second).toBe("observed_navigation|/surface/x2");
+  });
+
   it("preserves an account prefix when planning common billing routes", () => {
     const origin = "https://dash.cloudflare.com";
     const account = "a473171df3249291b4be6fca57bb8444";
@@ -275,6 +293,24 @@ describe("bounded same-origin discovery exploration", () => {
     expect(settled).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     await expect(bounded).resolves.toMatchObject({ message: expect.stringMatching(/deadline/) });
+    vi.useRealTimers();
+  });
+
+  it("reserves time for a page probe to return before its outer watchdog fires", async () => {
+    const timing = explorationProbeTiming(
+      { settleMs: 2_600, maxResources: 12, deadlineMs: 4_200 },
+      10_000,
+    );
+    expect(timing).toEqual({
+      probeOptions: { settleMs: 2_600, maxResources: 12, deadlineMs: 3_600 },
+      watchdogMs: 4_200,
+    });
+
+    vi.useFakeTimers();
+    const serializedEvidence = new Promise<string>((resolve) => setTimeout(() => resolve("evidence"), 4_100));
+    const bounded = runWithinExplorationBudget(serializedEvidence, timing.watchdogMs);
+    await vi.advanceTimersByTimeAsync(4_100);
+    await expect(bounded).resolves.toBe("evidence");
     vi.useRealTimers();
   });
 

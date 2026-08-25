@@ -228,13 +228,22 @@ export class DocumentActionController {
    * probe. This wrapper gives that operation the same download containment
    * invariant without allowing browser metadata to become candidate proof.
    */
-  async runDiscoveryProbe<T>(tabId: number, operation: () => Promise<T>): Promise<T> {
+  async runDiscoveryProbe<T>(
+    tabId: number,
+    operation: () => Promise<T>,
+    options: { blockMutations?: boolean } = {},
+  ): Promise<T> {
     if (!await setPageDocumentActionScope(tabId, true)) {
       throw new DocumentActionFailed("document_action_ambiguous", this.vendorId);
     }
+    let releaseMutationGuard: (() => Promise<void>) | undefined;
     try {
+      if (options.blockMutations) {
+        releaseMutationGuard = await installDiscoveryMutationGuard(tabId);
+      }
       return await this.runGuardedOnTab(tabId, "document_action_side_effect", operation);
     } finally {
+      await releaseMutationGuard?.().catch(() => undefined);
       await setPageDocumentActionScope(tabId, false);
     }
   }
@@ -472,8 +481,53 @@ export async function removeStaleNativeDownloadGuards(): Promise<void> {
   const api = chrome.declarativeNetRequest;
   if (!api?.getSessionRules || !api.updateSessionRules) return;
   const rules = await api.getSessionRules();
-  const removeRuleIds = rules.filter(isNativeDownloadGuardRule).map((rule) => rule.id);
+  const removeRuleIds = rules.filter((rule) => isNativeDownloadGuardRule(rule) || isDiscoveryMutationGuardRule(rule)).map((rule) => rule.id);
   if (removeRuleIds.length) await api.updateSessionRules({ removeRuleIds });
+}
+
+function isDiscoveryMutationGuardRule(rule: chrome.declarativeNetRequest.Rule): boolean {
+  return rule.priority === 2 && rule.action.type === ("block" as chrome.declarativeNetRequest.RuleActionType) &&
+    rule.condition.tabIds?.length === 1 && rule.id >= 1_000_000;
+}
+
+async function installDiscoveryMutationGuard(tabId: number): Promise<() => Promise<void>> {
+  if (!Number.isSafeInteger(tabId) || tabId < 1) throw new Error("invalid discovery tab");
+  // ponytail: Chrome tab ids may exceed DNR's signed rule-id range. The active
+  // discovery width is two; move to a leased id registry only if modulo slots
+  // ever collide in observed Chrome sessions.
+  const methodRuleId = 1_000_000 + (tabId % 400_000) * 2;
+  const unsafeFilters = [
+    "*logout*", "*log-out*", "*signout*", "*sign-out*", "*delete*", "*remove*", "*cancel*", "*checkout*",
+    "*purchase*", "*upgrade*", "*downgrade*", "*authorize*", "*oauth*", "*callback*", "*invite*",
+    "*payment-method*", "*payment_method*", "*payment/method*",
+  ];
+  const unsafeRuleIds = unsafeFilters.map((_filter, index) => methodRuleId + index + 1);
+  const rules = [{
+    id: methodRuleId,
+    priority: 2,
+    action: { type: "block" },
+    condition: {
+      tabIds: [tabId],
+      urlFilter: "|https",
+      requestMethods: ["post", "put", "patch", "delete"],
+    },
+  }, ...unsafeFilters.map((urlFilter, index) => ({
+    id: unsafeRuleIds[index],
+    priority: 2,
+    action: { type: "block" },
+    condition: { tabIds: [tabId], urlFilter, requestMethods: ["get", "head"] },
+  }))];
+  const ruleIds = [methodRuleId, ...unsafeRuleIds];
+  await chrome.declarativeNetRequest.updateSessionRules({
+    removeRuleIds: ruleIds,
+    addRules: rules as unknown as chrome.declarativeNetRequest.Rule[],
+  });
+  let released = false;
+  return async () => {
+    if (released) return;
+    released = true;
+    await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: ruleIds });
+  };
 }
 
 function isNativeDownloadGuardRule(rule: chrome.declarativeNetRequest.Rule): boolean {
@@ -663,6 +717,7 @@ export async function runSemanticDocumentOperationInPage(
   const unsafePath = new RegExp(semanticPolicy.unsafePathPattern, "i");
   const invoiceSectionLabel = new RegExp(semanticPolicy.invoiceSectionPattern, "i");
   const semanticNavigation = new RegExp(semanticPolicy.semanticNavigationPattern, "i");
+  const semanticNavigationTrigger = new RegExp(semanticPolicy.semanticNavigationTriggerPattern, "i");
   const profileNavigation = new RegExp(semanticPolicy.profileNavigationPattern, "i");
   const settingsNavigation = new RegExp(semanticPolicy.settingsNavigationPattern, "i");
   const billingNavigation = new RegExp(semanticPolicy.billingNavigationPattern, "i");
@@ -787,8 +842,8 @@ export async function runSemanticDocumentOperationInPage(
     try { control.click(); } finally { observer?.endDocumentAction?.(); }
   };
   const navigationLabelsOf = (element: Element): string[] => accessibleLabelSources(element, 120);
-  const navigationControl = (tier: RegExp): HTMLElement | undefined => Array.from(
-    document.querySelectorAll<HTMLElement>('button,[role="button"],[role="menuitem"],[role="tab"],a:not([href])'),
+  const navigationControl = (tier: RegExp, root: ParentNode = document): HTMLElement | undefined => Array.from(
+    root.querySelectorAll<HTMLElement>('button,[role="button"],[role="menuitem"],[role="tab"],a:not([href])'),
   ).find((element) => {
     const labels = navigationLabelsOf(element);
     return Boolean(
@@ -797,9 +852,67 @@ export async function runSemanticDocumentOperationInPage(
       !element.closest("form") && visible(element)
     );
   });
+  const menuTriggers = (): HTMLElement[] => Array.from(document.querySelectorAll<HTMLElement>(
+    'button[aria-haspopup="menu"],button[aria-haspopup="true"],[role="button"][aria-haspopup="menu"],[role="button"][aria-haspopup="true"]',
+  )).filter((element) => {
+    const labels = navigationLabelsOf(element);
+    return !labels.some((label) => unsafe.test(label)) && !element.closest("form,[role=menu]") && visible(element);
+  }).sort((left, right) => {
+    const score = (element: HTMLElement): number =>
+      (semanticNavigationTrigger.test(labelOf(element)) ? 100 : 0) +
+      (element.closest('nav,header,[role="navigation"]') ? 20 : 0) +
+      (element.hasAttribute("aria-controls") ? 5 : 0);
+    return score(right) - score(left);
+  }).slice(0, 4);
+  const settingsAfterMenu = (trigger: HTMLElement): HTMLElement | undefined => {
+    const controlledId = trigger.getAttribute("aria-controls");
+    const controlled = controlledId ? document.getElementById(controlledId) : null;
+    const roots = controlled && visible(controlled)
+      ? [controlled]
+      : Array.from(document.querySelectorAll<HTMLElement>('[role="menu"]')).filter(visible);
+    for (const root of roots.slice(0, 4)) {
+      const settings = navigationControl(settingsNavigation, root);
+      if (settings) return settings;
+    }
+    return undefined;
+  };
   let navigationSteps = 0;
   const revealBillingSurface = async (): Promise<void> => {
     if (downloadControls().length > 0) return;
+    let settings: HTMLElement | undefined;
+    for (const trigger of menuTriggers()) {
+      if (Date.now() >= deadline || navigationSteps >= 4) return;
+      safeNavigationClick(trigger);
+      navigationSteps += 1;
+      const menuDeadline = Math.min(deadline, Date.now() + 600);
+      let emptyMenuObservedAt: number | undefined;
+      while (!settings && Date.now() < menuDeadline) {
+        settings = settingsAfterMenu(trigger);
+        if (settings) break;
+        const visibleMenu = Array.from(document.querySelectorAll<HTMLElement>('[role="menu"]')).some(visible);
+        if (visibleMenu) emptyMenuObservedAt ??= Date.now();
+        if (emptyMenuObservedAt !== undefined && Date.now() - emptyMenuObservedAt >= 100) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      if (settings) break;
+      (document.activeElement ?? document).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    }
+    if (settings && navigationSteps < 6) {
+      safeNavigationClick(settings);
+      navigationSteps += 1;
+      const billingDeadline = Math.min(deadline, Date.now() + 1_500);
+      let billing = navigationControl(billingNavigation);
+      while (!billing && Date.now() < billingDeadline) {
+        if (downloadControls().length) return;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        billing = navigationControl(billingNavigation);
+      }
+      if (billing && navigationSteps < 6) {
+        safeNavigationClick(billing);
+        navigationSteps += 1;
+        return;
+      }
+    }
     const tiers = [
       profileNavigation,
       settingsNavigation,

@@ -374,6 +374,12 @@ export function createSimulation(portal: Portal): Simulation {
         semanticSections: hydrated ? route!.semanticSections ?? 0 : 0,
         semanticControlsRejected: 0,
         semanticNavigationSteps: 0,
+        semanticNavigationStatus: options.allowSemanticNavigation === false
+          ? "disabled" as const
+          : (route?.semanticRevealMs ?? 0) > semanticRevealMs
+            ? "time_cap" as const
+            : "complete" as const,
+        evidenceDropped: 0,
       },
     };
   };

@@ -43,9 +43,9 @@ describe("exact-entry cold replay", () => {
     expect(discoverySource).not.toMatch(/chrome\.tabs\.update\(tabId,\s*\{/);
     expect(discoverySource).toContain('allowSemanticNavigation: target.source !== "entry"');
     expect(discoverySource).toContain('allowScroll: target.source !== "entry"');
-    expect(discoverySource).toContain('if (topLevelFrame && options.allowSemanticNavigation !== false) {');
-    expect(discoverySource).toContain('await withDiscoveryMutationGuard(async () => {');
-    expect(discoverySource).toContain('await revealSemanticNavigation()');
+    expect(discoverySource).toContain('topLevelFrame && options.allowSemanticNavigation !== false ? "complete" : "disabled"');
+    expect(discoverySource).toContain('const mutationBlocked = await withDiscoveryMutationGuard');
+    expect(discoverySource).toContain('revealStatus = await revealSemanticNavigation(');
     expect(discoverySource).toContain('topLevelFrame && options.allowScroll !== false && !usefulEvidencePresent()');
   });
 

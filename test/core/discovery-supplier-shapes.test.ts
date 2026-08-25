@@ -149,6 +149,53 @@ describe("supplier discovery across portal shapes", () => {
     }
   });
 
+  it("checkpoints an unfinished semantic lane instead of reporting not found", async () => {
+    const portal: Portal = {
+      name: "portal whose fourth menu exceeds the fast lane",
+      origin: "https://app.semantic-lane.example",
+      entryPath: "/home",
+      routes: [{
+        path: "/home",
+        title: "Home | Semantic Lane",
+        hydrateMs: 100,
+        semanticRevealMs: 9_000,
+        html: "<html><body><h1>Home</h1></body></html>",
+      }],
+    };
+    const simulation = createSimulation(portal);
+    const checkpoints: ReturnType<typeof createExplorationCheckpoint>[] = [];
+    active = simulation;
+    simulation.install();
+    try {
+      let failure: unknown;
+      try {
+        await discoverSupplierInTab(simulation.entryTabId, portal.origin, {
+          mode: "fast",
+          onCheckpoint: async (checkpoint) => { checkpoints.push(checkpoint); },
+        });
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toBeInstanceOf(SupplierDiscoveryError);
+      expect((failure as SupplierDiscoveryError).diagnostic).toMatchObject({
+        result: "limit_reached",
+        termination: "time_cap",
+      });
+      expect(checkpoints.at(-1)?.frontier).toContainEqual(expect.objectContaining({
+        source: "entry_replay",
+        route: "/home",
+      }));
+      expect((failure as SupplierDiscoveryError).diagnostic.attempts).toContainEqual(expect.objectContaining({
+        source: "entry_replay",
+        evidence: expect.objectContaining({ semanticNavigationStatus: "time_cap" }),
+      }));
+    } finally {
+      simulation.restore();
+      active = undefined;
+    }
+  });
+
   it("finds an arbitrary invoice route only after the app exposes it through safe SPA navigation", async () => {
     const observedNavigation: Portal = {
       name: "same-document invoice navigation",

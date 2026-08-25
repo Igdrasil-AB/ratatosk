@@ -1,7 +1,7 @@
 {
   "schema": "ratatosk.semantic-dom-acceptance.v1",
   "collectorVersion": "REPLACE_WITH_EXACT_VERSION",
-  "acquisitionRevision": 2,
+  "acquisitionRevision": 3,
   "artifactSha256": "REPLACE_WITH_EXACT_64_CHARACTER_LOWERCASE_SHA256",
   "unrelatedUserDownloadSameUrlUntouched": true,
   "completedAt": "REPLACE_WITH_CURRENT_ISO_TIMESTAMP",

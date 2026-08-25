@@ -85,6 +85,7 @@ export class BrowserDomDriver implements DomDriver {
     private readonly recipe: VendorRecipe,
     private readonly createInlineDocumentStore: () => InlineDocumentStore = () => new InlineDocumentStore(),
     onSemanticDocumentAction: () => void = () => undefined,
+    private readonly expiresAt?: number,
   ) {
     this.allowedOrigins = new Set(recipe.hosts.map((host) => new URL(host.slice(0, -2)).origin));
     this.actionController = new DocumentActionController(
@@ -111,7 +112,7 @@ export class BrowserDomDriver implements DomDriver {
         // shell first, foreground it, and only then navigate to the supplier.
         // The document-start observer is already registered for that later
         // navigation.
-        const shellDeadline = Date.now() + 20_000;
+        const shellDeadline = this.deadline(20_000);
         const shell = await withinRunDeadline(
           chrome.tabs.create({ url: "about:blank", active: false }),
           shellDeadline,
@@ -122,7 +123,7 @@ export class BrowserDomDriver implements DomDriver {
 
         // Navigation and action execution are independently bounded. Slow SPA
         // startup must not consume the semantic-control budget.
-        const navigationDeadline = Date.now() + Math.max(20_000, policy?.timeoutMs ?? 0);
+        const navigationDeadline = this.deadline(Math.max(20_000, policy?.timeoutMs ?? 0));
         await withinRunDeadline(
           chrome.tabs.update(shell.id, { url: page.toString(), active: true }),
           navigationDeadline,
@@ -136,7 +137,7 @@ export class BrowserDomDriver implements DomDriver {
           remainingRunMs(navigationDeadline),
         );
       } else {
-        const navigationDeadline = Date.now() + Math.max(20_000, policy?.timeoutMs ?? 0);
+        const navigationDeadline = this.deadline(Math.max(20_000, policy?.timeoutMs ?? 0));
         exactTab = await ensureExactTab(
           page,
           requiresDisposableDomTab(steps, continuation),
@@ -173,7 +174,7 @@ export class BrowserDomDriver implements DomDriver {
     let runDeadline: number | null = null;
     try {
       startedAt = Date.now();
-      runDeadline = policy ? startedAt + policy.timeoutMs : null;
+      runDeadline = policy ? this.deadline(policy.timeoutMs) : this.expiresAt ?? null;
       for (let action = 0; ; action += 1) {
         if (runDeadline !== null && Date.now() >= runDeadline) {
           termination = "time_cap";
@@ -360,6 +361,10 @@ export class BrowserDomDriver implements DomDriver {
   async dispose(): Promise<void> {
     this.semanticActions.clear();
     this.inlineDocumentOwners.clear();
+  }
+
+  private deadline(maximumMs: number): number {
+    return Math.min(Date.now() + maximumMs, this.expiresAt ?? Number.POSITIVE_INFINITY);
   }
 
   async download(url: string): Promise<{ bytes: ArrayBuffer; contentType: string }> {

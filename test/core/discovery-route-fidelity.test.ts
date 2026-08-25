@@ -30,6 +30,63 @@ describe("discovery route fidelity", () => {
     }
   });
 
+  it("can replay a proved semantic surface from a safe shell without persisting an opaque tenant route", () => {
+    const candidates = compileCandidates(
+      {
+        ...base,
+        url: "https://vendor.example/9012345678901/private/surface",
+        html: "<html><body><h1>Invoices</h1><button>Download invoice</button></body></html>",
+        resources: [],
+        stats: {
+          ...base.stats,
+          semanticControls: 2,
+          semanticNavigationSteps: 2,
+          semanticNavigationStatus: "complete",
+        },
+      },
+      "https://vendor.example/",
+      "Example Vendor",
+      "https://vendor.example/",
+      null,
+    );
+
+    expect(candidates.map((candidate) => candidate.adapterId)).toEqual(["dom-actions"]);
+    const recipe = candidates[0]?.recipe;
+    expect(recipe?.invoices.strategy).toBe("dom");
+    if (recipe?.invoices.strategy === "dom") {
+      expect(recipe.invoices.list.open).toBe("https://vendor.example/");
+      expect(JSON.stringify(recipe)).not.toContain("9012345678901");
+    }
+  });
+
+  it("can verify a user-opened opaque billing surface from a safe shell", () => {
+    const candidates = compileCandidates(
+      {
+        ...base,
+        url: "https://vendor.example/9012345678901/private/billing",
+        html: "<html><body><h1>Invoices</h1><button>Download invoice</button></body></html>",
+        resources: [],
+        stats: {
+          ...base.stats,
+          semanticControls: 1,
+          semanticNavigationSteps: 0,
+          semanticNavigationStatus: "disabled",
+        },
+      },
+      "https://vendor.example/",
+      "Example Vendor",
+      "https://vendor.example/",
+      null,
+    );
+
+    const recipe = candidates.find((candidate) => candidate.adapterId === "dom-actions")?.recipe;
+    expect(recipe?.invoices.strategy).toBe("dom");
+    if (recipe?.invoices.strategy === "dom") {
+      expect(recipe.invoices.list.open).toBe("https://vendor.example/");
+      expect(JSON.stringify(recipe)).not.toContain("9012345678901");
+    }
+  });
+
   it("keeps direct document links anchored to the requested route", () => {
     const candidates = compileCandidates(
       {

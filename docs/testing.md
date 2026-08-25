@@ -1,5 +1,17 @@
 # Testing a supplier live
 
+## Built-extension discovery gate
+
+`npm run test:chrome-discovery` builds Collector, loads that unpacked output in
+Playwright Chromium, and drives the real service worker, MAIN-world injection,
+frames, DNR guards, tab cleanup, serialization, and no-sink candidate preview.
+Its synthetic HTTPS portal covers immediate and delayed server links, iframe
+network evidence, four-menu navigation, semantic-only controls, an opaque
+user-opened billing surface, and a blocked telemetry effect.
+Every case must find a candidate inside the ten-second fast envelope. This gate
+is required by CI and `validate:collector-release`; it complements rather than
+replaces the authorized ClickUp first/second/cadence acceptance below.
+
 Fixture tests prove mapping and engine behavior. They cannot prove that a current
 vendor endpoint, browser auth flow, or bot-protection rule still works. Complete
 this test before naming a vendor as supported in a release.

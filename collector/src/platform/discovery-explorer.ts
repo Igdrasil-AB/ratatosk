@@ -11,7 +11,7 @@ import { isBoundedTenantIdentifierSegment, safeEntryUrl } from "../../../src/cor
 export const MAX_EXPLORATION_PAGES = 15;
 export const MAX_EXPLORATION_DEPTH = 3;
 export const EXPLORATION_DEADLINE_MS = 10_000;
-export const DISCOVERY_ENGINE_REVISION = 38;
+export const DISCOVERY_ENGINE_REVISION = 39;
 
 /**
  * A scan starts in the inexpensive fast lane, but its policy is deliberately
@@ -143,7 +143,7 @@ export interface ExplorationFrontierItem {
 }
 
 export function explorationTargetKey(target: Pick<ExplorationTarget, "url" | "source" | "family">): string {
-  return `${explorationFamilyForTarget(target)}|${structuralRoute(target.url)}`;
+  return `${explorationFamilyForTarget(target)}|${checkpointRoute(target.url) ?? structuralRoute(target.url)}`;
 }
 
 /** Persist the minimum route material needed to resume one safe target. */
@@ -323,6 +323,23 @@ export function capExplorationProbeOptions(
     ...options,
     deadlineMs,
     settleMs: Math.min(options.settleMs, deadlineMs),
+  };
+}
+
+/** Keep the advertised page/global deadline while leaving a small window for
+ * Chrome to return and deserialize a probe that stopped at its own cap. */
+export function explorationProbeTiming(
+  options: ExplorationProbeOptions,
+  globalRemainingMs: number,
+): { probeOptions: ExplorationProbeOptions; watchdogMs: number } {
+  const watchdogMs = Math.max(0, Math.min(options.deadlineMs, Math.trunc(globalRemainingMs)));
+  // Chrome still has to return the MAIN-world value and the action controller
+  // must remove its observer/DNR scope after page work stops. This is one fixed
+  // transport allowance, not another independently ticking phase budget.
+  const returnMarginMs = Math.min(600, Math.max(0, watchdogMs - 250));
+  return {
+    probeOptions: capExplorationProbeOptions(options, watchdogMs - returnMarginMs),
+    watchdogMs,
   };
 }
 
