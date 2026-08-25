@@ -310,3 +310,4 @@ done < "artifacts/live/approved-hosts.txt"
 
 finish
 note "Sanitized session results: $RESULT_FILE"
+note "When every required family says pass, run: npm run build:live-acceptance-receipt"

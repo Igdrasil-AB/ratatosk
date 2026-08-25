@@ -46,12 +46,10 @@
 - **Supersedes**: Plan 015's remaining iterative debugging and live-release work
 - **Category**: correctness, testing, diagnostics, performance, release safety
 - **Planned at**: commit `b4a84d3`, 2026-08-25
-- **Implementation status**: IN PROGRESS — Phases 0–4 now provide closed replay
-  tracing, deterministic built-Chromium/live-package control, and the generic
-  supplier-shape corpus on one preview/collection replay executor, plus built
-  browser delivery and duplicate proof, in Collector 0.8.53 / discovery 43.
-  Authorized multi-supplier acceptance and Phases 5–6 remain; no exact build has
-  passed that live multi-supplier gate end to end
+- **Implementation status**: IN PROGRESS — Phases 0–4, blind Phase 5, and the
+  Phase 6 CI/release gate implementation are complete in Collector 0.8.53 /
+  discovery 43. The authorized three-family/ClickUp run and its exact-artifact
+  receipt remain; no build has passed that live gate end to end
 
 ## Goal
 
@@ -651,6 +649,24 @@ verification.
 - release validation fails when the live receipt is absent, stale, from another
   artifact, or missing a supplier family;
 - an exact validated artifact can be reproduced from the reviewed commit.
+
+### Phase 6 evidence (2026-08-26, receipt pending)
+
+- CI now builds Collector once and runs both the complete built-extension
+  discovery corpus and `test:chrome-acquisition:built`;
+- `validate:collector-release` reruns acquisition, verifies the ZIP, and then
+  requires receipt schema v2 bound to the exact artifact SHA, Collector version,
+  discovery revision, acquisition revision, and a seven-day completion window;
+- the validator requires opaque semantic SPA, server-rendered document, and
+  structured API families, at least one Igdrasil readback, positive first-run
+  destination/ledger agreement, and zero immediate/cadence accepted documents,
+  actions, ledger rows, or page-owned downloads;
+- `build:live-acceptance-receipt` accepts only an all-pass hostname-only TSV,
+  strips every hostname, and writes the ignored release receipt. A transient
+  three-family fixture proved builder/validator compatibility and was deleted;
+- release validation still fails closed because no authorized live receipt is
+  present. Upload, submission, and publication remain outside this plan and
+  were not attempted.
 
 ## Acceptance matrix
 

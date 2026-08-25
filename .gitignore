@@ -14,3 +14,5 @@ skills-lock.json
 
 # Local UX review captures; final Web Store artwork lives in store/assets/.
 store/ux-review/
+# Fresh exact-artifact live acceptance is local release evidence, never source.
+store/semantic-dom-acceptance.json
