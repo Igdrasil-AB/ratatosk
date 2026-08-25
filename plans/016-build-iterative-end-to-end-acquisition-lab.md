@@ -767,6 +767,27 @@ Stop and report when:
 
 ## Handoff discipline
 
+### Draft review stack (2026-08-26)
+
+The implementation is split into stacked draft PRs so no all-in-one branch can
+be merged accidentally:
+
+1. [PR 55](https://github.com/Igdrasil-AB/ratatosk/pull/55) — evidence-only replay baseline;
+2. [PR 56](https://github.com/Igdrasil-AB/ratatosk/pull/56) — Plan 016 documents;
+3. [PR 57](https://github.com/Igdrasil-AB/ratatosk/pull/57) — Phase 0 replay trace;
+4. [PR 58](https://github.com/Igdrasil-AB/ratatosk/pull/58) — Phase 1 iteration/package runner;
+5. [PR 59](https://github.com/Igdrasil-AB/ratatosk/pull/59) — Phase 2 supplier-shape corpus;
+6. [PR 60](https://github.com/Igdrasil-AB/ratatosk/pull/60) — Phase 3 shared replay seam;
+7. [PR 61](https://github.com/Igdrasil-AB/ratatosk/pull/61) — Phase 4 built-browser acquisition;
+8. [PR 62](https://github.com/Igdrasil-AB/ratatosk/pull/62) — Phases 5–6 blind/live/release gates.
+
+A two-axis standards/spec review found the automated implementation conformant
+after remediation of concurrency policy, copied-count evidence, page-download
+measurement, snapshot freshness, failure isolation, interruption cleanup, and
+replay-trace duplication. Every PR remains draft and unmerged. The remaining
+review blockers are the authorized live outcome, a green ClickUp iteration, and
+maintainer approval.
+
 - Use one branch and PR per phase:
   `test/replay-phase-trace`, `test/discovery-iteration-runner`,
   `test/supplier-shape-corpus`, `refactor/shared-replay-plan`,
