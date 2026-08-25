@@ -2618,9 +2618,7 @@ function recipeFromDraft(
 
 function findLikelyDocumentLinks(html: string, baseUrl: string, pageTitle?: string): string[] {
   const links = new Set<string>();
-  const renderedHtml = html
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "");
+  const renderedHtml = withoutRawTextElements(html);
   const invoiceContext = /invoice|receipt|billing|statement|transaction|faktura|kvitto|rechnung|beleg|facture|reçu|factura|recibo|fattura|ricevuta/i;
   // The route is a search hypothesis. A guessed /invoices path must never make
   // a site-wide "Download" link look like invoice evidence, so page context
@@ -2660,6 +2658,54 @@ function findLikelyDocumentLinks(html: string, baseUrl: string, pageTitle?: stri
     }
   }
   return [...links];
+}
+
+/** Remove script/style regions before structural link inference. This output is
+ * never rendered; a scanner is used because regex-based HTML filtering misses
+ * legal whitespace and quoted `>` characters in raw-text element tags. */
+function withoutRawTextElements(html: string): string {
+  const lower = html.toLowerCase();
+  let cursor = 0;
+  let rendered = "";
+  while (cursor < html.length) {
+    const script = rawTextTagStart(lower, "script", cursor);
+    const style = rawTextTagStart(lower, "style", cursor);
+    const start = script < 0 ? style : style < 0 ? script : Math.min(script, style);
+    if (start < 0) return rendered + html.slice(cursor);
+    rendered += html.slice(cursor, start);
+    const tag = start === script ? "script" : "style";
+    const openEnd = htmlTagEnd(html, start + tag.length + 1);
+    if (openEnd < 0) return rendered;
+    const close = rawTextTagStart(lower, `/${tag}`, openEnd + 1);
+    if (close < 0) return rendered;
+    const closeEnd = htmlTagEnd(html, close + tag.length + 2);
+    if (closeEnd < 0) return rendered;
+    cursor = closeEnd + 1;
+  }
+  return rendered;
+}
+
+function rawTextTagStart(lowerHtml: string, tag: string, from: number): number {
+  const needle = `<${tag}`;
+  let index = from;
+  while ((index = lowerHtml.indexOf(needle, index)) >= 0) {
+    const boundary = lowerHtml[index + needle.length];
+    if (boundary === undefined || boundary === ">" || boundary === "/" || /\s/.test(boundary)) return index;
+    index += needle.length;
+  }
+  return -1;
+}
+
+function htmlTagEnd(html: string, from: number): number {
+  let quote = "";
+  for (let index = from; index < html.length; index += 1) {
+    const character = html[index];
+    if (quote) {
+      if (character === quote) quote = "";
+    } else if (character === '"' || character === "'") quote = character;
+    else if (character === ">") return index;
+  }
+  return -1;
 }
 
 function directDomRecipe(

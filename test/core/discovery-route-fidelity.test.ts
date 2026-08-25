@@ -198,6 +198,30 @@ describe("discovery route fidelity", () => {
     expect(candidates.map((candidate) => candidate.adapterId)).toEqual(["dom-links"]);
   });
 
+  it("ignores document-shaped markup inside raw-text elements with legal tag spacing", () => {
+    const rawText = '<html><body><h1>Invoices</h1>' +
+      '<script data-template=">"><a href="/fake.pdf">Invoice</a></script >' +
+      '<style><a href="/also-fake.pdf">Receipt</a></style >';
+    expect(compileCandidates(
+      {
+        ...base,
+        url: "https://vendor.example/x",
+        html: `${rawText}</body></html>`,
+        resources: [],
+      },
+      "https://vendor.example/x",
+      "Example Vendor",
+    )).toEqual([]);
+
+    const candidates = compileCandidates({
+      ...base,
+      url: "https://vendor.example/x",
+      html: `${rawText}<a href="/real.pdf">Download invoice</a></body></html>`,
+      resources: [],
+    }, "https://vendor.example/x", "Example Vendor");
+    expect(candidates.map((candidate) => candidate.adapterId)).toEqual(["dom-links"]);
+  });
+
   it("re-finds every provider document host its own admission accepts", () => {
     // Admission accepts any Stripe document host. A recipe whose selector is
     // narrower than that fails a correct page as a selector miss.
