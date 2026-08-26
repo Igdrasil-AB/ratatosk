@@ -227,9 +227,10 @@ Collector uses a two-confirmation state machine in `chrome.storage.session` so
 Chrome may close the popup during either permission prompt without losing the
 user's intent:
 
-1. **Find Invoices** requests the active tab's exact HTTPS origin and passively
-   snapshots the rendered page without clicking, navigating, reloading,
-   scrolling, or closing it.
+1. **Find Invoices** requests the active tab's exact HTTPS origin, snapshots the
+   rendered page, and may reveal only guarded workspace/account, Settings, and
+   Billing navigation so the warm application supplies its own route. It never
+   activates a document control during discovery.
    Collector then dynamically registers a packaged
    `document_start` MAIN-world observer for that exact origin. It keeps a bounded,
    sanitized, in-memory sample of JSON fetch/XHR responses, including the method,
@@ -238,7 +239,7 @@ user's intent:
    `status`, and `page`) is preserved for replay; account identifiers,
    signatures, credentials, and unknown query values remain redacted.
    After registration succeeds, Collector reopens the exact canonical entry URL
-   once in an inactive disposable tab before it tries speculative routes. That
+   once in a disposable tab before it tries speculative routes. That
    cold replay captures early, cached, POST, and cross-origin API evidence that
    cannot be reconstructed from `performance` URLs. Generic hydration JSON does
    not end observation: the probe waits for bounded request-shape quiescence or

@@ -69,10 +69,12 @@
   the common routes. Collector 0.8.63 / discovery 53 / acquisition 5 checks the
   active page and exact replay serially, then opens the reviewed universal
   root/tenant routes in a four-tab inactive wave before the noisy link graph;
-  the first proven route closes the rest. A Stripe-hosted common-billing case
-  now passes delivery and immediate/cadence deduplication. No supplier-specific
-  route is packaged; exact-build ClickUp replay and the three-family receipt
-  remain open
+  the first proven route closes the rest. Collector 0.8.64 / discovery 54 /
+  acquisition 6 additionally reveals read-only navigation on the warm signed-in
+  page, ranks the observed keyword route, and transactionally recovers a
+  tab-scoped native attachment response. Stripe and native-attachment cases pass
+  delivery and immediate/cadence deduplication. No supplier-specific route is
+  packaged; exact-build ClickUp delivery and the three-family receipt remain open
 
 ## Goal
 
@@ -211,11 +213,11 @@ a more precise closed cause and a red browser case reproduces it.
   link that cannot reproduce its opaque route is rejected. Network and embedded
   candidates still execute preview, while Connect & Collect remains the
   authoritative full replay, PDF, destination, commit, and deduplication gate.
-- The active user page remains passive. Its exact disposable replay is the one
-  generic route allowed to boot visibly and use the patient probe envelope. DNR
-  still blocks unsafe route families and native downloads; the injected guard
-  blocks mutating page methods while allowing an explicit read-only GraphQL
-  query.
+- During explicit Find Invoices, the warm active page may reveal only bounded
+  workspace/account, Settings, and Billing navigation. Document controls remain
+  inert until Verify & Collect. DNR still blocks unsafe routes and native browser
+  downloads; an allowed tab-scoped attachment response becomes a document
+  candidate only after the blocker contained it.
 
 ### What existing evidence does not prove
 
@@ -243,8 +245,9 @@ a more precise closed cause and a red browser case reproduces it.
 - An opaque tenant value persists only as a typed runtime template. Otherwise a
   semantic plan must reproduce the surface from a safe start, or the candidate
   fails closed.
-- The active user tab stays passive. Clicks and scrolling occur only in an owned
-  disposable tab under the existing mutation and download guards.
+- The active user tab may reveal guarded read-only navigation during the explicit
+  search; scrolling and every document-producing action occur only in an owned
+  disposable tab under the mutation and download guards.
 - A strong DOM candidate may be shown from bounded observed evidence without
   executing it inside the fast search. Connect & Collect executes that same
   closed plan with the packaged accessible-name/navigation policy and does not
@@ -781,6 +784,7 @@ data.
 | I-007 | 0.8.60 / discovery 50 / acquisition 5 | cold replay `no_candidate` with zero navigation steps | The foreground replay now works, but its trigger window closes before the cold SPA mounts the workspace opener; measuring and reproducing a multi-second mount will make the semantic lane deterministic | `delayed-menu-navigation` at 3.5 seconds | exact replay completed in 3.8 seconds with 11 observed requests, 5 rejected controls, complete status, and 0 steps; independent cold navigation measured the generic workspace trigger at about 4.0 seconds | revise | The foreground policy is no longer the blocker. Semantic reveal reserved only half the page lease and waited 1.2 seconds for a trigger; the exact replay can safely spend two thirds and 4.5 seconds, then use one short quiescence tail instead of spending the page lease twice |
 | I-008 | 0.8.61 / discovery 51 / acquisition 5 | multi-supplier acquisition lost the active supplier tab after cadence work | Discovery and scheduled collection use separate lifecycle owners; putting both behind one coordinator and making route probes serial will prevent a foreground operation from surviving into the next supplier | `chrome-acquisition` full matrix, repeated | exact package preparation passed unit and discovery gates but intermittently failed at the fifth supplier with an active-tab mismatch or collection failure | revise | Per-candidate correctness was green; cross-supplier lifecycle ownership was not. Reliability requires one global browser-operation queue, not more timing adjustments |
 | I-009 | 0.8.62 / discovery 52 / acquisition 5 | universal routes reached only at `navigation_deadline` | Put reviewed common routes before the noisy linked frontier and probe their inactive tabs in parallel; the first proven route should end the wave | mixed common-route ranking; `stripe-common` full acquisition | live ClickUp attempted nine linked pages before `/:id/billing` and `/billing` at pages 11–12 with no remaining navigation lease; Stripe common billing was not yet in the acquisition matrix | revise | Generating universal routes is insufficient if family scheduling starves them. Active/replay remain serial, but safe GET-only route guesses should run as the first bounded parallel fallback wave |
+| I-010 | 0.8.63 / discovery 53 / acquisition 5 | correct page found manually; Verify & Collect failed with `document_action_side_effect` at `invoice_list` | Reveal the app's own keyword route from the warm page and recover an allowed attachment response already contained by the tab-scoped native guard | warm semantic navigation; native-attachment full acquisition | visible navigation found the billing page and discovery retained four controls; verification attempted one `dom-actions` plan but blocked the native attachment response with zero verified documents | promote | Route extraction works once the app exposes its link. The remaining shared gaps were warm-route harvesting and converting a contained native attachment into a validated document candidate |
 
 ### I-001 hypotheses — record before the next ClickUp run
 

@@ -23,6 +23,7 @@ const ACQUISITION_CASES = [
   { name: "network", host: "network-acquisition.ratatosk.test", route: "/network-acquisition", adapterId: "network-json", expectedActions: 0, fallback: false },
   { name: "direct-dom", host: "direct-acquisition.ratatosk.test", route: "/direct-acquisition", adapterId: "dom-links", expectedActions: 0, fallback: false },
   { name: "stripe-common", host: "stripe-common-acquisition.ratatosk.test", route: "/stripe-home", adapterId: "dom-links", expectedActions: 0, fallback: false },
+  { name: "native-attachment", host: "native-attachment-acquisition.ratatosk.test", route: "/native-home", adapterId: "dom-actions", expectedActions: 1, fallback: false },
   { name: "semantic-dom", host: "semantic-acquisition.ratatosk.test", route: "/semantic-acquisition", adapterId: "dom-actions", expectedActions: 1, fallback: false },
   { name: "candidate-fallback", host: "fallback-acquisition.ratatosk.test", route: "/fallback-acquisition", adapterId: "network-json", expectedActions: 0, fallback: true },
   { name: "blind-synthetic", host: "blind-acquisition.ratatosk.test", route: "/blind-home", adapterId: "dom-actions", expectedActions: 1, fallback: false },
@@ -44,6 +45,7 @@ const ACQUISITION_PAGE_ROUTES = new Map<string, ReadonlySet<string>>([
 ]);
 ACQUISITION_PAGE_ROUTES.set("blind-acquisition.ratatosk.test", new Set(["/blind-home", BLIND_ROUTE]));
 ACQUISITION_PAGE_ROUTES.set("stripe-common-acquisition.ratatosk.test", new Set(["/stripe-home", "/billing"]));
+ACQUISITION_PAGE_ROUTES.set("native-attachment-acquisition.ratatosk.test", new Set(["/native-home", "/billing"]));
 const FIXTURE_HOSTS = [
   FIXTURE_HOST,
   ...ACQUISITION_CASES.map((item) => item.host),
@@ -139,7 +141,10 @@ try {
     if (path.startsWith("/documents/") && path.endsWith(".pdf")) {
       const key = `${requestHost}${path}`;
       documentRequests.set(key, (documentRequests.get(key) ?? 0) + 1);
-      response.writeHead(200, { "content-type": path.includes("invalid") ? "text/plain" : "application/pdf" });
+      response.writeHead(200, {
+        "content-type": path.includes("invalid") ? "text/plain" : "application/pdf",
+        ...(path.includes("native-attachment") ? { "content-disposition": 'attachment; filename="native-invoice.pdf"' } : {}),
+      });
       response.end(path.includes("invalid") ? "not a pdf" : "%PDF-1.4\n%%EOF\n");
       return;
     }
@@ -202,6 +207,17 @@ try {
     if (requestHost === "stripe-common-acquisition.ratatosk.test" && path === "/billing") {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end('<!doctype html><html><head><title>Billing</title></head><body><h1>Invoices</h1><a href="https://invoice.stripe.com/i/acct_fixture/live_fixture">View invoice</a></body></html>');
+      return;
+    }
+    if (requestHost === "native-attachment-acquisition.ratatosk.test" && path === "/billing") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(`<!doctype html><html><head><title>Billing</title></head><body>
+        <h1>Invoices</h1><table><thead><tr><th>Invoice Number</th><th>Actions</th></tr></thead>
+        <tbody><tr data-invoice-id="native-1"><td>NATIVE-1</td><td><button id="download">Download invoice</button></td></tr></tbody></table>
+        <script>document.querySelector('#download').addEventListener('click', () => {
+          const frame = document.createElement('iframe'); frame.hidden = true;
+          frame.src = '/documents/native-attachment.pdf'; document.body.append(frame);
+        });</script></body></html>`);
       return;
     }
     const allowedAcquisitionPages = ACQUISITION_PAGE_ROUTES.get(requestHost);
@@ -676,6 +692,12 @@ function fixturePage(path: string): string {
       <h1>Invoices</h1><script>fetch('/api/invoices').then(response => response.json())</script></body></html>`;
   }
   if (path === "/stripe-home") {
+    return "<!doctype html><html><head><title>Workspace</title></head><body><main>Workspace home</main></body></html>";
+  }
+  if (path === "/native-home") {
+    return "<!doctype html><html><head><title>Workspace</title></head><body><main>Workspace home</main></body></html>";
+  }
+  if (path === "/billing" && activeFixtureCase === null) {
     return "<!doctype html><html><head><title>Workspace</title></head><body><main>Workspace home</main></body></html>";
   }
   if (path === "/direct-acquisition") {

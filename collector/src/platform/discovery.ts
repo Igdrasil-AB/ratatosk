@@ -299,6 +299,7 @@ export async function discoverSupplierInTab(
   let entryObserved = false;
   let entryExplored = false;
   let exploredWaves = 0;
+  let activeSemanticCandidateRetained = false;
   const retained: Array<{ profile: DiscoveredSupplierProfileV1; score: number }> = [];
 
   const checkpoint = async (): Promise<void> => {
@@ -367,9 +368,10 @@ export async function discoverSupplierInTab(
           ...timing.probeOptions,
           allowForegroundRetry: index === foregroundCandidateIndex,
           foregroundRetryWithoutBillingIntent: target.source === "entry_replay",
-          // The page the person chose is observational only. Menu exploration
-          // and scrolling belong to the disposable cold replay/background tabs.
-          allowSemanticNavigation: target.source !== "entry",
+          // The explicit Find Invoices action may reveal read-only navigation on
+          // the warm signed-in page. This is the only reliable place some SPAs
+          // expose their Settings -> Billing links; document controls stay inert.
+          allowSemanticNavigation: true,
           allowScroll: target.source !== "entry",
         };
         const probe = target.source === "entry"
@@ -536,6 +538,11 @@ export async function discoverSupplierInTab(
             });
           }
         }
+        if (
+          target.source === "entry" &&
+          (evidence.stats.semanticNavigationSteps ?? 0) > 0 &&
+          retained.length > 0
+        ) activeSemanticCandidateRetained = true;
 
         if (target.depth < budget.depth) {
           const planned = planExplorationTargets({
@@ -577,6 +584,7 @@ export async function discoverSupplierInTab(
       if (isEntryWave) entryExplored = true;
       else exploredWaves += 1;
       if (
+        activeSemanticCandidateRetained ||
         discoveryProofIsSufficient(retained, { entryExplored, exploredWaves }) ||
         (hasEnoughStrongCandidates(retained) && allEnabledFamiliesAttempted(diagnostic))
       ) break;

@@ -98,6 +98,9 @@ employee-, and internal-specific origins.
   (120 seconds for the single escalation a first pass could not resolve, 180
   seconds for background self-repair), and rejects mutating or
   session paths before navigation. Generated recipes remain separately bounded.
+- During the explicit search, the warm active page may reveal only guarded
+  workspace/account, Settings, and Billing navigation so the application itself
+  supplies the route; no invoice/document control is activated before approval.
 - First-party page-context fetching is constrained to the recipe's primary
   origin; response sizes are capped and treated as untrusted input.
 - Semantic download actions may return a supplier-authenticated GET response as
@@ -106,6 +109,9 @@ employee-, and internal-specific origins.
   never persists or logs the blob, request headers, or authentication values.
   Retained inline documents are capped at 24 MiB and 500 documents across the
   complete DOM run.
+- A tab-scoped native attachment response is blocked before Chrome owns a
+  DownloadItem and may be promoted only when the observer yields an allowed,
+  unambiguous document URL; it then follows the same PDF and destination gates.
 - Discovered candidates preflight every scope before delivery. A traversal that
   hits a page/action/document/time cap, repeats state, or leaves an observed item
   unresolved is candidate-local and falls through without fetching or sending

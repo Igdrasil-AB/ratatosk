@@ -168,11 +168,11 @@ describe("supplier discovery across portal shapes", () => {
         termination: "time_cap",
       });
       expect(checkpoints.at(-1)?.frontier).toContainEqual(expect.objectContaining({
-        source: "entry_replay",
+        source: "entry",
         route: "/home",
       }));
       expect((failure as SupplierDiscoveryError).diagnostic.attempts).toContainEqual(expect.objectContaining({
-        source: "entry_replay",
+        source: "entry",
         evidence: expect.objectContaining({ semanticNavigationStatus: "time_cap" }),
       }));
     } finally {
@@ -216,7 +216,7 @@ describe("supplier discovery across portal shapes", () => {
     expect(homeProbes).toHaveLength(2);
     const [activeEntry, coldReplay] = homeProbes;
     expect(trace.probes[coldReplay].foreground).toBe(true);
-    expect(trace.probePhases[activeEntry].semanticRevealMs).toBe(0);
+    expect(trace.probePhases[activeEntry].semanticRevealMs).toBeGreaterThan(0);
     expect(trace.probePhases[coldReplay].semanticRevealMs).toBeGreaterThan(0);
     expect(trace.probePhases).toContainEqual(expect.objectContaining({
       semanticRevealMs: expect.any(Number),

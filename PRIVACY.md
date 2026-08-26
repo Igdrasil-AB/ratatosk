@@ -60,10 +60,11 @@ active URL. No supplier-specific route is packaged or downloaded. If it reaches
 its safe cap, the person may explicitly continue the retained safe frontier under
 a longer bounded envelope. It may use up to four inactive temporary tabs for the
 universal route wave, performs page navigation and bounded same-origin GET probes,
-and closes the unused tabs when evidence wins. The active page remains passive; a disposable
-    replay may open up to four native menus and two localized Settings/Billing
-    controls, never activates a document control or
-    submits a form, and closes the tabs when the search ends. While those controls
+and closes the unused tabs when evidence wins. During the explicit search, the
+warm active page or a disposable replay may open bounded workspace/account menus
+and localized Settings/Billing controls to observe routes; neither activates a
+document control or submits a form. Document controls are activated only after
+Verify & Collect in a guarded disposable tab. While navigation controls
     are revealed, a temporary packaged guard permits only GET/HEAD and explicit
     read-only GraphQL queries; it blocks mutating fetch/XHR, beacon, form, popup,
     and unsafe navigation attempts and discards that probe. On those temporary pages, a packaged

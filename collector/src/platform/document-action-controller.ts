@@ -44,6 +44,11 @@ export interface SemanticEnumerationResult {
   replay: ReplayTrace;
 }
 
+type CapturedNativeDocument = {
+  url: string;
+  evidence: InvoiceMetadataEvidence[];
+};
+
 export class ReplayPhaseFailed extends DocumentActionFailed {
   constructor(kind: DocumentActionFailureKind, readonly replay: ReplayTrace) {
     super(kind);
@@ -146,7 +151,7 @@ export class DocumentActionController {
           ));
         }
         return result;
-      });
+      }, recoverSemanticEnumeration);
     } catch (error) {
       if (error instanceof ReplayPhaseFailed) throw error;
       if (error instanceof DocumentActionFailed) {
@@ -238,7 +243,7 @@ export class DocumentActionController {
         }), actionDeadline);
         throwIfDocumentActionAborted(signal);
         return this.parseSemanticResolution(injection?.result);
-      });
+      }, recoverSemanticResolution);
     } finally {
       await releaseForeground();
       await pageObserver.dispose(tabId);
@@ -294,6 +299,11 @@ export class DocumentActionController {
     tabId: number,
     downloadFailure: "document_action_side_effect" | "browser_download_unsupported",
     operation: () => Promise<T>,
+    recoverNativeDownload?: (
+      value: T | undefined,
+      documents: CapturedNativeDocument[],
+      failure: unknown,
+    ) => T | undefined,
   ): Promise<T> {
     const observer = new SemanticActionObserver(this.allowedOrigins);
     let releaseNativeDownloadGuard: (() => Promise<void>) | undefined;
@@ -318,16 +328,22 @@ export class DocumentActionController {
       observer.endAction();
     }
     const nativeDownloadAttempted = observer.snapshotNativeDownloadAttempted();
-    try { this.onPageOwnedDownloadObservation(nativeDownloadAttempted); } catch { /* observability cannot change acquisition */ }
+    const nativeDocuments = nativeDownloadAttempted ? capturedNativeDocuments(observer) : [];
+    const recovered = nativeDownloadAttempted
+      ? recoverNativeDownload?.(value, nativeDocuments, failure)
+      : undefined;
+    const uncontainedDownload = nativeDownloadAttempted && recovered === undefined;
+    try { this.onPageOwnedDownloadObservation(uncontainedDownload); } catch { /* observability cannot change acquisition */ }
     observer.stop();
     try {
       await releaseNativeDownloadGuard();
     } catch {
       throw new DocumentActionFailed("document_action_ambiguous", this.vendorId);
     }
-    if (nativeDownloadAttempted) {
+    if (uncontainedDownload) {
       throw new DocumentActionFailed(downloadFailure, this.vendorId);
     }
+    if (recovered !== undefined) return recovered;
     if (failure) {
       if (failure instanceof DeadlineExceeded) {
         throw new DocumentActionFailed("document_action_timeout", this.vendorId);
@@ -361,6 +377,50 @@ export class DocumentActionController {
     if (parsed.kind === "inline_pdf") return { kind: "inline_pdf", dataUrl: parsed.dataUrl };
     throw new DocumentActionFailed("document_action_ambiguous", this.vendorId);
   }
+}
+
+function capturedNativeDocuments(observer: SemanticActionObserver): CapturedNativeDocument[] {
+  const named = observer.snapshotDocumentObservations();
+  if (named.length) return named;
+  const urls = observer.snapshotDocuments();
+  return urls.length === 1 ? [{ url: urls[0], evidence: [] }] : [];
+}
+
+function recoverSemanticEnumeration(
+  value: SemanticEnumerationResult | undefined,
+  documents: CapturedNativeDocument[],
+  failure: unknown,
+): SemanticEnumerationResult | undefined {
+  if (!documents.length || failure instanceof ReplayPhaseFailed) return undefined;
+  const base = value ?? {
+    directDocuments: [],
+    actions: [],
+    observedItems: 0,
+    resolvedItems: 0,
+    unresolvedItems: 0,
+    unstableItems: 0,
+    ambiguousItems: 0,
+    truncated: false,
+    navigationSteps: 0,
+    sectionObserved: true,
+    replay: replayFailureTrace("semantic_dom", "document_enumeration", "complete"),
+  };
+  const known = new Set(base.directDocuments.map((document) => document.url));
+  const additions = documents.filter((document) => !known.has(document.url));
+  return {
+    ...base,
+    directDocuments: [...base.directDocuments, ...additions],
+    observedItems: base.observedItems + additions.length,
+    resolvedItems: base.resolvedItems + additions.length,
+  };
+}
+
+function recoverSemanticResolution(
+  value: SemanticResolutionResult | undefined,
+  documents: CapturedNativeDocument[],
+): SemanticResolutionResult | undefined {
+  if (value) return value;
+  return documents.length === 1 ? { kind: "url", url: documents[0].url } : undefined;
 }
 
 async function readCurrentReplayPhase(tabId: number): Promise<ReplayPhase | undefined> {

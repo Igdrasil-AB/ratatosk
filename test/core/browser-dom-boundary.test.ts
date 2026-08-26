@@ -540,7 +540,7 @@ describe("browser DOM boundary", () => {
     expectSemanticOperationCalledOnce(executeScript);
   });
 
-  it("blocks native responses on the exact action tab without touching global downloads", async () => {
+  it("captures native responses on the exact action tab without touching global downloads", async () => {
     const beforeRequest = new TestChromeEvent<Record<string, unknown>>();
     const headersReceived = new TestChromeEvent<Record<string, unknown>>();
     const beforeRedirect = new TestChromeEvent<Record<string, unknown>>();
@@ -621,9 +621,17 @@ describe("browser DOM boundary", () => {
       undefined,
       (attempted) => pageOwnedDownloadObservations.push(attempted),
     );
-    await expect(driver.run("https://vendor.example/billing", [
+    const result = await driver.run("https://vendor.example/billing", [
       { action: "extractSemanticDownloads", as: "documents", maxActions: 8 },
-    ])).rejects.toMatchObject({ kind: "document_action_side_effect" });
+    ]);
+    expect(result).toMatchObject({
+      collected: { documents: ["https://documents.example/invoices/123.pdf"] },
+      documents: [{
+        url: "https://documents.example/invoices/123.pdf",
+        evidence: [{ source: "content-disposition", confidence: "medium", filename: "invoice.pdf" }],
+      }],
+      retrieval: { completeness: "complete", observedItems: 1, resolvedItems: 1, unresolvedItems: 0 },
+    });
 
     expect(updateSessionRules.mock.calls[0]?.[0]).toMatchObject({
       addRules: [{
@@ -642,7 +650,7 @@ describe("browser DOM boundary", () => {
     expect(cancel).not.toHaveBeenCalled();
     expect(removeFile).not.toHaveBeenCalled();
     expect(erase).not.toHaveBeenCalled();
-    expect(pageOwnedDownloadObservations).toEqual([true]);
+    expect(pageOwnedDownloadObservations).toEqual([false]);
     expect(beforeRequest.listenerCount).toBe(0);
     expect(downloadCreated.listenerCount).toBe(0);
   });
@@ -1061,7 +1069,8 @@ describe("browser DOM boundary", () => {
     expect(actionControllerSource).toContain("snapshotNativeDownloadAttempted");
     expect(actionControllerSource).toContain("updateSessionRules");
     expect(actionControllerSource).not.toContain("chrome.downloads.cancel");
-    expect(actionControllerSource).not.toContain("snapshotDocuments()");
+    expect(actionControllerSource).toContain("snapshotDocuments()");
+    expect(actionControllerSource).toContain("snapshotDocumentObservations()");
     expect(driverSource).not.toContain("navigator.sendBeacon =");
     expect(driverSource).not.toContain("HTMLFormElement.prototype.submit =");
     expect(driverSource).not.toContain("HTMLAnchorElement.prototype.click =");
