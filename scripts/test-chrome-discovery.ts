@@ -10,7 +10,8 @@ import type { LiveAcceptanceSnapshot } from "../src/core/live-acceptance";
 
 const FIXTURE_HOST = "discovery-fixture.ratatosk.test";
 const FIXTURE_ORIGIN = `https://${FIXTURE_HOST}`;
-const blindSeed = randomBytes(6).toString("hex");
+const blindSeed = process.env.RATATOSK_BLIND_SEED ?? "a10393d04be2";
+if (!/^[a-f0-9]{12}$/.test(blindSeed)) throw new Error("blind seed must be 12 lowercase hex characters");
 const acceptanceNonce = randomBytes(16).toString("hex");
 const BLIND_ROUTE = `/x${blindSeed.slice(0, 6)}/z${blindSeed.slice(6)}`;
 const BLIND_WRAPPER = `w${blindSeed}`;
