@@ -1250,6 +1250,31 @@ describe("browser DOM boundary", () => {
     }
   }, 20_000);
 
+  it("uses a newly revealed Settings control from a generic menu overlay", async () => {
+    const page = stubSemanticPage({
+      menuTriggerCount: 4,
+      settingsMountDelayMs: 0,
+      mountDelayMs: 900,
+    });
+    try {
+      const result = await runSemanticDocumentOperationInPage(
+        { kind: "enumerate", maximumActions: 8 },
+        ["https://vendor.example"],
+        DISCOVERY_DOM_POLICY,
+        Date.now() + 3_400,
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        kind: "enumeration",
+        directDocuments: [{ url: "https://vendor.example/invoices/one.pdf" }],
+      });
+      expect(page.clicked).toEqual(["Open profile menu", "Settings", "Billing"]);
+    } finally {
+      page.restore();
+    }
+  }, 10_000);
+
   it.each([
     ["Inställningar", "Fakturering"],
     ["Einstellungen", "Abrechnung"],
@@ -1320,11 +1345,14 @@ function stubSemanticPage(options: {
   settings?: string;
   billing?: string;
   mountDelayMs?: number;
+  settingsMountDelayMs?: number;
+  menuTriggerCount?: number;
 } = {}): { clicked: string[]; restore: () => void } {
   const clicked: string[] = [];
   const navigation: unknown[] = [];
   const downloads: unknown[] = [];
   const mountDelayMs = options.mountDelayMs ?? 300;
+  const settingsMountDelayMs = options.settingsMountDelayMs ?? mountDelayMs;
 
   const control = (
     attributes: Record<string, string>,
@@ -1358,17 +1386,29 @@ function stubSemanticPage(options: {
   const settingsItem = control({ role: "menuitem" }, options.settings ?? "Settings", () => {
     mount(navigation, billingTab);
   });
-  navigation.push(control({ role: "button", "aria-label": "Open profile menu" }, "Open profile menu", () => {
-    mount(navigation, settingsItem);
-  }));
+  const profileTrigger = control({
+    role: "button",
+    "aria-label": "Open profile menu",
+    "aria-haspopup": "menu",
+  }, "Open profile menu", () => {
+    setTimeout(() => navigation.push(settingsItem), settingsMountDelayMs);
+  });
+  navigation.push(profileTrigger);
+  const menuTriggers = options.menuTriggerCount
+    ? [profileTrigger, ...Array.from({ length: options.menuTriggerCount - 1 }, (_, index) =>
+      control({ role: "button", "aria-haspopup": "menu" }, `Menu ${index + 2}`))]
+    : [];
 
   const navigationSelector = 'button,[role="button"],[role="menuitem"],[role="tab"],a:not([href])';
+  const menuTriggerSelector = 'button,[role="button"],[aria-haspopup="menu"],[aria-haspopup="true"]';
   vi.stubGlobal("document", {
     title: "Vendor",
+    activeElement: { dispatchEvent: () => true },
     getElementById: () => null,
     querySelector: () => null,
     querySelectorAll: (selector: string) => {
       if (selector === navigationSelector) return [...navigation];
+      if (selector === menuTriggerSelector) return [...menuTriggers];
       if (selector === DISCOVERY_DOM_POLICY.controlSelector) return [...navigation, ...downloads];
       return [];
     },
@@ -1386,6 +1426,7 @@ function stubSemanticPage(options: {
   for (const name of ["HTMLElement", "HTMLAnchorElement", "HTMLButtonElement", "HTMLInputElement"]) {
     vi.stubGlobal(name, class {});
   }
+  vi.stubGlobal("KeyboardEvent", class {});
 
   return { clicked, restore: () => vi.unstubAllGlobals() };
 }
