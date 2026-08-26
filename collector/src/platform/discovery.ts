@@ -1560,9 +1560,10 @@ export async function collectPageEvidenceInPage(
     // that nothing is mounting are checked once, which keeps pages without any
     // account UI from spending their whole evidence budget here.
     //
-    // Revealing shares this page's budget with observed-network and embedded
-    // evidence, so it may claim at most half of what remains.
-    const revealDeadline = Math.min(deadline, Date.now() + Math.max(500, Math.floor((deadline - Date.now()) / 2)));
+    // Exact cold SPAs may not mount their workspace opener for several seconds.
+    // Leave one third for passive evidence while giving semantic navigation
+    // enough of the already-bounded page lease to observe that opener.
+    const revealDeadline = Math.min(deadline, Date.now() + Math.max(500, Math.floor((deadline - Date.now()) * 2 / 3)));
     let settingsControl: HTMLElement | undefined;
     let triggers = semanticMenuTriggers();
     const triggerDeadline = Math.min(revealDeadline, Date.now() + semanticPolicy.navigationTriggerMountMs);

@@ -807,7 +807,7 @@ function fixturePage(path: string): string {
               });
             });
           });
-        }, 900);
+        }, 3500);
       </script></body></html>`;
   }
   if (path === "/blocked") {

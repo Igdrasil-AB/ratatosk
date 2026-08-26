@@ -997,6 +997,8 @@ export async function runSemanticDocumentOperationInPage(
     try {
       let settings: HTMLElement | undefined;
       let triggers = menuTriggers();
+      const directProfile = navigationControl(profileNavigation);
+      if (!triggers.length && directProfile) triggers = [directProfile];
       const triggerDeadline = Math.min(deadline, Date.now() + semanticPolicy.navigationTriggerMountMs);
       while (!triggers.length && Date.now() < triggerDeadline) {
         if (downloadControls().length) return;
