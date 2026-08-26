@@ -23,7 +23,7 @@ describe("exact-entry cold replay", () => {
         source: "entry_replay",
         family: "exact_entry",
         hintSource: "cold_replay",
-        score: Number.MAX_SAFE_INTEGER - 1,
+        score: Number.MAX_SAFE_INTEGER - 2,
       },
     ]);
   });
