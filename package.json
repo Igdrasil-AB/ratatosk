@@ -1,7 +1,7 @@
 {
   "name": "ratatosk",
-  "version": "0.8.50",
-  "description": "Open-source browser extension that collects supplier invoices and receipts from vendor portals using the user's own session \u2014 no credential custody.",
+  "version": "0.8.52",
+  "description": "Open-source browser extension that collects supplier invoices and receipts from vendor portals using the user's own session — no credential custody.",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -24,7 +24,9 @@
     "validate": "tsx scripts/validate-vendors.ts",
     "validate:release": "tsx scripts/validate-vendors.ts --release",
     "test:collector-release-regressions": "vitest run test/core/dom-acquisition-transaction.test.ts test/core/semantic-action-observer.test.ts test/core/browser-dom-boundary.test.ts",
-    "validate:collector-release": "npm run validate:release && npm run test:collector-release-regressions && npm run verify:collector-artifact && tsx scripts/validate-semantic-dom-acceptance.ts",
+    "test:chrome-discovery": "npx playwright-core install chromium && npm run build:collector && npm run test:chrome-discovery:built",
+    "test:chrome-discovery:built": "tsx scripts/test-chrome-discovery.ts",
+    "validate:collector-release": "npm run validate:release && npm run test:collector-release-regressions && npm run test:chrome-discovery:built && npm run verify:collector-artifact && tsx scripts/validate-semantic-dom-acceptance.ts",
     "validate:pilot": "tsx scripts/validate-pilot-manifest.ts",
     "verify:collector-artifact": "tsx scripts/verify-collector-artifact.ts",
     "audit:security": "npm audit --audit-level=high",
@@ -38,6 +40,7 @@
     "@types/chrome": "^0.0.268",
     "@types/node": "^20.19.43",
     "fflate": "^0.8.2",
+    "playwright-core": "^1.62.1",
     "simple-icons": "^16.26.0",
     "tsx": "^4.16.2",
     "typescript": "^5.5.4",

@@ -58,13 +58,13 @@ describe("supplier discovery shape corpus", () => {
       expected: [],
     },
     {
-      name: "direct proof ranks before semantic fallback",
+      name: "direct proof suppresses the slower semantic duplicate",
       evidence: {
         html: '<a href="/documents/inv_1.pdf">PDF</a><button aria-label="Download invoice PDF">Download</button>',
         stats: { documentLinks: 1, structuredData: 0, semanticControls: 1 },
       },
-      expected: ["dom-links", "dom-actions"],
-      admission: [["direct_document_link"], ["semantic_document_control"]],
+      expected: ["dom-links"],
+      admission: [["direct_document_link"]],
     },
   ];
 

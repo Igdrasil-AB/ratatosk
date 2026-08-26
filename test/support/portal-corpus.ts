@@ -133,11 +133,12 @@ const serverRenderedPortal: Portal = {
       hydrateMs: 0,
       html: [
         '<html><head><title>Billing history | Static</title></head><body><h1>Payment history</h1><table>',
-        '<tr><td>Jul 2026</td><td><a href="/account/receipt/rcpt_9001">Receipt</a></td></tr>',
-        '<tr><td>Jun 2026</td><td><a href="/account/receipt/rcpt_9002">Receipt</a></td></tr>',
-        '<tr><td>May 2026</td><td><a href="/account/receipt/rcpt_9003">Receipt</a></td></tr>',
+        '<tr><td>Jul 2026</td><td><a href="/account/receipt/rcpt_9001">Get receipt</a></td></tr>',
+        '<tr><td>Jun 2026</td><td><a href="/account/receipt/rcpt_9002">Get receipt</a></td></tr>',
+        '<tr><td>May 2026</td><td><a href="/account/receipt/rcpt_9003">Get receipt</a></td></tr>',
         "</table></body></html>",
       ].join(""),
+      semanticControls: 3,
     },
   ],
 };
@@ -472,7 +473,7 @@ export interface CorpusEntry {
 export const PORTAL_CORPUS: readonly CorpusEntry[] = [
   { portal: graphqlWorkspacePortal, expectedAdapter: "network-json" },
   { portal: restQueryPortal, expectedAdapter: "network-json" },
-  { portal: serverRenderedPortal, expectedAdapter: "dom-links" },
+  { portal: serverRenderedPortal, expectedAdapter: "dom-actions" },
   { portal: hydrationBlobPortal, expectedAdapter: "embedded-json" },
   { portal: semanticTablePortal, expectedAdapter: "dom-actions" },
   { portal: slowSpaPortal, expectedAdapter: "network-json" },

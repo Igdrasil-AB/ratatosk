@@ -39,7 +39,7 @@ function diagnostic(overrides: Partial<DiscoveryDiagnosticV1> = {}): DiscoveryDi
     attempts: [
       { page: 1, source: "entry", route: "/home", result: "no_candidate", durationMs: 1_200 },
       { page: 2, source: "common_route", route: "/settings/billing", result: "no_candidate", durationMs: 4_180 },
-      { page: 3, source: "linked", route: "/organization/:id/billing", result: "probe_failed", durationMs: 2_200 },
+      { page: 3, source: "linked", route: "/organization/:id/billing", result: "probe_failed", probeCause: "outer_deadline", durationMs: 2_200 },
     ],
     termination: "time_cap",
     result: "limit_reached",
@@ -74,6 +74,7 @@ describe("prefilled issue reports", () => {
     expect(body).toContain("10 of 15");
     // Slowest first, so the page that spent the budget is the one read first.
     expect(body.indexOf("/settings/billing")).toBeLessThan(body.indexOf("/organization/:id/billing"));
+    expect(body).toContain("probe_failed/outer_deadline");
   });
 
   it("puts the full record on the clipboard, never in the URL", () => {

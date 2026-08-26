@@ -185,8 +185,8 @@ permission so the persistent side panel can identify the active tab after tab
 switches. Ratatosk reads only the current tab URL for this UI context, does not
 store a browsing history, and this permission does not authorize page inspection.
 After exact-origin approval, the bounded search may inspect up
-to fourteen additional same-origin pages exposed by the application; generic
-billing guesses are reserved for an explicit deeper continuation. HTTPS supplier access is optional and Chrome
+to fourteen additional same-origin pages exposed by the application; it never
+assembles or guesses a billing route. HTTPS supplier access is optional and Chrome
 asks for the exact origin when the user connects or tests it. During that explicit
 search, `scripting` also installs and removes the bounded exact-origin page-load
 observer described above. The optional

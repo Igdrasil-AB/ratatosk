@@ -72,6 +72,7 @@ describe("browser DOM boundary", () => {
     expect(discoverySource).toContain("target: { tabId, allFrames: true }");
     expect(discoverySource).toContain("topLevelFrame && options.allowSemanticNavigation !== false");
     expect(discoverySource).toContain("mergeFrameNetworkEvidence(main, frames, options.maxResources)");
+    expect(discoverySource).not.toContain("[data-route],[routerlink],[ng-reflect-router-link],iframe[src]");
   });
 
   it.each([
@@ -136,10 +137,16 @@ describe("browser DOM boundary", () => {
         DISCOVERY_DOM_POLICY,
       );
       if (blocked) {
-        await expect(probe).rejects.toThrow(/mutating/i);
+        await expect(probe).resolves.toMatchObject({
+          origin: "https://vendor.example",
+          stats: { semanticNavigationStatus: "mutation_blocked" },
+        });
         expect(originalFetch).not.toHaveBeenCalled();
       } else {
-        await expect(probe).resolves.toMatchObject({ origin: "https://vendor.example" });
+        await expect(probe).resolves.toMatchObject({
+          origin: "https://vendor.example",
+          stats: { semanticNavigationStatus: "complete" },
+        });
         expect(originalFetch).toHaveBeenCalledOnce();
       }
     } finally {
@@ -194,6 +201,7 @@ describe("browser DOM boundary", () => {
         { ...EXPLORATION_ROUTE_POLICY, documentSelector: "[data-document]" },
         DISCOVERY_DOM_POLICY,
       );
+      if ("__ratatoskProbeError" in evidence) throw new Error("expected page evidence");
       expect(evidence.navigationUrls).toEqual(expect.arrayContaining([
         expect.objectContaining({ url: observedRequest, hintSource: "observed_request" }),
         expect.objectContaining({ url: resourceRoute, hintSource: "resource_timing" }),

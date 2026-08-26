@@ -1,4 +1,4 @@
-import { isBoundedTenantIdentifierSegment, safeEntryUrl } from "../../../src/core/discovery";
+import { safeEntryUrl } from "../../../src/core/discovery";
 
 /**
  * Pure planning policy for unsupported-supplier exploration.
@@ -11,7 +11,7 @@ import { isBoundedTenantIdentifierSegment, safeEntryUrl } from "../../../src/cor
 export const MAX_EXPLORATION_PAGES = 15;
 export const MAX_EXPLORATION_DEPTH = 3;
 export const EXPLORATION_DEADLINE_MS = 10_000;
-export const DISCOVERY_ENGINE_REVISION = 38;
+export const DISCOVERY_ENGINE_REVISION = 42;
 
 /**
  * A scan starts in the inexpensive fast lane, but its policy is deliberately
@@ -143,7 +143,7 @@ export interface ExplorationFrontierItem {
 }
 
 export function explorationTargetKey(target: Pick<ExplorationTarget, "url" | "source" | "family">): string {
-  return `${explorationFamilyForTarget(target)}|${structuralRoute(target.url)}`;
+  return `${explorationFamilyForTarget(target)}|${checkpointRoute(target.url) ?? structuralRoute(target.url)}`;
 }
 
 /** Persist the minimum route material needed to resume one safe target. */
@@ -167,7 +167,9 @@ export function restoreExplorationTargets(
   const expectedOrigin = exactPublicHttpsOrigin(origin);
   const targets: ExplorationTarget[] = [];
   for (const item of checkpoint.frontier) {
-    if (!item.route || !item.source) continue;
+    // Older checkpoints may contain routes invented by the removed static
+    // fallback. They are valid legacy data but never execution authority.
+    if (!item.route || !item.source || item.source === "common_route" || item.hintSource === "common_fallback") continue;
     let url: string;
     try { url = new URL(item.route, `${expectedOrigin}/`).toString(); } catch { continue; }
     if (new URL(url).origin !== expectedOrigin || checkpointRoute(url) !== item.route) continue;
@@ -187,18 +189,28 @@ export function restoreExplorationTargets(
 export function continueExplorationCheckpoint(
   checkpoint: ExplorationCheckpoint,
 ): ExplorationCheckpoint | undefined {
-  if (checkpoint.mode !== "fast") return undefined;
+  if (checkpoint.mode !== "fast" || !hasResumableExplorationFrontier(checkpoint)) return undefined;
   return createExplorationCheckpoint({
     mode: "deep",
     pagesAttempted: checkpoint.pagesAttempted,
     linkedPagesAttempted: checkpoint.linkedPagesAttempted,
     commonRoutePagesAttempted: checkpoint.commonRoutePagesAttempted,
     elapsedMs: checkpoint.elapsedMs,
-    frontier: checkpoint.frontier,
+    frontier: checkpoint.frontier.filter(isResumableFrontierItem),
     completedTargetKeys: checkpoint.completedTargetKeys,
     attemptedFamilies: checkpoint.attemptedFamilies,
     slicesCompleted: 0,
   });
+}
+
+export function hasResumableExplorationFrontier(checkpoint: ExplorationCheckpoint): boolean {
+  return checkpoint.frontier.some(isResumableFrontierItem);
+}
+
+function isResumableFrontierItem(item: ExplorationFrontierItem): boolean {
+  return Boolean(
+    item.route && item.source && item.source !== "common_route" && item.hintSource !== "common_fallback",
+  );
 }
 
 export function createExplorationCheckpoint(input: Omit<ExplorationCheckpoint, "schema">): ExplorationCheckpoint {
@@ -276,10 +288,8 @@ export interface ExplorationProbeOptions {
  * enough for a single-page app to boot and issue its billing calls. Bridges are
  * navigation: they are read for their links and abandoned.
  *
- * The previous rule keyed on the literal path `settings/billing`, so the most
- * common billing routes there are — `/billing`, `/account/billing`,
- * `/<tenant>/billing`, `/subscriptions` — were funded like dead ends while a
- * page that merely mentioned "invoice" received the generous budget.
+ * Funding is driven by common intent words found in an observed URL, accessible
+ * name, or nearby context. The planner never assembles a route from those words.
  */
 export function explorationProbeOptions(
   target: ExplorationTarget,
@@ -326,6 +336,23 @@ export function capExplorationProbeOptions(
   };
 }
 
+/** Keep the advertised page/global deadline while leaving a small window for
+ * Chrome to return and deserialize a probe that stopped at its own cap. */
+export function explorationProbeTiming(
+  options: ExplorationProbeOptions,
+  globalRemainingMs: number,
+): { probeOptions: ExplorationProbeOptions; watchdogMs: number } {
+  const watchdogMs = Math.max(0, Math.min(options.deadlineMs, Math.trunc(globalRemainingMs)));
+  // Chrome still has to return the MAIN-world value and the action controller
+  // must remove its observer/DNR scope after page work stops. This is one fixed
+  // transport allowance, not another independently ticking phase budget.
+  const returnMarginMs = Math.min(600, Math.max(0, watchdogMs - 250));
+  return {
+    probeOptions: capExplorationProbeOptions(options, watchdogMs - returnMarginMs),
+    watchdogMs,
+  };
+}
+
 /** Ensure a concurrent probe wave cannot outlive the advertised global cap. */
 export function runWithinExplorationBudget<T>(operation: Promise<T>, remainingMs: number): Promise<T> {
   const bounded = Math.max(0, Math.trunc(remainingMs));
@@ -339,43 +366,12 @@ export function runWithinExplorationBudget<T>(operation: Promise<T>, remainingMs
   });
 }
 
-/**
- * Guessed routes, most likely first.
- *
- * The interactive budget only affords a couple of probe waves, so this order is
- * the whole value of the guess. It is curated rather than derived from
- * `pathScore`, because that function ranks by how many billing words a path
- * contains — which puts `/billing/subscriptions` above `/billing` and buries
- * the single most common billing surface behind its own sub-pages.
- */
-const COMMON_BILLING_PATHS = [
-  "/settings/billing",
-  "/billing",
-  "/account/billing",
-  "/invoices",
-  "/billing/history",
-  "/account/billing/history",
-  "/receipts",
-  "/settings/subscription",
-] as const;
-
-const CONTEXTUAL_BILLING_SUFFIXES = [
-  "/billing",
-  "/settings/billing",
-  "/invoices",
-  "/billing/history",
-  "/receipts",
-  "/billing/subscriptions",
-] as const;
-const TENANT_CONTAINER = /^(?:account|accounts|organization|organizations|org|workspace|workspaces|tenant|tenants|customer|customers)$/i;
-const TENANT_CONTEXT_PREFIX = /^(?:app|v|t|home|dashboard|manage|admin|account|accounts|organization|organizations|org|workspace|workspaces|team|teams)$/i;
-
 export const EXPLORATION_ROUTE_POLICY = {
   intent: "invoice|receipt|billing|payment|subscription|statement|transaction",
   bridgeIntent: "settings|preferences|account settings|workspace settings|organization settings|team settings",
   unsafe: "logout|log-out|signout|sign-out|delete|remove|cancel|checkout|purchase|upgrade|downgrade|authorize|oauth|callback|invite|payment[-_/]?method",
   unsafeSegment: "(?:^|[-_/])(?:confirm|create|new)[a-z0-9]*|(?:^|[-_/])pay(?:$|[-_/])",
-  directDocument: "\\.pdf$|(?:^|/)(?:download|pdf)(?:/|$)|^/account/receipt/",
+  directDocument: "\\.pdf$|(?:^|/)(?:download|pdf)(?:/|$)|(?:^|/)(?:invoice|receipt|statement)s?/[^/]+$",
 } as const;
 
 const BILLING_INTENT = new RegExp(EXPLORATION_ROUTE_POLICY.intent, "i");
@@ -387,11 +383,9 @@ const SAFE_NUMERIC_PAGINATION_QUERY = /^(?:page|p|offset|start|per_page|limit)$/
 
 export function planExplorationTargets(input: {
   origin: string;
-  contextUrl?: string;
   links: readonly (string | ExplorationLinkEvidence)[];
   visited: ReadonlySet<string>;
   nextDepth: number;
-  includeCommonRoutes?: boolean;
   limit?: number;
   maxDepth?: number;
 }): ExplorationTarget[] {
@@ -424,46 +418,14 @@ export function planExplorationTargets(input: {
     });
   }
 
-  if (input.includeCommonRoutes) {
-    const contextPrefix = input.contextUrl ? tenantPrefixFromContext(input.contextUrl, origin) : undefined;
-    if (contextPrefix) {
-      for (const [index, suffix] of CONTEXTUAL_BILLING_SUFFIXES.entries()) {
-        const url = new URL(`${contextPrefix}${suffix}`, `${origin}/`).toString();
-        if (input.visited.has(url)) continue;
-        addBest(targets, {
-          url,
-          depth: 1,
-          source: "common_route",
-          family: "tenant_contextual_route",
-          hintSource: "common_fallback",
-          score: 80 + (CONTEXTUAL_BILLING_SUFFIXES.length - index),
-        });
-      }
-    }
-    for (const [index, path] of COMMON_BILLING_PATHS.entries()) {
-      const url = new URL(path, `${origin}/`).toString();
-      if (input.visited.has(url)) continue;
-      addBest(targets, {
-        url,
-        depth: 1,
-        source: "common_route",
-        family: "common_billing_route",
-        hintSource: "common_fallback",
-        score: 60 + (COMMON_BILLING_PATHS.length - index),
-      });
-    }
-  }
-
   const ranked = rankExplorationQueue([...targets.values()]);
   const limit = Math.max(0, Math.min(79, input.limit ?? MAX_EXPLORATION_PAGES - 1));
   return ranked.slice(0, limit);
 }
 
 /**
- * Fair, best-first scheduling. Every represented family receives a turn
- * before any family receives a second. This prevents a large SPA navigation
- * graph from starving tenant-aware or common billing routes while preserving
- * useful route quality within every family.
+ * Fair, best-first scheduling. Every represented evidence family receives a
+ * turn before any family receives a second.
  */
 export function rankExplorationQueue(targets: readonly ExplorationTarget[]): ExplorationTarget[] {
   const byFamily = new Map<ExplorationFamily, ExplorationTarget[]>();
@@ -480,43 +442,6 @@ export function rankExplorationQueue(targets: readonly ExplorationTarget[]): Exp
     for (const family of ENABLED_EXPLORATION_FAMILIES) take(family);
   }
   return result;
-}
-
-function tenantPrefixFromContext(value: string, expectedOrigin: string): string | undefined {
-  try {
-    const url = new URL(value);
-    if (url.origin !== expectedOrigin || url.protocol !== "https:" || url.username || url.password) return undefined;
-    const segments = url.pathname.split("/").filter(Boolean);
-    // An opaque tenant value is safe to bind only when the application itself
-    // placed it immediately after a trusted structural container in the exact
-    // approved route. The value remains ephemeral and is never inferred from a
-    // broad string shape or persisted in diagnostics/checkpoints.
-    const opaqueTenantIndex = segments.findIndex((segment, index) => (
-      index > 0 && index <= 3 &&
-      TENANT_CONTAINER.test(segments[index - 1]) &&
-      segments.slice(0, index - 1).every((prefix) => TENANT_CONTEXT_PREFIX.test(prefix)) &&
-      isBoundedOpaqueTenantSegment(segment)
-    ));
-    if (opaqueTenantIndex >= 0) return `/${segments.slice(0, opaqueTenantIndex + 1).join("/")}`;
-
-    const tenantIndex = segments.findIndex((segment) => isBoundedTenantIdentifierSegment(segment));
-    if (tenantIndex < 0 || tenantIndex > 3) return undefined;
-    if (tenantIndex === 1 && !TENANT_CONTAINER.test(segments[0])) return undefined;
-    if (tenantIndex > 1 && (!TENANT_CONTAINER.test(segments[tenantIndex - 1]) ||
-      !segments.slice(0, tenantIndex - 1).every((segment) => TENANT_CONTEXT_PREFIX.test(segment)))) return undefined;
-    return `/${segments.slice(0, tenantIndex + 1).join("/")}`;
-  } catch {
-    return undefined;
-  }
-}
-
-function isBoundedOpaqueTenantSegment(value: string): boolean {
-  return /^[a-z0-9][a-z0-9_-]{3,79}$/i.test(value) &&
-    !TENANT_CONTAINER.test(value) &&
-    !TENANT_CONTEXT_PREFIX.test(value) &&
-    !BILLING_INTENT.test(value) &&
-    !MUTATING_OR_SESSION_PATH.test(value) &&
-    !MUTATING_SEGMENT.test(value);
 }
 
 /**
@@ -680,7 +605,7 @@ function structuralRoute(value: string): string {
 function isSafeTargetKey(value: string): boolean {
   const [family, route, ...extra] = value.split("|");
   return extra.length === 0 && ENABLED_EXPLORATION_FAMILIES.includes(family as ExplorationFamily) &&
-    isStructuralRoute(route) &&
+    (isStructuralRoute(route) || isSafeCheckpointRoute(route)) &&
     value.length <= 200;
 }
 

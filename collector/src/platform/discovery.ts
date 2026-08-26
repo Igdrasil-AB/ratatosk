@@ -4,6 +4,7 @@ import {
   deriveSupplierDisplayName,
   exactOriginPattern,
   isBoundedTenantIdentifierSegment,
+  isSafeReadOnlyGraphqlRequest,
   MAX_DISCOVERY_CANDIDATES,
   safeEntryUrl,
   reuseDiscoveredSupplierIdentity,
@@ -20,7 +21,7 @@ import { getArray } from "../../../src/core/jsonpath";
 import { inferRecipe } from "../../../src/core/recorder/infer";
 import type { CapturedEntry, DraftRecipe } from "../../../src/core/recorder/types";
 import { validateRecipe } from "../../../src/core/schema";
-import type { InvoiceRef, VendorRecipe } from "../../../src/core/types";
+import type { InvoiceRef, RequestSpec, VendorRecipe } from "../../../src/core/types";
 import { DEFAULT_SAFE_CONCURRENCY, mapConcurrentInSettleOrder, mapConcurrentOrdered } from "../../../src/core/concurrency";
 import {
   canonicalDocumentProviderUrl,
@@ -36,6 +37,7 @@ import {
   type DiscoveryAttemptResult,
   type DiscoveryDiagnosticV1,
   type CandidateAdmissionSignal,
+  type DiscoveryProbeCause,
 } from "./discovery-diagnostic";
 import {
   entryProbeOptions,
@@ -47,6 +49,7 @@ import {
   explorationBudget,
   explorationFamilyForTarget,
   explorationProbeOptions,
+  explorationProbeTiming,
   explorationTargetKey,
   planExplorationTargets,
   rankExplorationQueue,
@@ -93,7 +96,6 @@ const DOM_LINK_SELECTOR = [
   'a[href*=".pdf#" i]',
   'a[href*="/download" i]',
   'a[href*="/pdf" i]',
-  'a[href*="/account/receipt/" i]',
   ...PROVIDER_DOCUMENT_LINK_SELECTORS,
   'a[aria-label*="download" i][href]',
   'a[title*="download" i][href]',
@@ -136,6 +138,8 @@ export interface PageEvidence {
     semanticSections?: number;
     semanticControlsRejected?: number;
     semanticNavigationSteps?: number;
+    semanticNavigationStatus?: "disabled" | "complete" | "time_cap" | "action_cap" | "mutation_blocked";
+    evidenceDropped?: number;
   };
 }
 
@@ -162,6 +166,22 @@ class CandidatePreviewError extends Error {
     super(code);
     this.name = "CandidatePreviewError";
   }
+}
+
+export function discoveryProbeFailureCode(error: unknown): DiscoveryProbeCause {
+  const name = error instanceof Error ? error.name : "";
+  const message = error instanceof Error ? error.message : "";
+  if (/supplier exploration deadline exceeded/i.test(message)) return "outer_deadline";
+  if (/supplier exploration page load timed out/i.test(message)) return "navigation_deadline";
+  if (name === "SecurityError" || /mutating request/i.test(message)) return "mutation_guard";
+  if (name === "DocumentActionFailed" || /document.action/i.test(message)) return "action_scope";
+  const evidence = /supplier page evidence is invalid:([a-z_]+)/.exec(message)?.[1];
+  if (evidence === "page_mutation_guard") return "mutation_guard";
+  if (evidence === "main_result") return "main_result_missing";
+  if (evidence === "page_type_error" || evidence === "page_range_error" || evidence === "page_exception") return "page_exception";
+  if (/supplier page evidence is invalid/i.test(message)) return "evidence_invalid";
+  if (/supplier tab changed/i.test(message)) return "tab_changed";
+  return "other";
 }
 
 export function createInitialExplorationTargets(
@@ -231,7 +251,11 @@ export async function discoverSupplierInTab(
   const completedTargetKeys = new Set(resumed?.completedTargetKeys ?? []);
   const pageObserver = new DiscoveryPageObserverRegistration(expectedOrigin);
   const observerReady = await pageObserver.start();
-  if (observerReady) await pageObserver.adopt(tabId);
+  // A resumed frontier has already completed the active-entry lane. Reinjecting
+  // into that live SPA adds no evidence and can hang forever while Chrome waits
+  // on a navigating or unresponsive frame — exactly when Search Deeper must
+  // remain able to finish from its saved disposable-route frontier.
+  if (observerReady && !resumed) await pageObserver.adopt(tabId);
   // Resuming a checkpoint already carries its own frontier, so the shortcut is
   // only seeded when a search actually starts.
   const remembered = resumed ? undefined : (await getRememberedRoute(expectedOrigin))?.entryUrl;
@@ -243,6 +267,7 @@ export async function discoverSupplierInTab(
     ? restored
     : resumed ? [] : createInitialExplorationTargets(firstUrl, observerReady, remembered);
   const known = new Set([firstUrl, ...queue.map((target) => target.url)]);
+  const incompleteTargets: ExplorationTarget[] = [];
   const foregroundProbeBudget = { remaining: 1 };
   const explorers = Array.from(
     // One tab per concurrent probe slot, and never fewer than the two the entry
@@ -272,7 +297,7 @@ export async function discoverSupplierInTab(
       linkedPagesAttempted: diagnostic.pages.linked,
       commonRoutePagesAttempted: diagnostic.pages.commonRoutes,
       elapsedMs: Math.min(budget.durationMs, elapsedBefore + Math.max(0, Date.now() - startedAt)),
-      frontier: queue.map(checkpointFrontierItem),
+      frontier: [...queue, ...incompleteTargets].map(checkpointFrontierItem),
       completedTargetKeys: [...completedTargetKeys],
       attemptedFamilies: diagnostic.coverage!.attemptedFamilies,
       slicesCompleted: diagnostic.coverage!.slicesCompleted,
@@ -330,8 +355,9 @@ export async function discoverSupplierInTab(
         const baseOptions = target.source === "entry"
           ? entryProbeOptions(mode)
           : explorationProbeOptions(target, mode);
+        const timing = explorationProbeTiming(baseOptions, remainingMs);
         const probeOptions: ProbeOptions = {
-          ...capExplorationProbeOptions(baseOptions, remainingMs),
+          ...timing.probeOptions,
           allowForegroundRetry: index === foregroundCandidateIndex,
           // The page the person chose is observational only. Menu exploration
           // and scrolling belong to the disposable cold replay/background tabs.
@@ -341,7 +367,7 @@ export async function discoverSupplierInTab(
         const probe = target.source === "entry"
           ? probeSupplierTab(tabId, expectedOrigin, probeOptions)
           : explorers[index].probe(target.url, probeOptions);
-        return runWithinExplorationBudget(probe, probeOptions.deadlineMs);
+        return runWithinExplorationBudget(probe, timing.watchdogMs);
       });
 
       for await (const probe of probes) {
@@ -350,17 +376,17 @@ export async function discoverSupplierInTab(
         // the supplier's name, it has contributed.
         if (target.source === "entry") entryObserved = true;
         if (probe.status !== "fulfilled") {
+          const failureCode = probe.status === "rejected" ? discoveryProbeFailureCode(probe.error) : "cancelled";
           recordAttempt(diagnostic, page, target.source, undefined, "probe_failed", Date.now() - pageStartedAt, {
             route: target.url,
+            probeCause: failureCode,
           });
           if (target.source === "entry") {
             enqueueTargets(queue, known, planExplorationTargets({
               origin: expectedOrigin,
-              contextUrl: target.url,
               links: [],
               visited: known,
               nextDepth: 1,
-              includeCommonRoutes: mode !== "fast",
               limit: budget.pages - diagnostic.pages.attempted,
               maxDepth: budget.depth,
             }), completedTargetKeys);
@@ -370,6 +396,7 @@ export async function discoverSupplierInTab(
         }
 
         const evidence = probe.value;
+        const semanticLaneIncomplete = evidence.stats.semanticNavigationStatus === "time_cap";
         // Every page seen adds a vote. The provisional name is recomputed from
         // the whole set rather than fixed by whichever page answered first, and
         // the retained profiles are re-stamped once exploration ends.
@@ -401,8 +428,13 @@ export async function discoverSupplierInTab(
         // reproduces this surface. Applications that rewrite the address bar
         // back to their shell would otherwise compile a recipe that reopens a
         // page the evidence never came from.
-        const openUrl = requestedEntryUrl(target.url, entryUrl);
-        const domOpen = replayableDomOpen(target.url, evidence);
+        const observedSemanticRoutes = evidence.navigationUrls.flatMap((item) =>
+          typeof item === "object" && item.hintSource === "semantic_navigation" ? [item.url] : []);
+        const candidateRoute = (evidence.stats.semanticNavigationSteps ?? 0) > 0
+          ? observedSemanticRoutes.at(-1) ?? resolvedPage ?? target.url
+          : target.url;
+        const openUrl = requestedEntryUrl(candidateRoute, entryUrl);
+        const domOpen = replayableDomOpen(candidateRoute, evidence);
         // These four evidence families are inspected for every successfully
         // loaded route, so a large navigation graph cannot starve them.
         markCoverageFamilies(diagnostic, ["observed_network", "embedded_data", "document_provider", "semantic_download"]);
@@ -419,17 +451,29 @@ export async function discoverSupplierInTab(
           evidence: routeEvidence,
         });
 
+        let candidatePreviewIncomplete = false;
         const evaluations = await mapConcurrentOrdered(candidates, {
           limit: DEFAULT_SAFE_CONCURRENCY.candidatePreviews,
         }, async (candidate) => {
           diagnostic.candidates.previewed += 1;
-          const candidateCount = await previewCandidate(candidate.recipe);
+          const remainingMs = explorationDeadline - Date.now();
+          if (remainingMs <= 0) throw new CandidatePreviewError("limit_reached");
+          const candidateCount = await runWithinExplorationBudget(
+            previewCandidate(candidate.recipe, explorationDeadline),
+            remainingMs,
+          ).catch((error) => {
+            if (discoveryProbeFailureCode(error) === "outer_deadline") {
+              throw new CandidatePreviewError("limit_reached");
+            }
+            throw error;
+          });
           return { candidate, candidateCount };
         });
         for (const evaluation of evaluations) {
           if (evaluation.status === "cancelled") continue;
           if (evaluation.status === "rejected") {
             const candidate = candidates[evaluation.index];
+            if (previewResult(evaluation.error) === "limit_reached") candidatePreviewIncomplete = true;
             recordAttempt(diagnostic, page, target.source, candidate.adapterId, previewResult(evaluation.error), Date.now() - pageStartedAt, {
               route: target.url,
               resolvedRoute: evidence.url,
@@ -475,17 +519,21 @@ export async function discoverSupplierInTab(
         if (target.depth < budget.depth) {
           const planned = planExplorationTargets({
             origin: expectedOrigin,
-            contextUrl: evidence.url,
             links: evidence.navigationUrls,
             visited: known,
             nextDepth: target.depth + 1,
-            includeCommonRoutes: mode !== "fast" && (target.source === "entry" || target.source === "entry_replay"),
             limit: budget.pages - diagnostic.pages.attempted,
             maxDepth: budget.depth,
           });
           enqueueTargets(queue, known, planned, completedTargetKeys);
         }
-        completedTargetKeys.add(explorationTargetKey(target));
+        if (semanticLaneIncomplete || candidatePreviewIncomplete) {
+          if (!incompleteTargets.some((item) => explorationTargetKey(item) === explorationTargetKey(target))) {
+            incompleteTargets.push(target);
+          }
+        } else {
+          completedTargetKeys.add(explorationTargetKey(target));
+        }
 
         // Stop the wave only on evidence that nothing still running could
         // improve on. A structured invoice source ends the search either way,
@@ -516,9 +564,9 @@ export async function discoverSupplierInTab(
 
   if (retained.length) {
     retained.sort((left, right) => right.score - left.score || left.profile.entryUrl.localeCompare(right.profile.entryUrl));
-    diagnostic.timing.elapsedMs = Math.min(budget.durationMs, elapsedBefore + Math.max(0, Date.now() - startedAt));
+    diagnostic.timing.elapsedMs = Math.min(300_000, elapsedBefore + Math.max(0, Date.now() - startedAt));
     diagnostic.candidates.retained = retained.length;
-    const coverageComplete = finalizeCoverage(diagnostic, queue.length === 0);
+    const coverageComplete = finalizeCoverage(diagnostic, queue.length === 0 && incompleteTargets.length === 0);
     diagnostic.termination = retained.length >= 2 || coverageComplete ? "candidate_set_complete" : "candidate_primary_found";
     diagnostic.result = "candidates_found";
     const existing = Object.values(await getDiscoveredSuppliers())
@@ -534,10 +582,11 @@ export async function discoverSupplierInTab(
     };
   }
 
-  diagnostic.timing.elapsedMs = Math.min(budget.durationMs, elapsedBefore + Math.max(0, Date.now() - startedAt));
-  const coverageComplete = finalizeCoverage(diagnostic, queue.length === 0);
-  diagnostic.termination = queue.length && diagnostic.pages.attempted >= budget.pages
-    ? "page_cap"
+  diagnostic.timing.elapsedMs = Math.min(300_000, elapsedBefore + Math.max(0, Date.now() - startedAt));
+  const coverageComplete = finalizeCoverage(diagnostic, queue.length === 0 && incompleteTargets.length === 0);
+  diagnostic.termination = incompleteTargets.length > 0
+    ? "time_cap"
+    : queue.length && diagnostic.pages.attempted >= budget.pages ? "page_cap"
     : diagnostic.timing.elapsedMs >= budget.durationMs ? "time_cap"
       : coverageComplete ? "queue_exhausted" : "coverage_incomplete";
   diagnostic.result = diagnostic.termination === "queue_exhausted" ? "not_found" : "limit_reached";
@@ -563,7 +612,7 @@ export async function disposeDiscoveryResources(
   }
 }
 
-export async function previewCandidate(recipe: VendorRecipe): Promise<number> {
+export async function previewCandidate(recipe: VendorRecipe, expiresAt?: number): Promise<number> {
   let run: ReturnType<typeof buildRunContext>;
   try {
     run = buildRunContext("discovery-preview", recipe);
@@ -606,7 +655,7 @@ export async function previewCandidate(recipe: VendorRecipe): Promise<number> {
     // deferred until Connect & Collect so search stays fast and side effects
     // remain bounded to the user's collection action.
     const previewRecipe = recipeForPreview(recipe);
-    const strategy = buildStrategies(previewRecipe)[previewRecipe.invoices.strategy];
+    const strategy = buildStrategies(previewRecipe, { expiresAt })[previewRecipe.invoices.strategy];
     const refs: InvoiceRef[] = [];
     try {
       for (const scope of scopes.slice(0, 20)) {
@@ -735,12 +784,40 @@ export function compileCandidates(
     recipe: domCandidate,
     admission: ["direct_document_link"],
   });
-  const semanticEvidenceCount = evidence.stats.semanticControls + (evidence.stats.semanticSections ?? 0);
-  const semanticCandidate = semanticEvidenceCount > 0 && domOpen
-    ? semanticDomRecipe(evidence.origin, entryUrl, domOpen.url, displayName, evidence.crossOriginHosts, domOpen.config)
+  const semanticEvidenceCount = evidence.stats.semanticControls + (evidence.stats.semanticSections ?? 0) +
+    (!domCandidate && evidence.stats.documentLinks > 0 && (
+      (evidence.stats.semanticNavigationSteps ?? 0) > 0 || evidence.stats.semanticNavigationStatus === "disabled"
+    ) ? evidence.stats.documentLinks : 0);
+  const semanticOpen: { url: string; config?: VendorRecipe["config"] } | null = domOpen ?? (() => {
+    const replayProved = evidence.stats.semanticNavigationStatus === "complete" &&
+      (evidence.stats.semanticNavigationSteps ?? 0) > 0;
+    const userOpenedInvoiceSurface = evidence.stats.semanticNavigationStatus === "disabled" &&
+      (evidence.stats.documentLinks > 0 || evidence.stats.semanticControls > 0 || (evidence.stats.semanticSections ?? 0) > 0);
+    if (!replayProved && !userOpenedInvoiceSurface) return null;
+    try {
+      return safeEntryUrl(openUrl) === openUrl && new URL(openUrl).origin === evidence.origin
+        ? { url: openUrl }
+        : null;
+    } catch {
+      return null;
+    }
+  })();
+  const semanticCandidate = !domCandidate && semanticEvidenceCount > 0 && semanticOpen
+    ? semanticDomRecipe(
+        evidence.origin,
+        entryUrl,
+        semanticOpen.url,
+        displayName,
+        evidence.crossOriginHosts,
+        semanticOpen.config,
+      )
     : undefined;
   if (semanticCandidate) {
     const admission: CandidateAdmissionSignal[] = [];
+    if (
+      evidence.stats.documentLinks > 0 && evidence.stats.semanticControls === 0 &&
+      (evidence.stats.semanticSections ?? 0) === 0
+    ) admission.push("direct_document_link");
     if ((evidence.stats.semanticSections ?? 0) > 0) admission.push("independent_invoice_context");
     if (evidence.stats.semanticControls > 0) admission.push("semantic_document_control");
     candidates.push({
@@ -772,18 +849,174 @@ export async function probeSupplierTab(
     throw new Error("the supplier tab changed before discovery started");
   }
   const controller = new DocumentActionController(new Set([expectedOrigin]), "discovery");
-  const injections = await controller.runDiscoveryProbe(tabId, () =>
+  const frameProbe = chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    world: "MAIN",
+    func: collectFrameNetworkEvidenceInPage,
+    args: [options],
+  }).catch(() => [] as chrome.scripting.InjectionResult<PageEvidence | null>[]);
+  const mainProbe = controller.runDiscoveryProbe(tabId, () =>
     chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
+      target: { tabId },
       world: "MAIN",
       func: collectPageEvidenceInPage,
       args: [options, { ...EXPLORATION_ROUTE_POLICY, documentSelector: DOM_LINK_SELECTOR }, DISCOVERY_DOM_POLICY],
-    }));
-  const main = parsePageEvidence(injections[0]?.result, expectedOrigin, options);
-  const frames = injections.slice(1).flatMap((injection) => {
+    }), { blockMutations: options.allowSemanticNavigation === true });
+  const [injections, frameInjections] = await Promise.all([mainProbe, frameProbe]);
+  const mainResult = mainFrameInjectionResult(injections);
+  if (mainResult === undefined) throw new Error("supplier page evidence is invalid:main_result");
+  const main = parsePageEvidence(mainResult, expectedOrigin, options);
+  const frames = frameInjections.filter((injection) => injection.frameId !== 0).flatMap((injection) => {
+    if (!injection.result) return [];
     try { return [parsePageEvidence(injection.result, expectedOrigin, options)]; } catch { return []; }
   });
   return mergeFrameNetworkEvidence(main, frames, options.maxResources);
+}
+
+export function mainFrameInjectionResult<T>(
+  injections: readonly Pick<chrome.scripting.InjectionResult<T>, "frameId" | "result">[],
+): T | undefined {
+  const main = injections.find((injection) => injection.frameId === 0);
+  if (main) return main.result;
+  // Older Chrome test doubles predate frameId on InjectionResult. Only retain
+  // their legacy single-frame behavior when no item claims any frame identity.
+  return injections.every((injection) => !Number.isInteger(injection.frameId))
+    ? injections[0]?.result
+    : undefined;
+}
+
+/** Same-origin subframes contribute only the observer's already-sanitized
+ * request evidence. Avoid running the top-level DOM, navigation, scroll, and
+ * ResourceTiming probe in frames whose DOM can never become a recipe. */
+export async function collectFrameNetworkEvidenceInPage(
+  options: Pick<ProbeOptions, "maxResources" | "deadlineMs">,
+): Promise<PageEvidence | null> {
+  if (window.top === window) return null;
+  const maximum = Math.max(1, Math.min(12, options.maxResources));
+  const timeoutMs = Math.max(25, Math.min(1_200, options.deadlineMs));
+  const deadline = Date.now() + timeoutMs;
+  let snapshot: CapturedEntry[] = [];
+  try {
+    const observer = (window as Window & {
+      __ratatoskDiscoveryObserverV1?: { snapshot?: () => Promise<CapturedEntry[]> };
+    }).__ratatoskDiscoveryObserverV1;
+    if (typeof observer?.snapshot === "function") {
+      const value = await Promise.race([
+        Promise.resolve(observer.snapshot()),
+        new Promise<CapturedEntry[]>((resolve) => setTimeout(() => resolve([]), timeoutMs)),
+      ]);
+      if (Array.isArray(value)) snapshot = value.slice(0, maximum);
+    }
+  } catch {
+    snapshot = [];
+  }
+  const resources: ProbedResource[] = [];
+  const crossOriginHosts = new Set<string>();
+  let total = 0;
+  for (const entry of snapshot) {
+    if (
+      !entry || (entry.method !== "GET" && entry.method !== "POST") ||
+      typeof entry.url !== "string" || entry.url.length > 2_048 ||
+      !Number.isInteger(entry.status) || entry.status < 0 || entry.status > 599 ||
+      typeof entry.contentType !== "string" || entry.contentType.length > 256 ||
+      typeof entry.responseBody !== "string" || entry.responseBody.length > 256_000 ||
+      total + entry.responseBody.length > 768_000
+    ) continue;
+    let url: URL;
+    try { url = new URL(entry.url); } catch { continue; }
+    if (url.protocol !== "https:" || url.username || url.password || url.hash) continue;
+    if (url.origin !== location.origin && crossOriginHosts.size < 8) crossOriginHosts.add(url.hostname);
+    const contentType = entry.requestHeaders?.["content-type"];
+    resources.push({
+      url: url.toString(),
+      method: entry.method,
+      status: entry.status,
+      contentType: entry.contentType,
+      body: entry.responseBody,
+      ...(entry.requestBody !== undefined && entry.requestBody.length <= 65_536 ? { requestBody: entry.requestBody } : {}),
+      ...(contentType === "application/json" ? { requestHeaders: { "content-type": contentType } } : {}),
+      ...(entry.requestAuth && entry.requestAuth.scheme !== "none" ? { requestAuthScheme: entry.requestAuth.scheme } : {}),
+      ...(entry.redactedResponsePaths?.length ? { credentialPaths: entry.redactedResponsePaths.slice(0, 40) } : {}),
+      source: "observed",
+      hasLinkNext: false,
+    });
+    total += entry.responseBody.length;
+  }
+  const observedKeys = new Set(resources.map((resource) => resource.url));
+  const timingUrls = (performance.getEntriesByType("resource") as PerformanceResourceTiming[])
+    .flatMap((entry) => {
+      try {
+        const url = new URL(entry.name);
+        return url.protocol === "https:" && url.origin === location.origin &&
+          /invoice|receipt|statement|billing|transaction|charge|payment|subscription/i.test(`${url.pathname}${url.search}`) &&
+          !/\.(?:css|js|mjs|png|jpe?g|gif|svg|webp|woff2?|ttf|ico)(?:\?|$)/i.test(url.pathname)
+          ? [url.toString()]
+          : [];
+      } catch {
+        return [];
+      }
+    });
+  for (const url of [...new Set(timingUrls)]) {
+    if (resources.length >= maximum || observedKeys.has(url) || Date.now() >= deadline) break;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.max(1, deadline - Date.now()));
+    try {
+      const response = await fetch(url, { method: "GET", credentials: "include", signal: controller.signal });
+      const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+      const declared = Number(response.headers.get("content-length") ?? "0");
+      if (!contentType.includes("json") || declared > 256_000 || !response.body) continue;
+      const reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let length = 0;
+      while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        length += next.value.length;
+        if (length > 256_000 || total + length > 768_000) {
+          await reader.cancel();
+          length = 0;
+          break;
+        }
+        chunks.push(next.value);
+      }
+      if (!length) continue;
+      const bytes = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+      resources.push({
+        url,
+        method: "GET",
+        status: response.status,
+        contentType,
+        body: new TextDecoder().decode(bytes),
+        source: "replayed",
+        hasLinkNext: false,
+      });
+      total += length;
+    } catch {
+      // A frame timing hint is optional; keep observed evidence from other lanes.
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return {
+    url: `${location.origin}${location.pathname}`,
+    origin: location.origin,
+    html: "",
+    resources,
+    navigationUrls: [],
+    crossOriginHosts: [...crossOriginHosts],
+    stats: {
+      documentLinks: 0,
+      structuredData: 0,
+      semanticControls: 0,
+      semanticSections: 0,
+      semanticControlsRejected: 0,
+      semanticNavigationSteps: 0,
+      semanticNavigationStatus: "disabled",
+      evidenceDropped: 0,
+    },
+  };
 }
 
 /** Same-origin frames contribute passive request evidence only. Their DOM,
@@ -815,30 +1048,57 @@ function frameResourceScore(resource: ProbedResource): number {
 }
 
 export function parsePageEvidence(value: unknown, expectedOrigin: string, options: ProbeOptions): PageEvidence {
-  const invalid = (): never => { throw new Error("supplier page evidence is invalid"); };
-  if (!value || typeof value !== "object" || Array.isArray(value)) return invalid();
+  const invalid = (code: string): never => { throw new Error(`supplier page evidence is invalid:${code}`); };
+  if (value && typeof value === "object" && !Array.isArray(value) && "__ratatoskProbeError" in value) {
+    const code = (value as { __ratatoskProbeError?: unknown }).__ratatoskProbeError;
+    if (code === "mutation_guard" || code === "type_error" || code === "range_error" || code === "page_exception") {
+      return invalid(`page_${code}`);
+    }
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return invalid("root");
   const raw = value as Record<string, unknown>;
-  if (typeof raw.origin !== "string" || raw.origin !== expectedOrigin || typeof raw.url !== "string" || raw.url.length > 2_048) return invalid();
+  if (typeof raw.origin !== "string" || raw.origin !== expectedOrigin || typeof raw.url !== "string" || raw.url.length > 2_048) return invalid("page");
   let page: URL;
-  try { page = new URL(raw.url); } catch { return invalid(); }
-  if (page.protocol !== "https:" || page.origin !== expectedOrigin || page.username || page.password) return invalid();
+  try { page = new URL(raw.url); } catch { return invalid("page"); }
+  if (page.protocol !== "https:" || page.origin !== expectedOrigin || page.username || page.password) return invalid("page");
+  let evidenceDropped = 0;
+  const dropped = <T>(fallback: T): T => {
+    evidenceDropped += 1;
+    return fallback;
+  };
   const boundedText = (item: unknown, maximum: number): item is string | undefined => item === undefined || (typeof item === "string" && item.length <= maximum);
-  if (!boundedText(raw.title, 160) || !boundedText(raw.applicationName, 160) || !boundedText(raw.siteName, 160)) return invalid();
-  if (typeof raw.html !== "string" || raw.html.length > 750_000) return invalid();
-  if (!Array.isArray(raw.resources) || raw.resources.length > options.maxResources) return invalid();
-  const observedHosts = Array.isArray(raw.crossOriginHosts) ? raw.crossOriginHosts : [];
+  const title = boundedText(raw.title, 160) ? raw.title : dropped(undefined);
+  const applicationName = boundedText(raw.applicationName, 160) ? raw.applicationName : dropped(undefined);
+  const siteName = boundedText(raw.siteName, 160) ? raw.siteName : dropped(undefined);
+  const html = typeof raw.html === "string" && raw.html.length <= 750_000 ? raw.html : dropped("");
+  const observedHosts = Array.isArray(raw.crossOriginHosts) ? raw.crossOriginHosts.slice(0, 8) : dropped<unknown[]>([]);
+  if (Array.isArray(raw.crossOriginHosts) && raw.crossOriginHosts.length > 8) {
+    evidenceDropped += raw.crossOriginHosts.length - 8;
+  }
   const allowedResourceOrigins = new Set([expectedOrigin]);
+  const crossOriginHosts: string[] = [];
   for (const item of observedHosts) {
-    if (typeof item !== "string" || item.length > 253 || item.includes(":")) return invalid();
+    if (typeof item !== "string" || item.length > 253 || item.includes(":")) {
+      evidenceDropped += 1;
+      continue;
+    }
     try {
       exactOriginPattern(`https://${item}`);
       allowedResourceOrigins.add(`https://${item}`);
-    } catch { return invalid(); }
+      if (!crossOriginHosts.includes(item)) crossOriginHosts.push(item);
+    } catch { evidenceDropped += 1; }
   }
   const resources: ProbedResource[] = [];
   let totalBody = 0;
-  for (const item of raw.resources) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return invalid();
+  const rawResources = Array.isArray(raw.resources) ? raw.resources.slice(0, options.maxResources) : dropped<unknown[]>([]);
+  if (Array.isArray(raw.resources) && raw.resources.length > options.maxResources) {
+    evidenceDropped += raw.resources.length - options.maxResources;
+  }
+  for (const item of rawResources) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      evidenceDropped += 1;
+      continue;
+    }
     const resource = item as Record<string, unknown>;
     if (
       typeof resource.url !== "string" || resource.url.length > 2_048 ||
@@ -852,12 +1112,25 @@ export function parsePageEvidence(value: unknown, expectedOrigin: string, option
       (resource.hasLinkNext !== undefined && typeof resource.hasLinkNext !== "boolean") ||
       (resource.requestAuthScheme !== undefined && !isAuthScheme(resource.requestAuthScheme)) ||
       (resource.credentialPaths !== undefined && !isCredentialPathList(resource.credentialPaths))
-    ) return invalid();
+    ) {
+      evidenceDropped += 1;
+      continue;
+    }
     let url: URL;
-    try { url = new URL(resource.url); } catch { return invalid(); }
-    if (url.protocol !== "https:" || !allowedResourceOrigins.has(url.origin) || url.username || url.password || url.hash) return invalid();
+    try { url = new URL(resource.url); } catch {
+      evidenceDropped += 1;
+      continue;
+    }
+    if (url.protocol !== "https:" || !allowedResourceOrigins.has(url.origin) || url.username || url.password || url.hash) {
+      evidenceDropped += 1;
+      continue;
+    }
     totalBody += resource.body.length;
-    if (totalBody > 768_000) return invalid();
+    if (totalBody > 768_000) {
+      totalBody -= resource.body.length;
+      evidenceDropped += 1;
+      continue;
+    }
     resources.push({
       url: url.toString(),
       status: Number(resource.status),
@@ -872,23 +1145,38 @@ export function parsePageEvidence(value: unknown, expectedOrigin: string, option
       hasLinkNext: resource.hasLinkNext === true,
     });
   }
-  if (!Array.isArray(raw.navigationUrls) || raw.navigationUrls.length > 80) return invalid();
+  const rawNavigationUrls = Array.isArray(raw.navigationUrls) ? raw.navigationUrls.slice(0, 80) : dropped<unknown[]>([]);
+  if (Array.isArray(raw.navigationUrls) && raw.navigationUrls.length > 80) {
+    evidenceDropped += raw.navigationUrls.length - 80;
+  }
   const navigationUrls: (string | ExplorationLinkEvidence)[] = [];
-  for (const item of raw.navigationUrls) {
+  for (const item of rawNavigationUrls) {
     if (typeof item === "string") {
-      if (item.length > 2_048) return invalid();
+      if (item.length > 2_048) {
+        evidenceDropped += 1;
+        continue;
+      }
       const safe = safeExplorationUrl(item, expectedOrigin);
-      if (!safe) return invalid();
+      if (!safe) {
+        evidenceDropped += 1;
+        continue;
+      }
       navigationUrls.push(safe);
       continue;
     }
-    if (!item || typeof item !== "object" || Array.isArray(item)) return invalid();
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      evidenceDropped += 1;
+      continue;
+    }
     const evidence = item as Record<string, unknown>;
     if (
       typeof evidence.url !== "string" || evidence.url.length > 2_048 ||
       (evidence.label !== undefined && (typeof evidence.label !== "string" || evidence.label.length > 160)) ||
       (evidence.context !== undefined && (typeof evidence.context !== "string" || evidence.context.length > 240))
-    ) return invalid();
+    ) {
+      evidenceDropped += 1;
+      continue;
+    }
     const label = typeof evidence.label === "string" ? evidence.label.replace(/\s+/g, " ").trim() : undefined;
     const context = typeof evidence.context === "string" ? evidence.context.replace(/\s+/g, " ").trim() : undefined;
     const semantic = `${label ?? ""} ${context ?? ""}`.trim();
@@ -896,44 +1184,43 @@ export function parsePageEvidence(value: unknown, expectedOrigin: string, option
     const safe = hintSource === "semantic_navigation"
       ? safeReplayUrl(evidence.url, expectedOrigin)
       : safeExplorationUrl(evidence.url, expectedOrigin, semantic, { allowBridgeIntent: true });
-    if (!safe) return invalid();
+    if (!safe) {
+      evidenceDropped += 1;
+      continue;
+    }
     navigationUrls.push(label || context || hintSource
       ? { url: safe, ...(label ? { label } : {}), ...(context ? { context } : {}), ...(hintSource ? { hintSource } : {}) }
       : safe);
   }
-  if (!Array.isArray(raw.crossOriginHosts) || raw.crossOriginHosts.length > 8) return invalid();
-  const crossOriginHosts: string[] = [];
-  for (const item of raw.crossOriginHosts) {
-    if (typeof item !== "string" || item.length > 253 || item.includes(":")) return invalid();
-    try { exactOriginPattern(`https://${item}`); } catch { return invalid(); }
-    crossOriginHosts.push(item);
-  }
-  if (!raw.stats || typeof raw.stats !== "object" || Array.isArray(raw.stats)) return invalid();
-  const stats = raw.stats as Record<string, unknown>;
+  const stats = raw.stats && typeof raw.stats === "object" && !Array.isArray(raw.stats)
+    ? raw.stats as Record<string, unknown>
+    : dropped({} as Record<string, unknown>);
   const boundedCount = (item: unknown) => Number.isInteger(item) && Number(item) >= 0 && Number(item) <= 1_000;
-  const boundedOptionalCount = (item: unknown) => item === undefined || boundedCount(item);
-  if (
-    !boundedCount(stats.documentLinks) || !boundedCount(stats.structuredData) ||
-    !boundedCount(stats.semanticControls) || !boundedOptionalCount(stats.semanticSections) ||
-    !boundedOptionalCount(stats.semanticControlsRejected) || !boundedOptionalCount(stats.semanticNavigationSteps)
-  ) return invalid();
+  const count = (item: unknown): number => boundedCount(item) ? Number(item) : dropped(0);
+  const semanticNavigationStatus = stats.semanticNavigationStatus === "disabled" || stats.semanticNavigationStatus === "complete" ||
+    stats.semanticNavigationStatus === "time_cap" || stats.semanticNavigationStatus === "action_cap" ||
+    stats.semanticNavigationStatus === "mutation_blocked"
+    ? stats.semanticNavigationStatus
+    : stats.semanticNavigationStatus === undefined ? undefined : dropped(undefined);
   return {
     url: page.toString(),
     origin: expectedOrigin,
-    title: raw.title as string | undefined,
-    applicationName: raw.applicationName as string | undefined,
-    siteName: raw.siteName as string | undefined,
-    html: raw.html,
+    title,
+    applicationName,
+    siteName,
+    html,
     resources,
     navigationUrls,
-    crossOriginHosts: [...new Set(crossOriginHosts)],
+    crossOriginHosts,
     stats: {
-      documentLinks: Number(stats.documentLinks),
-      structuredData: Number(stats.structuredData),
-      semanticControls: Number(stats.semanticControls),
-      semanticSections: Number(stats.semanticSections ?? 0),
-      semanticControlsRejected: Number(stats.semanticControlsRejected ?? 0),
-      semanticNavigationSteps: Number(stats.semanticNavigationSteps ?? 0),
+      documentLinks: count(stats.documentLinks),
+      structuredData: count(stats.structuredData),
+      semanticControls: count(stats.semanticControls),
+      semanticSections: stats.semanticSections === undefined ? 0 : count(stats.semanticSections),
+      semanticControlsRejected: stats.semanticControlsRejected === undefined ? 0 : count(stats.semanticControlsRejected),
+      semanticNavigationSteps: stats.semanticNavigationSteps === undefined ? 0 : count(stats.semanticNavigationSteps),
+      ...(semanticNavigationStatus ? { semanticNavigationStatus } : {}),
+      evidenceDropped,
     },
   };
 }
@@ -972,7 +1259,8 @@ export async function collectPageEvidenceInPage(
   options: ProbeOptions,
   routePolicy: typeof EXPLORATION_ROUTE_POLICY & { documentSelector: string },
   semanticPolicy: typeof DISCOVERY_DOM_POLICY,
-): Promise<PageEvidence> {
+): Promise<PageEvidence | { __ratatoskProbeError: "mutation_guard" | "type_error" | "range_error" | "page_exception" }> {
+  try {
   const MAX_HTML = 750_000;
   const MAX_BODY = 256_000;
   const MAX_TOTAL = 768_000;
@@ -1154,16 +1442,21 @@ export async function collectPageEvidenceInPage(
     );
   });
   const semanticMenuTriggers = (): HTMLElement[] => Array.from(document.querySelectorAll<HTMLElement>(
-    'button[aria-haspopup="menu"],button[aria-haspopup="true"],[role="button"][aria-haspopup="menu"],[role="button"][aria-haspopup="true"]',
+    'button,[role="button"],[aria-haspopup="menu"],[aria-haspopup="true"]',
   )).filter((element) => {
     const labels = semanticNavigationLabelsOf(element);
-    return !labels.some((label) => unsafeLabel.test(label)) && !element.closest("form,[role=menu]") &&
+    const declaredMenu = element.getAttribute("aria-haspopup") === "menu" || element.getAttribute("aria-haspopup") === "true";
+    const semanticTrigger = semanticNavigationTrigger.test(structuralNavigationMaterialOf(element));
+    return (declaredMenu || semanticTrigger) && !labels.some((label) => unsafeLabel.test(label)) && !element.closest("form,[role=menu]") &&
       visible(element) && !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true";
   }).sort((left, right) => {
-    const score = (element: HTMLElement): number =>
-      (semanticNavigationTrigger.test(structuralNavigationMaterialOf(element)) ? 100 : 0) +
-      (element.closest('nav,header,[role="navigation"]') ? 20 : 0) +
-      (element.hasAttribute("aria-controls") ? 5 : 0);
+    const score = (element: HTMLElement): number => {
+      const material = structuralNavigationMaterialOf(element);
+      return (semanticNavigationTrigger.test(material) ? 100 : 0) +
+        (/(?:workspace|organization|company|team)/i.test(material) ? 50 : 0) +
+        (element.closest('nav,header,[role="navigation"]') ? 20 : 0) +
+        (element.hasAttribute("aria-controls") ? 5 : 0);
+    };
     return score(right) - score(left);
   }).slice(0, 4);
   const settingsControlAfterMenu = (trigger: HTMLElement): HTMLElement | undefined => {
@@ -1183,8 +1476,10 @@ export async function collectPageEvidenceInPage(
     semanticControls().length ||
     semanticSections().length
   );
-  const revealSemanticNavigation = async (): Promise<void> => {
-    if (billingSurfaceObserved()) return;
+  const revealSemanticNavigation = async (
+    mutationAttempted: () => boolean = () => false,
+  ): Promise<"complete" | "time_cap" | "action_cap"> => {
+    if (billingSurfaceObserved()) return "complete";
     // A tier is worth waiting for only while something can still mount it: the
     // application's own startup for the first tier, or the previous click. A
     // single mutation fires on the first unrelated attribute change, long
@@ -1196,14 +1491,23 @@ export async function collectPageEvidenceInPage(
     // evidence, so it may claim at most half of what remains.
     const revealDeadline = Math.min(deadline, Date.now() + Math.max(500, Math.floor((deadline - Date.now()) / 2)));
     let settingsControl: HTMLElement | undefined;
-    for (const trigger of semanticMenuTriggers()) {
+    const triggers = semanticMenuTriggers();
+    let inspectedTriggers = 0;
+    for (const trigger of triggers) {
       if (Date.now() >= revealDeadline || semanticNavigationSteps >= 4) break;
+      inspectedTriggers += 1;
       trigger.click();
       semanticNavigationSteps += 1;
+      if (mutationAttempted()) return "complete";
       const menuDeadline = Math.min(revealDeadline, Date.now() + 600);
-      while (Date.now() < menuDeadline && !settingsControlAfterMenu(trigger)) {
+      let emptyMenuObservedAt: number | undefined;
+      while (Date.now() < menuDeadline && !mutationAttempted() && !settingsControlAfterMenu(trigger)) {
+        const visibleMenu = Array.from(document.querySelectorAll<HTMLElement>('[role="menu"]')).some(visible);
+        if (visibleMenu) emptyMenuObservedAt ??= Date.now();
+        if (emptyMenuObservedAt !== undefined && Date.now() - emptyMenuObservedAt >= 100) break;
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
+      if (mutationAttempted()) return "complete";
       settingsControl = settingsControlAfterMenu(trigger);
       if (settingsControl) break;
       (document.activeElement ?? document).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -1212,10 +1516,11 @@ export async function collectPageEvidenceInPage(
     if (settingsControl && semanticNavigationSteps < 6) {
       settingsControl.click();
       semanticNavigationSteps += 1;
+      if (mutationAttempted()) return "complete";
       const billingDeadline = Math.min(revealDeadline, Date.now() + 1_500);
       let billingControl = semanticNavigationControl(billingNavigation);
       while (!billingControl && Date.now() < billingDeadline) {
-        if (billingSurfaceObserved()) return;
+        if (billingSurfaceObserved()) return "complete";
         await new Promise((resolve) => setTimeout(resolve, 100));
         billingControl = semanticNavigationControl(billingNavigation);
       }
@@ -1224,9 +1529,14 @@ export async function collectPageEvidenceInPage(
         semanticNavigationSteps += 1;
       }
     }
+    if (billingSurfaceObserved()) return "complete";
+    if (semanticNavigationSteps >= 6) return "action_cap";
+    return Date.now() >= revealDeadline && (inspectedTriggers < triggers.length || Boolean(settingsControl))
+      ? "time_cap"
+      : "complete";
   };
 
-  const withDiscoveryMutationGuard = async (operation: () => Promise<void>): Promise<void> => {
+  const withDiscoveryMutationGuard = async (operation: (mutationAttempted: () => boolean) => Promise<void>): Promise<boolean> => {
     let mutationAttempts = 0;
     const blocked = (): DOMException => {
       mutationAttempts += 1;
@@ -1344,8 +1654,9 @@ export async function collectPageEvidenceInPage(
     }
     pageNavigation?.addEventListener("navigate", preventUnsafeNavigation);
     try {
-      await operation();
-      if (mutationAttempts > 0) throw blocked();
+      await operation(() => mutationAttempts > 0);
+    } catch (error) {
+      if (mutationAttempts === 0) throw error;
     } finally {
       if (window.fetch === guardedFetch) window.fetch = originalFetch;
       if (window.open === guardedWindowOpen) window.open = originalWindowOpen;
@@ -1358,6 +1669,7 @@ export async function collectPageEvidenceInPage(
       if (pageHistory?.replaceState === guardedReplaceState) pageHistory.replaceState = originalReplaceState!;
       pageNavigation?.removeEventListener("navigate", preventUnsafeNavigation);
     }
+    return mutationAttempts > 0;
   };
 
   let observedSnapshot: CapturedEntry[] = [];
@@ -1423,15 +1735,22 @@ export async function collectPageEvidenceInPage(
       }
     }
   };
-  if (topLevelFrame && options.allowSemanticNavigation !== false) {
-    await withDiscoveryMutationGuard(async () => {
-      await revealSemanticNavigation();
-      await waitForObservedEvidenceQuiescence();
+  const navigationRoutesBeforeReveal = await snapshotNavigationRoutes();
+  let semanticNavigationStatus: NonNullable<PageEvidence["stats"]["semanticNavigationStatus"]> =
+    topLevelFrame && options.allowSemanticNavigation !== false ? "complete" : "disabled";
+  if (semanticNavigationStatus !== "disabled") {
+    let revealStatus: "complete" | "time_cap" | "action_cap" = "complete";
+    const mutationBlocked = await withDiscoveryMutationGuard(async (mutationAttempted) => {
+      revealStatus = await revealSemanticNavigation(mutationAttempted);
+      if (!mutationAttempted()) await waitForObservedEvidenceQuiescence();
     });
+    semanticNavigationStatus = mutationBlocked ? "mutation_blocked" : revealStatus;
   } else {
     await waitForObservedEvidenceQuiescence();
   }
-  const observedNavigationRoutes = await snapshotNavigationRoutes();
+  const navigationRoutesAfterReveal = await snapshotNavigationRoutes();
+  const routesBeforeReveal = new Set(navigationRoutesBeforeReveal);
+  const observedNavigationRoutes = navigationRoutesAfterReveal.filter((route) => !routesBeforeReveal.has(route));
 
   const usefulEvidencePresent = () => Boolean(
     document.querySelector(routePolicy.documentSelector) ||
@@ -1621,6 +1940,27 @@ export async function collectPageEvidenceInPage(
   }
 
   const navigationUrls = new Map<string, ExplorationLinkEvidence>();
+  const safeObservedNavigationRoute = (raw: string): string | undefined => {
+    if (raw.length > 2_048) return undefined;
+    try {
+      const url = new URL(raw, location.href);
+      if (
+        url.protocol !== "https:" || url.origin !== location.origin || url.username || url.password ||
+        unsafePath.test(url.pathname) || unsafeSegment.test(url.pathname) || directDocumentPath.test(url.pathname) ||
+        url.pathname.length > 320
+      ) return undefined;
+      for (const [key, value] of [...url.searchParams.entries()]) {
+        if (!/^(?:page|p|offset|start|per_page|limit)$/i.test(key) || !/^\d{1,6}$/.test(value)) {
+          url.searchParams.delete(key);
+        }
+      }
+      url.searchParams.sort();
+      url.hash = "";
+      return url.toString();
+    } catch {
+      return undefined;
+    }
+  };
   const keepNavigationRoute = (
     raw: string,
     hintSource: "resource_timing" | "observed_request" | "structured_data",
@@ -1655,7 +1995,7 @@ export async function collectPageEvidenceInPage(
     }
   };
   for (const raw of observedNavigationRoutes) {
-    const url = safeReplayUrl(raw, location.origin);
+    const url = safeObservedNavigationRoute(raw);
     if (!url || navigationUrls.size >= 80) continue;
     navigationUrls.set(url, { url, hintSource: "semantic_navigation" });
   }
@@ -1705,7 +2045,7 @@ export async function collectPageEvidenceInPage(
     }
   }
   const routeElements = document.querySelectorAll(
-    "a[href],area[href],[role=link][href],[data-href],[data-url],[data-route],[routerlink],[ng-reflect-router-link],iframe[src]",
+    "a[href],area[href],[role=link][href],[data-href],[data-url],[data-route],[routerlink],[ng-reflect-router-link]",
   );
   const routeAttributes = ["href", "data-href", "data-url", "data-route", "routerlink", "ng-reflect-router-link", "src"];
   let inspectedRoutes = 0;
@@ -1768,6 +2108,8 @@ export async function collectPageEvidenceInPage(
       semanticSections: Math.min(1_000, semanticSectionCount),
       semanticControlsRejected,
       semanticNavigationSteps: Math.min(3, semanticNavigationSteps),
+      semanticNavigationStatus,
+      evidenceDropped: 0,
     },
   };
 
@@ -1787,9 +2129,18 @@ export async function collectPageEvidenceInPage(
     const controls = semanticControls().slice(0, 100).map((element) => element.outerHTML).join("");
     return `<html><head>${structured}</head><body>${links}${controls}</body></html>`.slice(0, limit);
   }
+  } catch (error) {
+    const name = error instanceof Error ? error.name : "";
+    return {
+      __ratatoskProbeError: name === "SecurityError"
+        ? "mutation_guard"
+        : name === "TypeError" ? "type_error"
+          : name === "RangeError" ? "range_error" : "page_exception",
+    };
+  }
 }
 
-class DiscoveryPageObserverRegistration {
+export class DiscoveryPageObserverRegistration {
   private registered = false;
 
   constructor(private readonly expectedOrigin: string) {}
@@ -1849,7 +2200,7 @@ class DiscoveryPageObserverRegistration {
     await removeStaleDiscoveryObserverRegistration();
     await Promise.all(possiblyObservedTabs.map(async (tabId) => {
       await chrome.scripting.executeScript({
-        target: { tabId },
+        target: { tabId, allFrames: true },
         world: "MAIN",
         func: () => {
           const observer = (window as Window & {
@@ -1924,7 +2275,7 @@ class BackgroundExplorationTab {
       ? { ...options, deadlineMs: Math.trunc(options.deadlineMs * 0.6) }
       : options;
     const evidence = await probeSupplierTab(
-      this.tabId,
+      this.tabId!,
       this.expectedOrigin,
       capExplorationProbeOptions(inactiveOptions, Math.min(inactiveOptions.deadlineMs, remainingMs())),
     );
@@ -2025,6 +2376,7 @@ function recordAttempt(
     resolvedRoute?: string;
     evidence?: DiscoveryAttemptEvidence;
     admission?: CandidateAdmissionSignal[];
+    probeCause?: DiscoveryProbeCause;
   },
 ): void {
   if (diagnostic.attempts.length < 80) {
@@ -2037,12 +2389,13 @@ function recordAttempt(
       ...(resolvedRoute && resolvedRoute !== route ? { resolvedRoute } : {}),
       adapter,
       result,
+      ...(details.probeCause ? { probeCause: details.probeCause } : {}),
       durationMs: Math.min(60_000, Math.max(0, Math.trunc(durationMs))),
       ...(details.evidence ? { evidence: details.evidence } : {}),
       ...(details.admission?.length ? { admission: details.admission } : {}),
     });
   }
-  console.info(`[collector] discovery page ${page}/${diagnostic.limits.pages} (${source} ${toDiagnosticRoute(details.route)})${adapter ? ` ${adapter}` : ""} -> ${result} (${Math.trunc(durationMs)}ms)`);
+  console.info(`[collector] discovery page ${page}/${diagnostic.limits.pages} (${source} ${toDiagnosticRoute(details.route)})${adapter ? ` ${adapter}` : ""} -> ${result}${details.probeCause ? `/${details.probeCause}` : ""} (${Math.trunc(durationMs)}ms)`);
 }
 
 function diagnosticEvidence(evidence: PageEvidence): DiscoveryAttemptEvidence {
@@ -2055,6 +2408,8 @@ function diagnosticEvidence(evidence: PageEvidence): DiscoveryAttemptEvidence {
     semanticControls: evidence.stats.semanticControls,
     semanticControlsRejected: evidence.stats.semanticControlsRejected ?? 0,
     semanticNavigationSteps: evidence.stats.semanticNavigationSteps ?? 0,
+    semanticNavigationStatus: evidence.stats.semanticNavigationStatus,
+    evidenceDropped: evidence.stats.evidenceDropped ?? 0,
   };
 }
 
@@ -2263,17 +2618,18 @@ function recipeFromDraft(
 
 function findLikelyDocumentLinks(html: string, baseUrl: string, pageTitle?: string): string[] {
   const links = new Set<string>();
+  const renderedHtml = withoutRawTextElements(html);
   const invoiceContext = /invoice|receipt|billing|statement|transaction|faktura|kvitto|rechnung|beleg|facture|reçu|factura|recibo|fattura|ricevuta/i;
   // The route is a search hypothesis. A guessed /invoices path must never make
   // a site-wide "Download" link look like invoice evidence, so page context
   // comes only from independently rendered title and heading text.
-  const headings = [...html.matchAll(/<(?:h1|h2|h3|caption)\b[^>]*>([\s\S]{0,400}?)<\/(?:h1|h2|h3|caption)>/gi)]
+  const headings = [...renderedHtml.matchAll(/<(?:h1|h2|h3|caption)\b[^>]*>([\s\S]{0,400}?)<\/(?:h1|h2|h3|caption)>/gi)]
     .slice(0, 12)
     .map((match) => match[1].replace(/<[^>]*>/g, " "))
     .join(" ")
     .slice(0, 2_000);
   const pageHasInvoiceContext = invoiceContext.test(`${pageTitle ?? ""} ${headings}`);
-  for (const match of html.matchAll(/<a\b([^>]*)>/gi)) {
+  for (const match of renderedHtml.matchAll(/<a\b([^>]*)>/gi)) {
     const attributes = match[1];
     const href = /\bhref="([^"]+)"/i.exec(attributes)?.[1];
     if (!href) continue;
@@ -2289,10 +2645,9 @@ function findLikelyDocumentLinks(html: string, baseUrl: string, pageTitle?: stri
       const providerDocument = Boolean(documentProviderForUrl(url));
       const directDocument =
         path.endsWith(".pdf") || /(?:^|\/)download(?:\/|$)/i.test(path) ||
-        /(?:^|\/)pdf(?:\/|$)/i.test(path) || /^\/account\/receipt\//i.test(path) ||
+        /(?:^|\/)pdf(?:\/|$)/i.test(path) ||
         providerDocument;
-      const knownInvoiceDocument = /^\/account\/receipt\//i.test(path) ||
-        (url.hostname === "invoice.stripe.com" && /^\/i\/[^/]+\/[^/]+$/.test(path));
+      const knownInvoiceDocument = url.hostname === "invoice.stripe.com" && /^\/i\/[^/]+\/[^/]+$/.test(path);
       const linkHasInvoiceContext = invoiceContext.test(`${path} ${attributes}`);
       if (knownInvoiceDocument || ((explicitDownload || directDocument) && (pageHasInvoiceContext || linkHasInvoiceContext))) {
         links.add(url.toString());
@@ -2303,6 +2658,54 @@ function findLikelyDocumentLinks(html: string, baseUrl: string, pageTitle?: stri
     }
   }
   return [...links];
+}
+
+/** Remove script/style regions before structural link inference. This output is
+ * never rendered; a scanner is used because regex-based HTML filtering misses
+ * legal whitespace and quoted `>` characters in raw-text element tags. */
+function withoutRawTextElements(html: string): string {
+  const lower = html.toLowerCase();
+  let cursor = 0;
+  let rendered = "";
+  while (cursor < html.length) {
+    const script = rawTextTagStart(lower, "script", cursor);
+    const style = rawTextTagStart(lower, "style", cursor);
+    const start = script < 0 ? style : style < 0 ? script : Math.min(script, style);
+    if (start < 0) return rendered + html.slice(cursor);
+    rendered += html.slice(cursor, start);
+    const tag = start === script ? "script" : "style";
+    const openEnd = htmlTagEnd(html, start + tag.length + 1);
+    if (openEnd < 0) return rendered;
+    const close = rawTextTagStart(lower, `/${tag}`, openEnd + 1);
+    if (close < 0) return rendered;
+    const closeEnd = htmlTagEnd(html, close + tag.length + 2);
+    if (closeEnd < 0) return rendered;
+    cursor = closeEnd + 1;
+  }
+  return rendered;
+}
+
+function rawTextTagStart(lowerHtml: string, tag: string, from: number): number {
+  const needle = `<${tag}`;
+  let index = from;
+  while ((index = lowerHtml.indexOf(needle, index)) >= 0) {
+    const boundary = lowerHtml[index + needle.length];
+    if (boundary === undefined || boundary === ">" || boundary === "/" || /\s/.test(boundary)) return index;
+    index += needle.length;
+  }
+  return -1;
+}
+
+function htmlTagEnd(html: string, from: number): number {
+  let quote = "";
+  for (let index = from; index < html.length; index += 1) {
+    const character = html[index];
+    if (quote) {
+      if (character === quote) quote = "";
+    } else if (character === '"' || character === "'") quote = character;
+    else if (character === ">") return index;
+  }
+  return -1;
 }
 
 function directDomRecipe(
@@ -2323,6 +2726,9 @@ function directDomRecipe(
           for (const host of STRIPE_KNOWN_DOCUMENT_HOSTS) hosts.add(host);
         }
       }
+    }
+    for (const option of config ?? []) {
+      hosts.add(exactOriginPattern(new URL(option.discover.request.url).origin));
     }
     return validateRecipe({
       id: "discovered-candidate",
@@ -2452,14 +2858,31 @@ function replayableDomOpen(
   const tenantIndex = tenantIndexes[0];
   let tenant: string;
   try { tenant = decodeURIComponent(segments[tenantIndex]); } catch { return null; }
+  const allowedResourceOrigins = new Set([
+    evidence.origin,
+    ...evidence.crossOriginHosts.map((host) => `https://${host}`),
+  ]);
   for (const resource of evidence.resources) {
-    if (
-      (resource.method ?? "GET") !== "GET" || resource.requestBody ||
-      (resource.requestHeaders && Object.keys(resource.requestHeaders).length > 0)
-    ) continue;
     let source: URL;
     try { source = new URL(resource.url); } catch { continue; }
-    if (source.origin !== evidence.origin || source.search || source.hash) continue;
+    if (!allowedResourceOrigins.has(source.origin) || source.hash || source.toString().includes("REDACTED")) continue;
+    let sourceMaterial: string;
+    try { sourceMaterial = decodeURIComponent(`${source.pathname}${source.search}`); } catch { continue; }
+    if (sourceMaterial.includes(tenant)) continue;
+    const method = resource.method ?? "GET";
+    let request: RequestSpec;
+    if (method === "GET") {
+      if (resource.requestBody || (resource.requestHeaders && Object.keys(resource.requestHeaders).length > 0)) continue;
+      request = { url: source.toString() };
+    } else {
+      request = {
+        url: source.toString(),
+        method: "POST",
+        ...(resource.requestHeaders ? { headers: resource.requestHeaders } : {}),
+        ...(resource.requestBody ? { body: resource.requestBody } : {}),
+      };
+      if (!isSafeReadOnlyGraphqlRequest(request) || request.body?.includes(tenant)) continue;
+    }
     let binding: { id: string; path: string } | undefined;
     try { binding = findTypedTenantBinding(JSON.parse(resource.body), tenant); } catch { continue; }
     if (!binding) continue;
@@ -2472,7 +2895,7 @@ function replayableDomOpen(
       url: openUrl,
       config: [{
         id: binding.id,
-        discover: { request: { url: source.toString() }, value: binding.path },
+        discover: { request, value: binding.path },
       }],
     };
   }

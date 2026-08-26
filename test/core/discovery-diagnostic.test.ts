@@ -189,6 +189,35 @@ describe("redacted supplier-discovery diagnostics", () => {
     })).toThrow();
   });
 
+  it("retains only closed privacy-safe probe causes", () => {
+    const base = {
+      schema: DISCOVERY_DIAGNOSTIC_SCHEMA,
+      site: "vendor.example",
+      runtime: { collectorVersion: "0.8.50", discoveryEngine: 38 },
+      limits: { pages: 15, depth: 3, durationMs: 10_000 },
+      timing: { elapsedMs: 4_200 },
+      pages: { attempted: 1, linked: 0, commonRoutes: 0 },
+      evidence: { jsonResources: 0, observedRequests: 0, replayedRequests: 0, documentLinks: 0, structuredDataPages: 0, crossOriginHosts: [] },
+      candidates: { compiled: 0, previewed: 0, retained: 0 },
+      attempts: [{
+        page: 1,
+        source: "entry_replay",
+        route: "/workspace/:id/home",
+        result: "probe_failed",
+        probeCause: "outer_deadline",
+        durationMs: 4_200,
+      }],
+      termination: "time_cap",
+      result: "limit_reached",
+    } as const;
+
+    expect(parseDiscoveryDiagnostic(base).attempts[0].probeCause).toBe("outer_deadline");
+    expect(() => parseDiscoveryDiagnostic({
+      ...base,
+      attempts: [{ ...base.attempts[0], probeCause: "GET https://vendor.example/private" }],
+    })).toThrow(/probe cause/);
+  });
+
   it("accepts the bounded aggregate of per-page document-link counts", () => {
     expect(parseDiscoveryDiagnostic({
       schema: DISCOVERY_DIAGNOSTIC_SCHEMA,

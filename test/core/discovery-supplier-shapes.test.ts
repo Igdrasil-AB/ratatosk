@@ -149,6 +149,53 @@ describe("supplier discovery across portal shapes", () => {
     }
   });
 
+  it("checkpoints an unfinished semantic lane instead of reporting not found", async () => {
+    const portal: Portal = {
+      name: "portal whose fourth menu exceeds the fast lane",
+      origin: "https://app.semantic-lane.example",
+      entryPath: "/home",
+      routes: [{
+        path: "/home",
+        title: "Home | Semantic Lane",
+        hydrateMs: 100,
+        semanticRevealMs: 9_000,
+        html: "<html><body><h1>Home</h1></body></html>",
+      }],
+    };
+    const simulation = createSimulation(portal);
+    const checkpoints: ReturnType<typeof createExplorationCheckpoint>[] = [];
+    active = simulation;
+    simulation.install();
+    try {
+      let failure: unknown;
+      try {
+        await discoverSupplierInTab(simulation.entryTabId, portal.origin, {
+          mode: "fast",
+          onCheckpoint: async (checkpoint) => { checkpoints.push(checkpoint); },
+        });
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toBeInstanceOf(SupplierDiscoveryError);
+      expect((failure as SupplierDiscoveryError).diagnostic).toMatchObject({
+        result: "limit_reached",
+        termination: "time_cap",
+      });
+      expect(checkpoints.at(-1)?.frontier).toContainEqual(expect.objectContaining({
+        source: "entry_replay",
+        route: "/home",
+      }));
+      expect((failure as SupplierDiscoveryError).diagnostic.attempts).toContainEqual(expect.objectContaining({
+        source: "entry_replay",
+        evidence: expect.objectContaining({ semanticNavigationStatus: "time_cap" }),
+      }));
+    } finally {
+      simulation.restore();
+      active = undefined;
+    }
+  });
+
   it("finds an arbitrary invoice route only after the app exposes it through safe SPA navigation", async () => {
     const observedNavigation: Portal = {
       name: "same-document invoice navigation",
@@ -302,6 +349,63 @@ describe("supplier discovery across portal shapes", () => {
     expect(JSON.stringify(profile)).not.toContain(tenant);
   });
 
+  it("templates an opaque route from an observed cross-origin read-only GraphQL scope", async () => {
+    const tenant = "9012345678901";
+    const origin = "https://app.graphql-scope.example";
+    const scopeUrl = "https://api.graphql-scope.example/graphql?operationName=Workspace";
+    const requestBody = JSON.stringify({ query: "query Workspace { viewer { workspace { id } } }", operationName: "Workspace" });
+    const scopeBody = JSON.stringify({ data: { viewer: { workspace: { id: tenant } } } });
+    const portal: Portal = {
+      name: "opaque route with cross-origin GraphQL scope",
+      origin,
+      entryPath: `/${tenant}/home`,
+      routes: [
+        {
+          path: `/${tenant}/home`,
+          hydrateMs: 100,
+          navigations: [{ href: `/${tenant}/surface/r7`, label: "Billing and invoices" }],
+          html: "<html><body>Home</body></html>",
+        },
+        {
+          path: `/${tenant}/surface/r7`,
+          title: "Invoices | GraphQL Scope",
+          hydrateMs: 300,
+          calls: [{
+            url: scopeUrl,
+            method: "POST",
+            requestBody,
+            requestHeaders: { "content-type": "application/json" },
+            body: scopeBody,
+          }],
+          html: '<html><body><h1>Invoices</h1><a href="/documents/july.pdf">Download</a></body></html>',
+        },
+      ],
+      endpoint: (request) => request.url === scopeUrl && request.method === "POST"
+        ? { body: scopeBody }
+        : undefined,
+    };
+
+    const { result } = await discover(portal);
+    const profile = result.candidates.candidates.find((candidate) => candidate.adapter.id === "dom-links")!;
+    expect(profile.recipe.invoices).toMatchObject({
+      strategy: "dom",
+      list: { open: `${origin}/{workspace}/surface/r7` },
+    });
+    expect(profile.recipe.config).toEqual([{
+      id: "workspace",
+      discover: {
+        request: {
+          url: scopeUrl,
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: requestBody,
+        },
+        value: "data.viewer.workspace.id",
+      },
+    }]);
+    expect(JSON.stringify(profile)).not.toContain(tenant);
+  });
+
   it("does not preview a root tenant DOM route when typed scope provenance is absent", async () => {
     const tenant = "9012345678901";
     const portal: Portal = {
@@ -353,5 +457,41 @@ describe("supplier discovery across portal shapes", () => {
     expect(recipe.config?.[0]?.id).toBe("workspaceId");
     // The provider's hosted invoice page is rewritten to the direct document.
     expect(JSON.stringify(recipe.invoices.list.map.documentUrl)).toContain("pay.stripe.com");
+  });
+
+  it("does not hang a resumed deep search on active-tab observer adoption", async () => {
+    const portal: Portal = {
+      name: "resumed deep search with an unresponsive active document",
+      origin: "https://deep-resume.example",
+      entryPath: "/home",
+      entryObserverAdoptHangs: true,
+      routes: [{ path: "/home", html: "<html><body>Home</body></html>" }],
+    };
+    const checkpoint = createExplorationCheckpoint({
+      mode: "deep",
+      pagesAttempted: 10,
+      linkedPagesAttempted: 8,
+      commonRoutePagesAttempted: 0,
+      elapsedMs: 10_000,
+      frontier: [],
+      completedTargetKeys: ["exact_entry|/home"],
+      attemptedFamilies: ["exact_entry", "observed_navigation"],
+      slicesCompleted: 0,
+    });
+    const simulation = createSimulation(portal);
+    active = simulation;
+    simulation.install();
+    try {
+      const outcome = await Promise.race([
+        discoverSupplierInTab(simulation.entryTabId, portal.origin, { mode: "deep", checkpoint })
+          .then(() => "resolved" as const, (error: unknown) => error),
+        new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 100)),
+      ]);
+
+      expect(outcome).toBeInstanceOf(SupplierDiscoveryError);
+    } finally {
+      simulation.restore();
+      active = undefined;
+    }
   });
 });

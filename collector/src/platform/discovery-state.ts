@@ -12,6 +12,7 @@ import { parseDiscoveryDiagnostic, type DiscoveryDiagnosticV1 } from "./discover
 import {
   continueExplorationCheckpoint,
   explorationBudget,
+  hasResumableExplorationFrontier,
   parseExplorationCheckpoint,
   type ExplorationCheckpoint,
 } from "./discovery-explorer";
@@ -348,7 +349,8 @@ export async function getSupplierDiscoveryStatus(): Promise<DiscoveryStatusView>
       ...(state.monthFallbackAll ? { monthFallbackAll: true } : {}),
     };
     case "failed": return {
-      ...(state.checkpoint?.mode === "fast" && state.diagnostic?.result === "limit_reached" && state.origin && state.tabId !== undefined
+      ...(state.checkpoint?.mode === "fast" && hasResumableExplorationFrontier(state.checkpoint) &&
+        state.diagnostic?.result === "limit_reached" && state.origin && state.tabId !== undefined
         ? {
           canSearchDeeper: true as const,
           deepRemainingMs: Math.max(0, explorationBudget("deep").durationMs - state.checkpoint.elapsedMs),

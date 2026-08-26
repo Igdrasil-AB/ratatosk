@@ -68,7 +68,7 @@ export function buildDiscoveryIssueReport(diagnostic: DiscoveryDiagnosticV1): Is
     .sort((left, right) => right.durationMs - left.durationMs)
     .slice(0, 8)
     .map((attempt) =>
-      `| ${attempt.page} | \`${attempt.route}\` | ${attempt.source} | ${attempt.adapter ?? "—"} | ${attempt.result} | ${Math.round(attempt.durationMs)}ms |`)
+      `| ${attempt.page} | \`${attempt.route}\` | ${attempt.source} | ${attempt.adapter ?? "—"} | ${attempt.result}${attempt.probeCause ? `/${attempt.probeCause}` : ""} | ${Math.round(attempt.durationMs)}ms |`)
     .join("\n");
   const attempts = slowest
     ? `\n\n### Slowest pages\n\n| # | Route | Source | Adapter | Result | Time |\n| --- | --- | --- | --- | --- | --- |\n${slowest}`

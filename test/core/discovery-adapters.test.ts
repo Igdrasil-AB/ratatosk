@@ -247,7 +247,7 @@ describe("packaged supplier discovery adapters", () => {
     expect(candidates).toEqual([]);
   });
 
-  it("keeps explicit and known direct receipt downloads as document evidence", () => {
+  it("keeps an explicit PDF document as direct evidence without relying on a supplier route", () => {
     const candidates = compileCandidates({
       ...base,
       html: '<html><body><a href="/account/receipt/rcpt_123">Receipt</a><a href="/account/invoices/inv_123.pdf">PDF</a></body></html>',

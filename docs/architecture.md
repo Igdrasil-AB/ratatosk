@@ -263,8 +263,9 @@ user's intent:
    read-only GraphQL queries while blocking mutating fetch/XHR, beacon, form,
    popup, and unsafe navigation attempts. It never activates a document or form action. Same-origin frames contribute
    passive network evidence only; frame DOM routes and controls are not admitted.
-   Common billing paths are a bounded compatibility fallback in an explicit deep
-   search only; they are not tried during the ten-second fast search. The fast
+   No unobserved billing path is assembled or guessed. Common billing words are
+   ranking signals only when they occur in an application-exposed URL,
+   accessible name, or nearby context. The fast
    frontier checks at most fifteen pages to depth three. A `limit_reached` result
    retains only reconstructable safe targets and offers one explicit deeper
    continuation within the remaining portion of the 45-second total envelope. A
