@@ -46,7 +46,8 @@ public repository.
 | [012](012-build-adaptive-supplier-acquisition-fabric.md) | Historical adaptive-acquisition architecture | P1 | L | 011, 013 | REJECTED — superseded by Plan 015 after the original implementation scope drifted |
 | [013](013-enforce-transactional-dom-acquisition.md) | Every click-capable DOM document path runs after stable identity reservation and cannot leave a page-owned browser download | P0 | L | — | IN PROGRESS — shared transaction/controller, synthetic gates, CI, audit, build, package, and artifact verification pass; exact-build Chrome load and first/second/cadence live acceptance remain |
 | [014](014-connect-multiple-igdrasil-companies.md) | Ratatosk holds several connected Igdrasil companies, each supplier feeds exactly one, and the Igdrasil token/ingest surface exists | P0 | L | — | IN PROGRESS — all 16 acceptance rows automated and passing on both sides; the plan's "server side unbuilt" premise was one PR stale, so the shipped surface was corrected rather than rebuilt; live two-company acceptance remains |
-| [015](015-build-evidence-first-adaptive-acquisition.md) | Unknown supplier routes come from observed evidence, search budgets remain honest and resumable, and only replayable proved routes persist | P0 | L | 011 and 013 automated foundations; their live gates before release | IN PROGRESS — automated/mutation/package gates pass; exact-build Chrome and authorized ClickUp first/second/cadence acceptance remain |
+| [015](015-build-evidence-first-adaptive-acquisition.md) | Unknown supplier routes come from observed evidence, search budgets remain honest and resumable, and only replayable proved routes persist | P0 | L | 011 and 013 automated foundations; their live gates before release | BLOCKED — evidence-first primitives shipped, but exact ClickUp replay still fails; Plan 016 owns further iterative runtime and live-acceptance work |
+| [016](016-build-iterative-end-to-end-acquisition-lab.md) | Every acquisition failure becomes a reusable supplier-shape regression and the exact built extension proves delivery plus immediate/cadence deduplication | P0 | XL | 013, 014, 015 primitives | IN PROGRESS — plan and current red baseline recorded; Phase 0 replay trace and red browser case are next |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or
 `REJECTED — <reason>`.
@@ -108,6 +109,9 @@ Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or
               └──────────┬────────────┘
                          v
               015 evidence-first acquisition
+                         |
+                         v
+              016 end-to-end acquisition lab
 
 012 adaptive acquisition fabric: REJECTED, superseded by 015
 
@@ -121,8 +125,10 @@ historical context and must not be implemented or consumed. Plan 010 extends Sva
 Temporal TypeScript foundation; it must not create another SDK stack. Plan 013
 is the P0 corrective prerequisite for Plan 011's remaining live duplicate
 acceptance. Plan 012 is retained as rejected historical context and must not be
-implemented. Plan 015 starts from the automated foundations of Plans 011 and
-013, then requires both plans' remaining exact-build live gates before release.
+implemented. Plan 015 supplied the evidence-first primitives but is blocked on
+exact replay. Plan 016 owns the iterative debugging method, end-to-end browser
+lab, and remaining live/release gates while retaining Plans 013–015 safety
+invariants.
 Plan 014 spans Ratatosk and the
 `igdrasil-accounting` repository and must use separate clean worktrees and PRs
 per repository; it is independent of the acquisition track and may run in
