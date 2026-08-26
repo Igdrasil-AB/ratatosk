@@ -59,7 +59,7 @@ describe("discovery route fidelity", () => {
     }
   });
 
-  it("can verify a user-opened opaque billing surface from a safe shell", () => {
+  it.each(["disabled", "complete"] as const)("can verify a user-opened opaque billing surface when semantic navigation is %s", (semanticNavigationStatus) => {
     const candidates = compileCandidates(
       {
         ...base,
@@ -70,7 +70,7 @@ describe("discovery route fidelity", () => {
           ...base.stats,
           semanticControls: 1,
           semanticNavigationSteps: 0,
-          semanticNavigationStatus: "disabled",
+          semanticNavigationStatus,
         },
       },
       "https://vendor.example/",

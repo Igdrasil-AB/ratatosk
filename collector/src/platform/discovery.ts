@@ -843,7 +843,7 @@ export function compileCandidates(
   const semanticOpen: { url: string; config?: VendorRecipe["config"] } | null = domOpen ?? (() => {
     const replayProved = evidence.stats.semanticNavigationStatus === "complete" &&
       (evidence.stats.semanticNavigationSteps ?? 0) > 0;
-    const userOpenedInvoiceSurface = evidence.stats.semanticNavigationStatus === "disabled" &&
+    const userOpenedInvoiceSurface = (evidence.stats.semanticNavigationSteps ?? 0) === 0 &&
       (evidence.stats.semanticControls > 0 || (evidence.stats.semanticSections ?? 0) > 0);
     if (!replayProved && !userOpenedInvoiceSurface) return null;
     try {
