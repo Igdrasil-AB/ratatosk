@@ -1001,7 +1001,14 @@ export async function runSemanticDocumentOperationInPage(
     let billingSelected = false;
     try {
       let settings: HTMLElement | undefined;
-      for (const trigger of menuTriggers()) {
+      let triggers = menuTriggers();
+      const triggerDeadline = Math.min(deadline, Date.now() + semanticPolicy.navigationTriggerMountMs);
+      while (!triggers.length && Date.now() < triggerDeadline) {
+        if (downloadControls().length) return;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        triggers = menuTriggers();
+      }
+      for (const trigger of triggers) {
         if (Date.now() >= deadline || navigationSteps >= 4) return;
         const settingsVisibleBeforeClick = new Set(navigationControls(settingsNavigation));
         safeNavigationClick(trigger);
