@@ -572,6 +572,10 @@ sink acceptance must not commit identity.
   once; a full pending delivery journal forces `destination_unavailable`, then
   clearing the destination fault retries and accepts the same document, proving
   failure before sink acceptance did not commit its identity;
+- automatic permission completion and the popup completion message now join the
+  same vendor/run in-flight promise. The built acquisition matrix passed three
+  consecutive complete runs after CI reproduced the former `preview expired`
+  race;
 - teardown leaves no fixture server, browser process, profile, download folder,
   or temporary extension tree.
 
