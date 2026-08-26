@@ -23,6 +23,8 @@ import { AuthExpired, DocumentPermissionRequired } from "../../src/core/errors";
 const driverSource = readFileSync("collector/src/platform/browser-dom-driver.ts", "utf8");
 const actionControllerSource = readFileSync("collector/src/platform/document-action-controller.ts", "utf8");
 const discoverySource = readFileSync("collector/src/platform/discovery.ts", "utf8");
+const collectorSource = readFileSync("collector/src/platform/collector.ts", "utf8");
+const runtimeSource = readFileSync("collector/src/platform/runtime.ts", "utf8");
 const observerSource = readFileSync("collector/src/platform/discovery-page-observer.ts", "utf8");
 const policySource = readFileSync("collector/src/platform/discovery-dom-policy.ts", "utf8");
 const pageRetrieval = { observedItems: 1, resolvedItems: 1, unresolvedItems: 0 };
@@ -47,6 +49,14 @@ const emptySemanticEnumeration = {
 
 describe("browser DOM boundary", () => {
   const origins = new Set(["https://vendor.example", "https://documents.example"]);
+
+  it("keeps preview and connected collection on one browser replay executor", () => {
+    expect(discoverySource).toContain("buildStrategies(previewRecipe");
+    expect(collectorSource).toContain("buildStrategies(recipe");
+    expect(runtimeSource.match(/new BrowserDomDriver\(/g)).toHaveLength(1);
+    expect(discoverySource).not.toContain("new BrowserDomDriver(");
+    expect(collectorSource).not.toContain("new BrowserDomDriver(");
+  });
 
   it("uses the same bounded accessible-name inputs in discovery and document collection", () => {
     for (const source of [discoverySource, actionControllerSource]) {
