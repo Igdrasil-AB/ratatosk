@@ -23,4 +23,11 @@ describe("discovery search-limit UI", () => {
     expect(popup).toContain("Open the supplier's billing or invoice page, then search again.");
     expect(popup).toContain("Open Billing Page &amp; Search Again");
   });
+
+  it("retires a failed search when the person switches vendors", () => {
+    expect(state).toContain('...(state.origin ? { origin: state.origin } : {})');
+    expect(popup).toContain('data-action="dismiss-discovery"');
+    expect(popup).toContain("state.discovery.origin !== page.origin");
+    expect(popup).toContain('send({ type: "dismissDiscovery" })');
+  });
 });

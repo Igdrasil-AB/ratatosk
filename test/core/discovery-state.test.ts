@@ -214,6 +214,7 @@ describe("durable supplier discovery handoff", () => {
 
     await expect(getSupplierDiscoveryStatus()).resolves.toEqual({
       stage: "failed",
+      origin: "https://vendor.example",
       message: DISCOVERY_FAILURE_MESSAGES.timeCap,
       reason: "limit_reached",
       diagnosticAvailable: true,
@@ -259,6 +260,7 @@ describe("durable supplier discovery handoff", () => {
 
     await expect(getSupplierDiscoveryStatus()).resolves.toEqual({
       stage: "failed",
+      origin: "https://vendor.example",
       message: DISCOVERY_FAILURE_MESSAGES.timeCap,
       reason: "limit_reached",
       diagnosticAvailable: true,

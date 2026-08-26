@@ -49,7 +49,7 @@ describe("privacy-safe live acceptance snapshot", () => {
 function envelope() {
   return {
     schema: "ratatosk.live-acceptance-snapshot.v1",
-    runtime: { collectorVersion: "0.8.64", discoveryRevision: 54, acquisitionRevision: 6 },
+    runtime: { collectorVersion: "0.8.65", discoveryRevision: 54, acquisitionRevision: 6 },
     hostname: "app.example.com",
     capturedAt: "2026-08-26T10:00:00.000Z",
     sessionNonce: "1".repeat(32),

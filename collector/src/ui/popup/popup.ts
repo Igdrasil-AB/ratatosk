@@ -292,6 +292,10 @@ async function load(): Promise<void> {
     state.schedule = background.schedule;
     state.discovery = background.discovery;
     state.activeSupplierTab = activeSupplierTab;
+    if (state.discovery.stage === "failed" && state.discovery.origin && activeSupplierTab && activeSupplierTab.origin !== state.discovery.origin) {
+      state.discovery = { stage: "idle" };
+      await send({ type: "dismissDiscovery" });
+    }
     state.tabAwarenessEnabled = tabAwarenessEnabled;
     // A settings counter, so a stale one is not worth failing the whole load for.
     state.rememberedRouteCount = routeResponse.ok && "rememberedRoutes" in routeResponse
@@ -616,7 +620,7 @@ function discoveryCard(): string {
       ? `<button type="button" class="quiet-link compact" data-action="report-discovery">Report Issue</button>`
       : "";
     const retry = emptyResult && !discovery.canSearchDeeper ? "Open Billing Page &amp; Search Again" : emptyResult ? "Search Again" : "Try Again";
-    return `<aside class="supplier-request discovery-failed" role="${emptyResult ? "status" : "alert"}"><span class="supplier-request-mark" aria-hidden="true">${emptyResult ? "–" : "!"}</span><span class="supplier-request-copy"><strong>${title}</strong><small>${esc(detail)}</small></span><span class="discovery-actions">${deep}<button type="button" class="supplier-request-link" data-action="retry-discovery">${retry}</button>${diagnostic}</span></aside>`;
+    return `<aside class="supplier-request discovery-failed" role="${emptyResult ? "status" : "alert"}"><span class="supplier-request-mark" aria-hidden="true">${emptyResult ? "–" : "!"}</span><span class="supplier-request-copy"><strong>${title}</strong><small>${esc(detail)}</small></span><span class="discovery-actions">${deep}<button type="button" class="supplier-request-link" data-action="retry-discovery">${retry}</button><button type="button" class="quiet-link compact" data-action="dismiss-discovery">Check This Vendor Instead</button>${diagnostic}</span></aside>`;
   }
   if (hasAnyDestination() && !page && !state.tabAwarenessEnabled) {
     return `<aside class="supplier-request tab-awareness" aria-labelledby="tab-awareness-title"><span class="supplier-request-mark" aria-hidden="true">${branchIcon()}</span><span class="supplier-request-copy"><strong id="tab-awareness-title">Find invoices on this site</strong><small>Chrome will ask once to recognize your active tab.</small></span><span class="discovery-actions"><button type="button" class="supplier-request-link" data-action="enable-tab-awareness" ${state.tabAwarenessRequestPending ? "disabled" : ""}>${state.tabAwarenessRequestPending ? "Preparing…" : "Find Invoices"}</button></span></aside>`;
@@ -1117,6 +1121,10 @@ async function handle(action: string, vendorId?: string): Promise<void> {
     case "manage-igdrasil": await chrome.tabs.create({ url: "https://accounting.igdrasil.se/integrations/invoice-collector" }); return;
     case "cancel-discovery":
       await send({ type: "cancelDiscovery" });
+      await load();
+      return;
+    case "dismiss-discovery":
+      await send({ type: "dismissDiscovery" });
       await load();
       return;
     case "dismiss-vendor-guidance":
@@ -1761,7 +1769,13 @@ async function boot(): Promise<void> {
       if (hadPage && screen === "vendors") renderVendors();
     },
     (page) => {
+      const staleFailure = state.discovery.stage === "failed" &&
+        state.discovery.origin && page && state.discovery.origin !== page.origin;
       state.activeSupplierTab = page;
+      if (staleFailure) {
+        state.discovery = { stage: "idle" };
+        void send({ type: "dismissDiscovery" });
+      }
       if (screen === "vendors") renderVendors();
     },
   );
