@@ -39,6 +39,10 @@ const emptySemanticEnumeration = {
   truncated: false,
   navigationSteps: 0,
   sectionObserved: false,
+  replay: {
+    planKind: "semantic_dom",
+    phases: [{ phase: "document_enumeration", result: "complete", durationMs: 0 }],
+  },
 } as const;
 
 describe("browser DOM boundary", () => {
@@ -715,7 +719,15 @@ describe("browser DOM boundary", () => {
       scripting: {
         registerContentScripts: vi.fn(async () => { throw new Error("unavailable"); }),
         unregisterContentScripts: vi.fn(async () => undefined),
-        executeScript: vi.fn(async () => [{ result: { ok: false, code: "auth_expired" } }]),
+        executeScript: vi.fn(async () => [{ result: {
+          ok: false,
+          code: "auth_expired",
+          replay: {
+            planKind: "semantic_dom",
+            phases: [{ phase: "document_enumeration", result: "not_present", durationMs: 0 }],
+            firstFailure: { phase: "document_enumeration", result: "not_present" },
+          },
+        } }]),
       },
     });
     const controller = new DocumentActionController(origins, "vendor");
