@@ -129,7 +129,7 @@ describe("durable supplier discovery handoff", () => {
       pagesAttempted: 4,
       linkedPagesAttempted: 2,
       commonRoutePagesAttempted: 0,
-      elapsedMs: 10_000,
+      elapsedMs: 60_000,
       frontier: [{
         key: "observed_navigation|/surface/r7",
         family: "observed_navigation",
@@ -148,8 +148,8 @@ describe("durable supplier discovery handoff", () => {
       schema: DISCOVERY_DIAGNOSTIC_SCHEMA,
       site: "vendor.example",
       runtime: { collectorVersion: "0.8.50", discoveryEngine: 37 },
-      limits: { pages: 15, depth: 3, durationMs: 10_000 },
-      timing: { elapsedMs: 10_000 },
+      limits: { pages: 40, depth: 4, durationMs: 60_000 },
+      timing: { elapsedMs: 60_000 },
       pages: { attempted: 4, linked: 2, commonRoutes: 0 },
       evidence: { jsonResources: 0, observedRequests: 0, replayedRequests: 0, documentLinks: 0, structuredDataPages: 0, crossOriginHosts: [] },
       candidates: { compiled: 0, previewed: 0, retained: 0 },
@@ -162,14 +162,14 @@ describe("durable supplier discovery handoff", () => {
       stage: "failed",
       reason: "limit_reached",
       canSearchDeeper: true,
-      deepRemainingMs: 35_000,
+      deepRemainingMs: 60_000,
       origin: "https://vendor.example",
     });
     await expect(continueSupplierDiscovery()).resolves.toMatchObject({
       runId,
       tabId: 42,
       origin: "https://vendor.example",
-      checkpoint: expect.objectContaining({ mode: "deep", elapsedMs: 10_000, frontier: [expect.objectContaining({ route: "/surface/r7" })] }),
+      checkpoint: expect.objectContaining({ mode: "deep", elapsedMs: 60_000, frontier: [expect.objectContaining({ route: "/surface/r7" })] }),
     });
     expect(JSON.stringify((values["supplierDiscovery.v1"] as { checkpoint?: unknown }).checkpoint))
       .not.toMatch(/https?:|token|9012345678/i);
@@ -180,10 +180,10 @@ describe("durable supplier discovery handoff", () => {
     await markSupplierDiscoveryScanning();
     const checkpoint = createExplorationCheckpoint({
       mode: "deep",
-      pagesAttempted: 20,
+      pagesAttempted: 60,
       linkedPagesAttempted: 10,
       commonRoutePagesAttempted: 5,
-      elapsedMs: 45_000,
+      elapsedMs: 120_000,
       frontier: [{
         key: "common_billing_route|/account/billing",
         family: "common_billing_route",
@@ -202,9 +202,9 @@ describe("durable supplier discovery handoff", () => {
       schema: DISCOVERY_DIAGNOSTIC_SCHEMA,
       site: "vendor.example",
       runtime: { collectorVersion: "0.8.50", discoveryEngine: 38 },
-      limits: { pages: 40, depth: 4, durationMs: 45_000 },
-      timing: { elapsedMs: 45_000 },
-      pages: { attempted: 20, linked: 10, commonRoutes: 5 },
+      limits: { pages: 60, depth: 5, durationMs: 120_000 },
+      timing: { elapsedMs: 120_000 },
+      pages: { attempted: 60, linked: 10, commonRoutes: 5 },
       evidence: { jsonResources: 0, observedRequests: 0, replayedRequests: 0, documentLinks: 0, structuredDataPages: 0, crossOriginHosts: [] },
       candidates: { compiled: 0, previewed: 0, retained: 0 },
       attempts: [],
@@ -229,7 +229,7 @@ describe("durable supplier discovery handoff", () => {
       pagesAttempted: 10,
       linkedPagesAttempted: 8,
       commonRoutePagesAttempted: 0,
-      elapsedMs: 10_000,
+      elapsedMs: 60_000,
       frontier: [{
         key: "observed_navigation|/:id/:segment/:segment",
         family: "observed_navigation",
@@ -247,8 +247,8 @@ describe("durable supplier discovery handoff", () => {
       schema: DISCOVERY_DIAGNOSTIC_SCHEMA,
       site: "vendor.example",
       runtime: { collectorVersion: "0.8.52", discoveryEngine: 41 },
-      limits: { pages: 15, depth: 3, durationMs: 10_000 },
-      timing: { elapsedMs: 10_000 },
+      limits: { pages: 40, depth: 4, durationMs: 60_000 },
+      timing: { elapsedMs: 60_000 },
       pages: { attempted: 10, linked: 8, commonRoutes: 0 },
       evidence: { jsonResources: 0, observedRequests: 0, replayedRequests: 0, documentLinks: 1, structuredDataPages: 0, crossOriginHosts: [] },
       candidates: { compiled: 0, previewed: 0, retained: 0 },

@@ -12,13 +12,13 @@ import { createSimulation, type Portal } from "../support/portal-simulator";
  * lost candidate or a slower search rather than as a changed constant.
  *
  * The time assertion is the product promise: a person clicks Find Invoices and
- * waits seconds, not minutes. It is modelled from the same navigation and
+ * gets one bounded correctness-first minute. It is modelled from the same navigation and
  * hydration delays that decide whether evidence is found at all, so nothing can
  * pass it by simply waiting less.
  */
 
 const INTERACTIVE_BUDGET_MS = EXPLORATION_BUDGETS.fast.durationMs;
-const TARGET_MS = 10_000;
+const TARGET_MS = INTERACTIVE_BUDGET_MS;
 
 let active: { restore(): void } | undefined;
 
@@ -78,7 +78,7 @@ describe("supplier discovery across portal shapes", () => {
     expect(trace.elapsedMs).toBeLessThanOrEqual(5_000);
   });
 
-  it("fails fast, and labels the failure so the caller knows a deeper pass is still owed", async () => {
+  it("closes an exhausted correctness-first search within its bounded minute", async () => {
     const barren: Portal = {
       name: "portal with no billing surface",
       origin: "https://app.barren.example",
@@ -100,7 +100,7 @@ describe("supplier discovery across portal shapes", () => {
     expect(simulation.trace.elapsedMs).toBeLessThanOrEqual(TARGET_MS);
   });
 
-  it("resolves a portal too slow for the interactive envelope on the deeper pass", async () => {
+  it("resolves a five-second portal in the first correctness envelope", async () => {
     const glacial: Portal = {
       name: "portal that hydrates billing after five seconds",
       origin: "https://app.glacial.example",
@@ -125,40 +125,25 @@ describe("supplier discovery across portal shapes", () => {
     const fast = createSimulation(glacial);
     active = fast;
     fast.install();
-    let fastError: unknown;
     try {
-      await discoverSupplierInTab(fast.entryTabId, glacial.origin, { mode: "fast" });
-    } catch (error) {
-      fastError = error;
-    } finally {
-      fast.restore();
-      active = undefined;
-    }
-    expect(fastError).toBeInstanceOf(SupplierDiscoveryError);
-    expect((fastError as SupplierDiscoveryError).diagnostic.coverage?.mode).toBe("fast");
-
-    const deep = createSimulation(glacial);
-    active = deep;
-    deep.install();
-    try {
-      const result = await discoverSupplierInTab(deep.entryTabId, glacial.origin, { mode: "deep" });
+      const result = await discoverSupplierInTab(fast.entryTabId, glacial.origin, { mode: "fast" });
       expect(result.candidates.candidates[0].adapter.id).toBe("dom-links");
     } finally {
-      deep.restore();
+      fast.restore();
       active = undefined;
     }
   });
 
   it("checkpoints an unfinished semantic lane instead of reporting not found", async () => {
     const portal: Portal = {
-      name: "portal whose fourth menu exceeds the fast lane",
+      name: "portal whose menu exceeds the first bounded lane",
       origin: "https://app.semantic-lane.example",
       entryPath: "/home",
       routes: [{
         path: "/home",
         title: "Home | Semantic Lane",
         hydrateMs: 100,
-        semanticRevealMs: 9_000,
+        semanticRevealMs: 30_000,
         html: "<html><body><h1>Home</h1></body></html>",
       }],
     };

@@ -20,14 +20,14 @@ const explorerSource = readFileSync("collector/src/platform/discovery-explorer.t
 
 describe("bounded same-origin discovery exploration", () => {
   it("uses the reviewed best-first search budget", () => {
-    expect(MAX_EXPLORATION_PAGES).toBe(15);
-    expect(MAX_EXPLORATION_DEPTH).toBe(3);
-    expect(EXPLORATION_DEADLINE_MS).toBe(10_000);
+    expect(MAX_EXPLORATION_PAGES).toBe(40);
+    expect(MAX_EXPLORATION_DEPTH).toBe(4);
+    expect(EXPLORATION_DEADLINE_MS).toBe(60_000);
   });
 
   it("keeps a substantially broader, still bounded deep coverage envelope", () => {
-    expect(EXPLORATION_BUDGETS.deep).toEqual({ pages: 40, depth: 4, durationMs: 45_000, slices: 1 });
-    expect(EXPLORATION_BUDGETS.self_heal).toEqual({ pages: 60, depth: 5, durationMs: 120_000, slices: 5 });
+    expect(EXPLORATION_BUDGETS.deep).toEqual({ pages: 60, depth: 5, durationMs: 120_000, slices: 1 });
+    expect(EXPLORATION_BUDGETS.self_heal).toEqual({ pages: 80, depth: 5, durationMs: 180_000, slices: 5 });
   });
 
   it("ranks only application-exposed routes by billing words in their path or accessible name", () => {
@@ -52,16 +52,33 @@ describe("bounded same-origin discovery exploration", () => {
     expect(targets.length).toBeLessThanOrEqual(MAX_EXPLORATION_PAGES - 1);
   });
 
-  it("does not invent a route when the application exposes none", () => {
+  it("adds only reviewed universal billing fallbacks when explicitly requested", () => {
     expect(planExplorationTargets({
       origin: "https://github.com",
       links: [],
       visited: new Set(["https://github.com/"]),
       nextDepth: 1,
     })).toEqual([]);
-    expect(explorerSource).not.toContain("COMMON_BILLING_PATHS");
-    expect(explorerSource).not.toContain("CONTEXTUAL_BILLING_SUFFIXES");
-    expect(explorerSource).not.toContain('"/settings/billing"');
+    const targets = planExplorationTargets({
+      origin: "https://vendor.example",
+      contextUrl: "https://vendor.example/901234567890/projects",
+      links: [],
+      visited: new Set(["https://vendor.example/901234567890/projects"]),
+      nextDepth: 1,
+      includeCommonRoutes: true,
+    });
+    expect(targets).toContainEqual(expect.objectContaining({
+      url: "https://vendor.example/901234567890/billing",
+      source: "common_route",
+      family: "tenant_contextual_route",
+    }));
+    expect(targets).toContainEqual(expect.objectContaining({
+      url: "https://vendor.example/settings/billing",
+      source: "common_route",
+      family: "common_billing_route",
+    }));
+    expect(explorerSource).toContain("COMMON_BILLING_PATHS");
+    expect(explorerSource).toContain("CONTEXTUAL_BILLING_SUFFIXES");
   });
 
   it("checkpoints only a structural route key and rejects raw routes or malformed progress", () => {
@@ -115,7 +132,7 @@ describe("bounded same-origin discovery exploration", () => {
       depth: 1,
       score: 105,
     };
-    expect(explorationProbeOptions(target)).toEqual({ settleMs: 2_600, maxResources: 12, deadlineMs: 4_200 });
+    expect(explorationProbeOptions(target)).toEqual({ settleMs: 8_000, maxResources: 12, deadlineMs: 12_000 });
   });
 
   it("caps each probe and the whole wave to the remaining global budget", async () => {
@@ -302,10 +319,11 @@ describe("bounded same-origin discovery exploration", () => {
     expect(detail).toMatchObject({ url: `${origin}/account/billingPortal/invoiceHistory/invoice_123`, depth: 3 });
   });
 
-  it("does not plan beyond depth three or revisit a canonical route", () => {
+  it("does not plan beyond depth four or revisit a canonical route", () => {
     const origin = "https://vendor.example";
     expect(planExplorationTargets({ origin, links: [`${origin}/billing/invoiceHistory`], visited: new Set(), nextDepth: 3 })).toHaveLength(1);
-    expect(planExplorationTargets({ origin, links: [`${origin}/billing`], visited: new Set(), nextDepth: 4 })).toEqual([]);
+    expect(planExplorationTargets({ origin, links: [`${origin}/billing`], visited: new Set(), nextDepth: 4 })).toHaveLength(1);
+    expect(planExplorationTargets({ origin, links: [`${origin}/billing`], visited: new Set(), nextDepth: 5 })).toEqual([]);
     expect(planExplorationTargets({
       origin,
       links: [`${origin}/billing?from=home`],

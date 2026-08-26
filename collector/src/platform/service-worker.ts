@@ -544,20 +544,22 @@ async function handle(message: Message): Promise<Response> {
     }
 
     case "beginDiscovery": {
-      if (!(await hasAnyDestination())) return { ok: false, error: "Choose a destination before trying this supplier." };
-      if ((await listCollectorSources()).some((source) => source.primaryOrigin === message.origin)) {
-        await failSupplierDiscovery(undefined, DISCOVERY_FAILURE_MESSAGES.alreadySupported, [`${message.origin}/*`]);
-        return { ok: false, error: DISCOVERY_FAILURE_MESSAGES.alreadySupported };
-      }
-      const tab = await chrome.tabs.get(message.tabId);
-      if (!tab.active || !tab.url || new URL(tab.url).origin !== message.origin) {
-        return { ok: false, error: "Open the supplier app in the active tab and try again." };
-      }
-      await beginSupplierDiscovery(message.tabId, message.origin);
-      // Covers an already-granted origin and the narrow race where Chrome adds
-      // permission just before the onAdded listener observes the durable state.
-      if (await chrome.permissions.contains({ origins: [`${message.origin}/*`] })) void completeSupplierScan();
-      return { ok: true };
+      return collectionRuns.runInteractive(async () => {
+        if (!(await hasAnyDestination())) return { ok: false, error: "Choose a destination before trying this supplier." };
+        if ((await listCollectorSources()).some((source) => source.primaryOrigin === message.origin)) {
+          await failSupplierDiscovery(undefined, DISCOVERY_FAILURE_MESSAGES.alreadySupported, [`${message.origin}/*`]);
+          return { ok: false, error: DISCOVERY_FAILURE_MESSAGES.alreadySupported };
+        }
+        const tab = await chrome.tabs.get(message.tabId);
+        if (!tab.active || !tab.url || new URL(tab.url).origin !== message.origin) {
+          return { ok: false, error: "Open the supplier app in the active tab and try again." };
+        }
+        await beginSupplierDiscovery(message.tabId, message.origin);
+        // Covers an already-granted origin and the narrow race where Chrome adds
+        // permission just before the onAdded listener observes the durable state.
+        if (await chrome.permissions.contains({ origins: [`${message.origin}/*`] })) void completeSupplierScan();
+        return { ok: true };
+      });
     }
 
     case "completeDiscovery":
@@ -700,7 +702,7 @@ const discoveredConnectionsInFlight = new Map<string, Promise<Response>>();
 
 async function completeSupplierScan(): Promise<void> {
   if (supplierScanInFlight) return supplierScanInFlight;
-  supplierScanInFlight = (async () => {
+  supplierScanInFlight = collectionRuns.runInteractive(async () => {
     const pending = await markSupplierDiscoveryScanning();
     if (!pending) return;
     const granted = await chrome.permissions.contains({ origins: [`${pending.origin}/*`] });
@@ -745,7 +747,7 @@ async function completeSupplierScan(): Promise<void> {
         await revokeUnusedPermissions([`${pending.origin}/*`]);
       }
     }
-  })().finally(() => {
+  }).finally(() => {
     supplierScanInFlight = undefined;
     void resumeSupplierScanIfPending();
   });

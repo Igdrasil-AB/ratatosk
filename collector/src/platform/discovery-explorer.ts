@@ -1,4 +1,4 @@
-import { safeEntryUrl } from "../../../src/core/discovery";
+import { isBoundedTenantIdentifierSegment, safeEntryUrl } from "../../../src/core/discovery";
 
 /**
  * Pure planning policy for unsupported-supplier exploration.
@@ -8,10 +8,10 @@ import { safeEntryUrl } from "../../../src/core/discovery";
  * exact-origin HTTPS GET navigations with explicit billing intent are emitted.
  */
 
-export const MAX_EXPLORATION_PAGES = 15;
-export const MAX_EXPLORATION_DEPTH = 3;
-export const EXPLORATION_DEADLINE_MS = 10_000;
-export const DISCOVERY_ENGINE_REVISION = 51;
+export const MAX_EXPLORATION_PAGES = 40;
+export const MAX_EXPLORATION_DEPTH = 4;
+export const EXPLORATION_DEADLINE_MS = 60_000;
+export const DISCOVERY_ENGINE_REVISION = 52;
 
 /**
  * A scan starts in the inexpensive fast lane, but its policy is deliberately
@@ -30,10 +30,9 @@ export interface ExplorationBudget {
 }
 
 /**
- * `fast` is the interactive envelope: a person is watching a spinner, so the
- * whole scan is capped at ten seconds. It stays capable rather than shallow —
- * the page budget is spent in wide concurrent waves and the run stops the
- * moment a candidate is proven, so the cap is a ceiling, not the usual cost.
+ * `fast` is the user-triggered correctness envelope. It is intentionally patient
+ * enough for one serial pass through observed and common billing routes, while
+ * still stopping immediately when a candidate is proven.
  *
  * `deep` is the explicit second attempt for a portal the fast envelope could not
  * resolve, and `self_heal` is background repair of an already-connected
@@ -43,8 +42,8 @@ export interface ExplorationBudget {
  */
 export const EXPLORATION_BUDGETS: Readonly<Record<ExplorationMode, ExplorationBudget>> = {
   fast: { pages: MAX_EXPLORATION_PAGES, depth: MAX_EXPLORATION_DEPTH, durationMs: EXPLORATION_DEADLINE_MS, slices: 1 },
-  deep: { pages: 40, depth: 4, durationMs: 45_000, slices: 1 },
-  self_heal: { pages: 60, depth: 5, durationMs: 120_000, slices: 5 },
+  deep: { pages: 60, depth: 5, durationMs: 120_000, slices: 1 },
+  self_heal: { pages: 80, depth: 5, durationMs: 180_000, slices: 5 },
 };
 
 export function explorationBudget(mode: ExplorationMode = "fast"): ExplorationBudget {
@@ -307,20 +306,20 @@ export function explorationProbeOptions(
   // reaches the same conclusion.
   if (mode === "fast") {
     return evidenced
-      ? { settleMs: 2_600, maxResources: 12, deadlineMs: 4_200 }
-      : { settleMs: 350, maxResources: 3, deadlineMs: 900 };
+      ? { settleMs: 8_000, maxResources: 12, deadlineMs: 12_000 }
+      : { settleMs: 3_000, maxResources: 6, deadlineMs: 6_000 };
   }
   return evidenced
-    ? { settleMs: 8_000, maxResources: 12, deadlineMs: 10_000 }
-    : { settleMs: 800, maxResources: 4, deadlineMs: 1_800 };
+    ? { settleMs: 15_000, maxResources: 16, deadlineMs: 20_000 }
+    : { settleMs: 6_000, maxResources: 8, deadlineMs: 10_000 };
 }
 
 /** The active tab is already loaded and rendered, so it needs a settle window
  * only for late billing widgets — never for a cold application boot. */
 export function entryProbeOptions(mode: ExplorationMode = "fast"): ExplorationProbeOptions {
   return mode === "fast"
-    ? { settleMs: 900, maxResources: 6, deadlineMs: 2_200 }
-    : { settleMs: 1_500, maxResources: 12, deadlineMs: 3_500 };
+    ? { settleMs: 1_500, maxResources: 12, deadlineMs: 4_000 }
+    : { settleMs: 3_000, maxResources: 16, deadlineMs: 6_000 };
 }
 
 /** Clamp a page probe to the time left in the one global exploration budget. */
@@ -381,11 +380,37 @@ const MUTATING_SEGMENT = new RegExp(EXPLORATION_ROUTE_POLICY.unsafeSegment, "i")
 const DIRECT_DOCUMENT_PATH = new RegExp(EXPLORATION_ROUTE_POLICY.directDocument, "i");
 const SAFE_NUMERIC_PAGINATION_QUERY = /^(?:page|p|offset|start|per_page|limit)$/i;
 
+/** Generic read-only billing locations. These are universal fallbacks, never
+ * supplier-specific routes, tenant values, or persisted remote instructions. */
+const COMMON_BILLING_PATHS = [
+  "/billing",
+  "/settings/billing",
+  "/account/billing",
+  "/invoices",
+  "/receipts",
+  "/billing/history",
+  "/payments",
+  "/subscriptions",
+] as const;
+
+const CONTEXTUAL_BILLING_SUFFIXES = [
+  "/billing",
+  "/settings/billing",
+  "/billing/history",
+  "/invoices",
+  "/receipts",
+] as const;
+
+const TENANT_CONTAINER = /^(?:account|accounts|organization|organizations|org|workspace|workspaces|tenant|tenants|customer|customers)$/i;
+const TENANT_CONTEXT_PREFIX = /^(?:app|v|t|home|dashboard|manage|admin|account|accounts|organization|organizations|org|workspace|workspaces|team|teams)$/i;
+
 export function planExplorationTargets(input: {
   origin: string;
+  contextUrl?: string;
   links: readonly (string | ExplorationLinkEvidence)[];
   visited: ReadonlySet<string>;
   nextDepth: number;
+  includeCommonRoutes?: boolean;
   limit?: number;
   maxDepth?: number;
 }): ExplorationTarget[] {
@@ -416,6 +441,36 @@ export function planExplorationTargets(input: {
       score: (observedSpaNavigation ? 160 : billing ? 100 : 85) +
         pathScore(new URL(url).pathname) + semanticScore(semantic) - (input.nextDepth - 1) * 3,
     });
+  }
+
+  if (input.includeCommonRoutes) {
+    const contextPrefix = input.contextUrl ? tenantPrefixFromContext(input.contextUrl, origin) : undefined;
+    if (contextPrefix) {
+      for (const [index, suffix] of CONTEXTUAL_BILLING_SUFFIXES.entries()) {
+        const url = new URL(`${contextPrefix}${suffix}`, `${origin}/`).toString();
+        if (input.visited.has(url)) continue;
+        addBest(targets, {
+          url,
+          depth: 1,
+          source: "common_route",
+          family: "tenant_contextual_route",
+          hintSource: "common_fallback",
+          score: 100 - index,
+        });
+      }
+    }
+    for (const [index, path] of COMMON_BILLING_PATHS.entries()) {
+      const url = new URL(path, `${origin}/`).toString();
+      if (input.visited.has(url)) continue;
+      addBest(targets, {
+        url,
+        depth: 1,
+        source: "common_route",
+        family: "common_billing_route",
+        hintSource: "common_fallback",
+        score: 80 - index,
+      });
+    }
   }
 
   const ranked = rankExplorationQueue([...targets.values()]);
@@ -547,6 +602,21 @@ function safeDecodedExplorationPath(pathname: string): string | undefined {
 function addBest(targets: Map<string, ExplorationTarget>, target: ExplorationTarget): void {
   const current = targets.get(target.url);
   if (!current || target.score > current.score) targets.set(target.url, target);
+}
+
+function tenantPrefixFromContext(value: string, expectedOrigin: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if (url.origin !== expectedOrigin || url.protocol !== "https:" || url.username || url.password) return undefined;
+    const segments = url.pathname.split("/").filter(Boolean);
+    const tenantIndex = segments.findIndex((segment) => isBoundedTenantIdentifierSegment(segment));
+    if (tenantIndex < 0 || tenantIndex > 3) return undefined;
+    if (tenantIndex > 0 && (!TENANT_CONTAINER.test(segments[tenantIndex - 1]) ||
+      !segments.slice(0, tenantIndex - 1).every((segment) => TENANT_CONTEXT_PREFIX.test(segment)))) return undefined;
+    return `/${segments.slice(0, tenantIndex + 1).join("/")}`;
+  } catch {
+    return undefined;
+  }
 }
 
 function pathScore(pathname: string): number {

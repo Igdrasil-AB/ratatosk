@@ -63,7 +63,7 @@ Use the current stable Chrome release and a fresh profile.
 - [ ] Sign out of the vendor; confirm the reconnect state and notification.
 - [ ] Disconnect the vendor; confirm its optional host permission is revoked.
 - [ ] From an unsupported synthetic supplier home page, select **Search This
-      App**; verify the exact-origin prompt, maximum fifteen-page/depth-three search,
+      App**; verify the exact-origin prompt, maximum forty-page/depth-four serial search,
       temporary-tab cleanup, domain/candidate preview, redacted failure diagnostic,
       paginated-collection completeness, second exact-host confirmation if needed,
       valid-PDF gate, provisional source row, explicit Forget History cleanup, and

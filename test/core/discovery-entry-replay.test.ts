@@ -43,7 +43,7 @@ describe("exact-entry cold replay", () => {
     expect(discoverySource).not.toMatch(/chrome\.tabs\.update\(tabId,\s*\{/);
     expect(discoverySource).toContain('allowSemanticNavigation: target.source !== "entry"');
     expect(discoverySource).toContain('allowScroll: target.source !== "entry"');
-    expect(discoverySource).toContain('target.source === "entry_replay"\n            ? capExplorationProbeOptions(explorationProbeOptions(target, "deep"), 8_000)');
+    expect(discoverySource).toContain('target.source === "entry_replay"\n            ? capExplorationProbeOptions(explorationProbeOptions(target, "deep"), 20_000)');
     expect(discoverySource).toContain('if (options.foregroundRetryWithoutBillingIntent && leaseAvailable)');
     expect(discoverySource).toContain('chrome.tabs.create({ url: "about:blank", active: false })');
     expect(discoverySource).toContain('chrome.tabs.update(this.tabId!, { url: target, active: true })');

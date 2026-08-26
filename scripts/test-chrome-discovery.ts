@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium, type BrowserContext, type Page, type Worker } from "playwright-core";
 import type { LiveAcceptanceSnapshot } from "../src/core/live-acceptance";
+import { EXPLORATION_BUDGETS } from "../collector/src/platform/discovery-explorer";
 
 const FIXTURE_HOST = "discovery-fixture.ratatosk.test";
 const FIXTURE_ORIGIN = `https://${FIXTURE_HOST}`;
@@ -35,6 +36,12 @@ const DESTINATION_RETRY_CASE = {
   route: "/destination-acquisition",
   adapterId: "dom-links",
 } as const;
+const ACQUISITION_PAGE_ROUTES = new Map<string, ReadonlySet<string>>([
+  ...ACQUISITION_CASES.map((item) => [item.host, new Set([item.route])] as const),
+  ...NEGATIVE_ACQUISITION_CASES.map((item) => [item.host, new Set([item.route])] as const),
+  [DESTINATION_RETRY_CASE.host, new Set([DESTINATION_RETRY_CASE.route])],
+]);
+ACQUISITION_PAGE_ROUTES.set("blind-acquisition.ratatosk.test", new Set(["/blind-home", BLIND_ROUTE]));
 const FIXTURE_HOSTS = [
   FIXTURE_HOST,
   ...ACQUISITION_CASES.map((item) => item.host),
@@ -181,6 +188,12 @@ try {
         : "<!doctype html><html><head><title>Workspace</title></head><body><main>Workspace home</main></body></html>");
       return;
     }
+    const allowedAcquisitionPages = ACQUISITION_PAGE_ROUTES.get(requestHost);
+    if (allowedAcquisitionPages && !allowedAcquisitionPages.has(path)) {
+      response.writeHead(404, { "content-type": "text/html; charset=utf-8" });
+      response.end("<!doctype html><html><head><title>Workspace</title></head><body><main>Workspace home</main></body></html>");
+      return;
+    }
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(fixturePage(path));
   });
@@ -298,7 +311,7 @@ try {
           console.error(`[chrome-discovery] ${name} frame_state=${JSON.stringify(frames)}`);
         }
         assert.equal(status.stage, expected, `${route}: expected ${expected}, received ${JSON.stringify(status)}`);
-        assert(elapsedMs <= 15_000, `${route}: iteration exceeded 15 seconds (${elapsedMs}ms)`);
+        assert(elapsedMs <= EXPLORATION_BUDGETS.fast.durationMs + 5_000, `${route}: iteration exceeded the patient envelope (${elapsedMs}ms)`);
         if (expected === "failed") {
           const replay = status.diagnostic?.attempts
             ?.find((attempt) => attempt.result === "list_failed" || attempt.result === "no_documents" || attempt.result === "limit_reached")
@@ -320,7 +333,7 @@ try {
           continue;
         }
         assert((status.candidateCount ?? 0) >= 1, `${route}: Chrome discovery returned no candidate`);
-        assert(elapsedMs <= 10_000, `${route}: Chrome discovery exceeded the fast envelope (${elapsedMs}ms)`);
+        assert(elapsedMs <= EXPLORATION_BUDGETS.fast.durationMs + 5_000, `${route}: Chrome discovery exceeded the patient envelope (${elapsedMs}ms)`);
         signatures.add(`${status.stage}|candidate_found`);
         iterationResults.push({ case: name, repeat, stage: status.stage, candidateCount: status.candidateCount ?? 0 });
         console.info(`[chrome-discovery] ${name} repeat=${repeat} candidate_found count=${status.candidateCount} elapsed=${elapsedMs}ms`);
@@ -442,7 +455,7 @@ async function runAcquisition(
   await sendExtensionMessage(extensionPage, { type: "beginDiscovery", tabId, origin });
   const preview = (await sendExtensionMessage(extensionPage, { type: "completeDiscovery" })).discovery as DiscoveryStatus;
   if (preview.stage !== "preview" || !preview.vendorId || preview.adapterId !== expectedAdapter) {
-    const detail = await sendExtensionMessage(extensionPage, { type: "getDiscoveryDiagnostic" });
+    const detail = await sendRawExtensionMessage(extensionPage, { type: "getDiscoveryDiagnostic" });
     throw new Error(`unexpected acquisition preview ${JSON.stringify({ preview, diagnostic: detail.discoveryDiagnostic })}`);
   }
   const hostname = new URL(origin).hostname;
@@ -451,10 +464,14 @@ async function runAcquisition(
   })).acceptanceSnapshot as LiveAcceptanceSnapshot;
   assert.equal(previewSnapshot.stage, "preview", "live snapshot did not preserve preview evidence");
   await sendExtensionMessage(extensionPage, { type: "beginDiscoveryConnect", vendorId: preview.vendorId, destinationId: "local" });
-  const connected = await sendExtensionMessage(extensionPage, { type: "completeDiscoveryConnect", vendorId: preview.vendorId });
+  const connected = await sendRawExtensionMessage(extensionPage, { type: "completeDiscoveryConnect", vendorId: preview.vendorId });
+  if (!connected?.ok) {
+    const detail = await sendRawExtensionMessage(extensionPage, { type: "getDiscoveryDiagnostic" });
+    throw new Error(`collection failed ${JSON.stringify({ error: connected?.error, diagnostic: detail.discoveryDiagnostic })}`);
+  }
   let first = (connected.summaries as RunSummary[] | undefined)?.[0];
   if (!first) {
-    const firstDeadline = Date.now() + 12_000;
+    const firstDeadline = Date.now() + 60_000;
     while (Date.now() < firstDeadline) {
       const status = (await sendExtensionMessage(extensionPage, { type: "getDiscoveryStatus" })).discovery as DiscoveryStatus & { count?: number };
       const source = ((await sendExtensionMessage(extensionPage, { type: "listSources" })).sources as Source[])
@@ -491,7 +508,7 @@ async function runAcquisition(
     }).chrome;
     await extensionChrome.alarms.create("collector-sync", { when });
   }, Date.now() + 250);
-  const cadenceDeadline = Date.now() + 12_000;
+  const cadenceDeadline = Date.now() + 90_000;
   let cadenceActionCount: number | undefined;
   while (Date.now() < cadenceDeadline) {
     const source = ((await sendExtensionMessage(extensionPage, { type: "listSources" })).sources as Source[])
@@ -611,7 +628,7 @@ async function runFailedAcquisition(
   }
   await sendExtensionMessage(extensionPage, { type: "beginDiscoveryConnect", vendorId: preview.vendorId, destinationId: "local" });
   await sendRawExtensionMessage(extensionPage, { type: "completeDiscoveryConnect", vendorId: preview.vendorId });
-  const deadline = Date.now() + 12_000;
+  const deadline = Date.now() + 60_000;
   let result: string | undefined;
   let lastStatus: DiscoveryStatus | undefined;
   while (Date.now() < deadline) {

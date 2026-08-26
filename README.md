@@ -36,15 +36,18 @@ navigating, reloading, or closing it, then reopens that exact page once in a
 disposable tab so it can watch the app boot and see the JSON calls the billing
 UI makes. In that disposable page it may open up to four native menus and follow
 up to two localized Settings/Billing controls, retaining only routes the app
-actually exposed. From there a bounded planner follows same-origin routes — read-only `GET` requests in
-disposable inactive tabs, at most 15 pages, depth 3, 10 seconds. It never
+actually exposed. From there a bounded planner follows same-origin routes one at
+a time — read-only `GET` requests in disposable tabs, at most 40 pages, depth 4,
+60 seconds. It never
 submits a form, and never follows logout, checkout, purchase, cancellation,
 deletion, or authorization links.
 
 The search stops the moment it has proof rather than when the budget runs out,
 so a portal that answers on its first page costs a second or two, not the whole
 envelope. If the interactive pass cannot finish, the person may explicitly
-continue its saved frontier under a longer, still bounded search.
+continue its saved frontier under a longer, still bounded search. Observed and
+remembered routes rank first; a short reviewed list of universal billing paths
+is the final fallback and contains no supplier-specific route.
 
 It ranks routes by path intent *and* by what the page actually says, so an
 opaque route labelled `Invoices` is still found, and `/<tenant>/settings/billing`

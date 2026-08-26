@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { discoveryProofIsSufficient } from "../../collector/src/platform/discovery";
 import { EXPLORATION_BUDGETS, explorationProbeOptions } from "../../collector/src/platform/discovery-explorer";
-import { DEFAULT_SAFE_CONCURRENCY } from "../../src/core/concurrency";
 
 const worker = readFileSync("collector/src/platform/service-worker.ts", "utf8");
 
@@ -10,12 +9,8 @@ const candidate = (id: "network-json" | "embedded-json" | "dom-links" | "dom-act
   ({ profile: { adapter: { id } } });
 
 describe("interactive discovery envelope", () => {
-  it("bounds a person's Find Invoices wait to ten seconds", () => {
-    expect(EXPLORATION_BUDGETS.fast.durationMs).toBeLessThanOrEqual(10_000);
-    // The whole page budget has to fit in a handful of concurrent waves, or the
-    // ceiling would be reached by exploring a fraction of the frontier.
-    const waves = Math.ceil(EXPLORATION_BUDGETS.fast.pages / DEFAULT_SAFE_CONCURRENCY.routeProbes);
-    expect(waves).toBeLessThanOrEqual(4);
+  it("gives a person's Find Invoices run a patient bounded minute", () => {
+    expect(EXPLORATION_BUDGETS.fast).toEqual({ pages: 40, depth: 4, durationMs: 60_000, slices: 1 });
   });
 
   it("keeps a user-initiated scan in the interactive envelope until the person explicitly continues", () => {
@@ -27,6 +22,11 @@ describe("interactive discovery envelope", () => {
     expect(worker).not.toContain('pending.checkpoint?.mode ?? "deep"');
     expect(worker).toContain("!failed.canSearchDeeper");
     expect(worker).toContain('error.diagnostic.result === "not_found"');
+  });
+
+  it("serializes discovery with scheduled and interactive collection", () => {
+    expect(worker).toContain('case "beginDiscovery": {\n      return collectionRuns.runInteractive');
+    expect(worker).toContain("supplierScanInFlight = collectionRuns.runInteractive");
   });
 
   it("stops the moment a previewed structured plan exists", () => {
@@ -46,7 +46,7 @@ describe("interactive discovery envelope", () => {
     expect(discoveryProofIsSufficient([], { entryExplored: true, exploredWaves: 3 })).toBe(false);
   });
 
-  it("funds observed routes by provenance and keeps generic guesses cheap", () => {
+  it("funds observed routes by provenance while keeping generic guesses bounded", () => {
     const observed = { url: "https://vendor.example/surface/r7", source: "linked" as const, hintSource: "semantic_navigation" as const, depth: 1, score: 100 };
     const fallback = { url: "https://vendor.example/account/billing", source: "common_route" as const, hintSource: "common_fallback" as const, depth: 1, score: 100 };
 

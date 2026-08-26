@@ -195,13 +195,12 @@ resulting semantic candidate and confirm verification keeps its disposable tab
 visible until controls are enumerated and document captures finish, then
 restores the prior tab before cleanup. Saturate the entry
 page with at least nine billing-shaped links and one observed, opaque SPA
-destination. Confirm the observed destination is probed before any generic
-route; the same opaque path without observed navigation must be ignored. Fast
-search must return `limit_reached` within ten seconds rather than starting deep
+destination. Confirm the observed destination is probed before a reviewed
+universal billing route and that no supplier-specific production route exists.
+The first search must return within sixty seconds rather than starting deep
 search automatically. Confirm the card offers **Search Deeper**, states the
 remaining bound, and resumes the saved frontier without re-probing completed
-pages. Generic common billing routes may appear only in that explicit deep
-continuation. Include a root tenant route whose tenant value is also returned
+pages. Include a root tenant route whose tenant value is also returned
 under a typed first-party scope key; confirm the preview stores a `{scope}`
 template rather than the tenant value, and **Connect & Collect** renders it only
 at run time. The same route without typed scope provenance must not preview.

@@ -61,9 +61,14 @@
   verification, booted the one exact replay visibly, and left method semantics
   to the page guard. Its live replay completed instead of timing out, but the
   workspace opener mounted at about four seconds—after the 1.2-second trigger
-  window. Collector 0.8.61 / discovery 51 / acquisition 5 funds that generic
-  cold-SPA mount inside the same eight-second replay and ten-second global cap;
-  exact-build live replay and the three-family receipt remain open
+  window. Collector 0.8.61 / discovery 51 / acquisition 5 funded that generic
+  cold-SPA mount, but repeated exact-package runs exposed collection/discovery
+  foreground overlap between suppliers. Collector 0.8.62 / discovery 52 /
+  acquisition 5 is the correctness-first revision: one route at a time, 60
+  seconds, 40 pages, depth four, discovery serialized with collection, and only
+  reviewed universal root/tenant billing routes after observed evidence. No
+  supplier-specific route is packaged; exact-build live replay and the
+  three-family receipt remain open
 
 ## Goal
 
@@ -244,7 +249,7 @@ a more precise closed cause and a red browser case reproduces it.
   destination.
 - Identity becomes seen only after destination acceptance. Second and cadence
   runs activate zero already-accepted document controls and deliver zero files.
-- Fast search remains at most ten seconds. A continuation is offered only when
+- The first search remains at most sixty seconds. A continuation is offered only when
   its sanitized frontier can actually be reconstructed.
 - All interpretation remains packaged in the MV3 extension. No remote code,
   remote recipe, model-generated action, bundle mining, or general browser agent
@@ -739,7 +744,7 @@ verification.
 | L4 | Failures become shapes | before/after corpus diff with no supplier literal |
 | L5 | No route construction | production-source scan plus empty-evidence planner test |
 | L6 | Blind rename survives | post-build mutation test |
-| L7 | Fast remains honest | actual UI-to-terminal wall clock at or below ten seconds |
+| L7 | Patient search remains honest | actual UI-to-terminal wall clock at or below sixty seconds |
 | L8 | Continuation is real | reconstructable frontier and no completed-page replay |
 | L9 | Discovery plan equals collection replay | shared plan/executor call-path plus deferred-DOM verification tests |
 | L10 | Opaque scope stays private | typed runtime template and seeded-canary scan |
@@ -770,6 +775,7 @@ data.
 | I-005 | 0.8.57 / discovery 47 / acquisition 5 | cold replay `no_candidate` with zero navigation steps | The ordinary cold entry shell is visibility-gated, but the one-use foreground lease is restricted to paths already containing billing intent; allowing only `entry_replay` to bypass path intent will expose the workspace navigation surface | `discovery-foreground-lease > explicit cold entry replay` | weak active evidence yielded after 2.9 seconds; cold replay and two linked pages completed around 4.0 seconds, but the cold replay still had 11 JSON requests, 5 rejected controls, `complete` status, and 0 navigation steps | revise | A hydration delay alone is insufficient when the inactive document never mounts the toolbar. The user's tab remains passive; only its exact disposable replay may spend the existing lease, and only for an empty evidence shell |
 | I-006 | 0.8.59 / discovery 49 / acquisition 5 | cold replay `probe_failed/outer_deadline` | Starting the one-use exact replay visibly before navigation and removing the DNR/page-guard contradiction will let the generic semantic lane observe the workspace menu without restoring route guesses | `exact-entry cold replay > visible patient replay`; `browser DOM boundary > read-only POST hydration` | active entry correctly rejected 3 unrelated document links and 228 controls; exact replay exhausted 4.2 seconds; 24 observed requests across later linked pages produced no candidate | revise | Deferred verification cannot help until the semantic lane reaches billing. A hidden-first 45/55 split spends the foreground lease too late, and blanket method DNR blocks reads the page guard intentionally permits |
 | I-007 | 0.8.60 / discovery 50 / acquisition 5 | cold replay `no_candidate` with zero navigation steps | The foreground replay now works, but its trigger window closes before the cold SPA mounts the workspace opener; measuring and reproducing a multi-second mount will make the semantic lane deterministic | `delayed-menu-navigation` at 3.5 seconds | exact replay completed in 3.8 seconds with 11 observed requests, 5 rejected controls, complete status, and 0 steps; independent cold navigation measured the generic workspace trigger at about 4.0 seconds | revise | The foreground policy is no longer the blocker. Semantic reveal reserved only half the page lease and waited 1.2 seconds for a trigger; the exact replay can safely spend two thirds and 4.5 seconds, then use one short quiescence tail instead of spending the page lease twice |
+| I-008 | 0.8.61 / discovery 51 / acquisition 5 | multi-supplier acquisition lost the active supplier tab after cadence work | Discovery and scheduled collection use separate lifecycle owners; putting both behind one coordinator and making route probes serial will prevent a foreground operation from surviving into the next supplier | `chrome-acquisition` full matrix, repeated | exact package preparation passed unit and discovery gates but intermittently failed at the fifth supplier with an active-tab mismatch or collection failure | revise | Per-candidate correctness was green; cross-supplier lifecycle ownership was not. Reliability requires one global browser-operation queue, not more timing adjustments |
 
 ### I-001 hypotheses — record before the next ClickUp run
 

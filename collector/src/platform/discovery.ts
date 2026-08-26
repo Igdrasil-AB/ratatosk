@@ -331,9 +331,7 @@ export async function discoverSupplierInTab(
       // Observe the user's page before starting its visible disposable replay.
       // A structured answer can then stop without a background foreground-lease
       // operation surviving into the next supplier run.
-      const width = isEntryWave
-        ? 1
-        : Math.min(DEFAULT_SAFE_CONCURRENCY.routeProbes, remainingPages);
+      const width = 1;
       const scheduled = queue.splice(0, Math.min(width, remainingPages)).map((target) => {
         const page = diagnostic.pages.attempted + 1;
         diagnostic.pages.attempted = page;
@@ -370,7 +368,7 @@ export async function discoverSupplierInTab(
           // visibility-gated SPA's own billing navigation. Give that one probe
           // the patient envelope while leaving the global cap time to clean up.
           : target.source === "entry_replay"
-            ? capExplorationProbeOptions(explorationProbeOptions(target, "deep"), 8_000)
+            ? capExplorationProbeOptions(explorationProbeOptions(target, "deep"), 20_000)
             : explorationProbeOptions(target, mode);
         const timing = explorationProbeTiming(baseOptions, remainingMs);
         const probeOptions: ProbeOptions = {
@@ -402,9 +400,11 @@ export async function discoverSupplierInTab(
           if (target.source === "entry") {
             enqueueTargets(queue, known, planExplorationTargets({
               origin: expectedOrigin,
+              contextUrl: target.url,
               links: [],
               visited: known,
               nextDepth: 1,
+              includeCommonRoutes: true,
               limit: budget.pages - diagnostic.pages.attempted,
               maxDepth: budget.depth,
             }), completedTargetKeys);
@@ -548,9 +548,11 @@ export async function discoverSupplierInTab(
         if (target.depth < budget.depth) {
           const planned = planExplorationTargets({
             origin: expectedOrigin,
+            contextUrl: evidence.url,
             links: evidence.navigationUrls,
             visited: known,
             nextDepth: target.depth + 1,
+            includeCommonRoutes: target.source === "entry" || target.source === "entry_replay",
             limit: budget.pages - diagnostic.pages.attempted,
             maxDepth: budget.depth,
           });

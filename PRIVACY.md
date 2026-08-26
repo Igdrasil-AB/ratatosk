@@ -51,12 +51,14 @@ Collector handles only the data required for that purpose:
    billing route. It stores no page body, API response, cookie, or header.
 
 During Find Invoices, Collector temporarily inspects the active page and up to
-fourteen additional same-origin pages the application actually exposed, to depth
-three. The ten-second fast search starts from the active page, one cold replay,
-and observed links, SPA navigation, network, or inert-page evidence; it does not
-guess common billing URLs. If it reaches its safe cap, the person may explicitly
-continue the retained safe frontier under the remaining portion of a 45-second
-total envelope. It uses inactive temporary tabs, performs only page navigation
+thirty-nine additional same-origin pages, to depth four. The sixty-second search
+starts from the active page, one cold replay, and observed links, SPA navigation,
+network, or inert-page evidence. If those do not resolve the supplier, it tries a
+reviewed universal list such as billing, settings/billing, account/billing,
+invoices, and receipts, including a bounded tenant prefix already present in the
+active URL. No supplier-specific route is packaged or downloaded. If it reaches
+its safe cap, the person may explicitly continue the retained safe frontier under
+a longer bounded envelope. It uses one temporary tab at a time, performs page navigation
 and bounded same-origin GET probes. The active page remains passive; a disposable
     replay may open up to four native menus and two localized Settings/Billing
     controls, never activates a document control or
@@ -185,8 +187,9 @@ permission so the persistent side panel can identify the active tab after tab
 switches. Ratatosk reads only the current tab URL for this UI context, does not
 store a browsing history, and this permission does not authorize page inspection.
 After exact-origin approval, the bounded search may inspect up
-to fourteen additional same-origin pages exposed by the application; it never
-assembles or guesses a billing route. HTTPS supplier access is optional and Chrome
+to thirty-nine additional same-origin pages. It may append only reviewed universal
+billing suffixes to the approved origin or one bounded tenant prefix already in
+the active URL; it never contains a supplier-specific route. HTTPS supplier access is optional and Chrome
 asks for the exact origin when the user connects or tests it. During that explicit
 search, `scripting` also installs and removes the bounded exact-origin page-load
 observer described above. The optional
