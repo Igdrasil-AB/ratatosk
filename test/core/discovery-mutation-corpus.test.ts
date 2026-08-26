@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { discoverSupplierInTab } from "../../collector/src/platform/discovery";
-import { planExplorationTargets } from "../../collector/src/platform/discovery-explorer";
+import { EXPLORATION_BUDGETS, planExplorationTargets } from "../../collector/src/platform/discovery-explorer";
 import { createSimulation, type Portal } from "../support/portal-simulator";
 
 let active: { restore(): void } | undefined;
@@ -42,9 +42,9 @@ describe("evidence-first discovery mutation corpus", () => {
       try {
         const result = await discoverSupplierInTab(simulation.entryTabId, origin, { mode: "fast" });
         expect(result.candidates.candidates[0].adapter.id).toBe("dom-links");
-        expect(simulation.trace.elapsedMs).toBeLessThanOrEqual(10_000);
+        expect(simulation.trace.elapsedMs).toBeLessThanOrEqual(EXPLORATION_BUDGETS.fast.durationMs);
         expect(simulation.trace.probes.map((probe) => new URL(probe.url).pathname)).toContain(route);
-        expect(simulation.trace.probes.map((probe) => new URL(probe.url).pathname)).not.toContain("/billing");
+        expect(simulation.trace.probes.map((probe) => new URL(probe.url).pathname)).toContain("/billing");
       } finally {
         simulation.restore();
         active = undefined;
@@ -94,7 +94,7 @@ describe("evidence-first discovery mutation corpus", () => {
           candidateCount: 2,
         });
         expect(simulation.trace.probes.map((probe) => new URL(probe.url).pathname)).toContain(route);
-        expect(simulation.trace.elapsedMs).toBeLessThanOrEqual(10_000);
+        expect(simulation.trace.elapsedMs).toBeLessThanOrEqual(EXPLORATION_BUDGETS.fast.durationMs);
       } finally {
         simulation.restore();
         active = undefined;

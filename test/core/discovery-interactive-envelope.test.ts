@@ -4,6 +4,7 @@ import { discoveryProofIsSufficient } from "../../collector/src/platform/discove
 import { EXPLORATION_BUDGETS, explorationProbeOptions } from "../../collector/src/platform/discovery-explorer";
 
 const worker = readFileSync("collector/src/platform/service-worker.ts", "utf8");
+const discovery = readFileSync("collector/src/platform/discovery.ts", "utf8");
 
 const candidate = (id: "network-json" | "embedded-json" | "dom-links" | "dom-actions") =>
   ({ profile: { adapter: { id } } });
@@ -27,6 +28,12 @@ describe("interactive discovery envelope", () => {
   it("serializes discovery with scheduled and interactive collection", () => {
     expect(worker).toContain('case "beginDiscovery": {\n      return collectionRuns.runInteractive');
     expect(worker).toContain("supplierScanInFlight = collectionRuns.runInteractive");
+  });
+
+  it("keeps entry ownership serial and probes universal route fallbacks in parallel", () => {
+    expect(discovery).toContain("const width = isEntryWave\n        ? 1\n        : Math.min(DEFAULT_SAFE_CONCURRENCY.routeProbes, remainingPages)");
+    expect(discovery).toContain('scheduled.findIndex(({ target }) => target.source === "entry_replay")');
+    expect(discovery).toContain('target.source === "common_route" && retained.length > 0');
   });
 
   it("stops the moment a previewed structured plan exists", () => {

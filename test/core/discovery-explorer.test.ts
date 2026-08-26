@@ -79,6 +79,10 @@ describe("bounded same-origin discovery exploration", () => {
     }));
     expect(explorerSource).toContain("COMMON_BILLING_PATHS");
     expect(explorerSource).toContain("CONTEXTUAL_BILLING_SUFFIXES");
+    expect(targets.slice(0, 2).map((target) => target.url)).toEqual([
+      "https://vendor.example/901234567890/billing",
+      "https://vendor.example/billing",
+    ]);
   });
 
   it("checkpoints only a structural route key and rejects raw routes or malformed progress", () => {

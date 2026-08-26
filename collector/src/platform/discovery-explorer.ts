@@ -11,7 +11,7 @@ import { isBoundedTenantIdentifierSegment, safeEntryUrl } from "../../../src/cor
 export const MAX_EXPLORATION_PAGES = 40;
 export const MAX_EXPLORATION_DEPTH = 4;
 export const EXPLORATION_DEADLINE_MS = 60_000;
-export const DISCOVERY_ENGINE_REVISION = 52;
+export const DISCOVERY_ENGINE_REVISION = 53;
 
 /**
  * A scan starts in the inexpensive fast lane, but its policy is deliberately
@@ -307,11 +307,11 @@ export function explorationProbeOptions(
   if (mode === "fast") {
     return evidenced
       ? { settleMs: 8_000, maxResources: 12, deadlineMs: 12_000 }
-      : { settleMs: 3_000, maxResources: 6, deadlineMs: 6_000 };
+      : { settleMs: 6_000, maxResources: 8, deadlineMs: 9_000 };
   }
   return evidenced
     ? { settleMs: 15_000, maxResources: 16, deadlineMs: 20_000 }
-    : { settleMs: 6_000, maxResources: 8, deadlineMs: 10_000 };
+    : { settleMs: 10_000, maxResources: 10, deadlineMs: 15_000 };
 }
 
 /** The active tab is already loaded and rendered, so it needs a settle window
@@ -455,7 +455,7 @@ export function planExplorationTargets(input: {
           source: "common_route",
           family: "tenant_contextual_route",
           hintSource: "common_fallback",
-          score: 100 - index,
+          score: 200 - index * 2,
         });
       }
     }
@@ -468,7 +468,7 @@ export function planExplorationTargets(input: {
         source: "common_route",
         family: "common_billing_route",
         hintSource: "common_fallback",
-        score: 80 - index,
+        score: 199 - index * 2,
       });
     }
   }
@@ -486,10 +486,15 @@ export function rankExplorationQueue(targets: readonly ExplorationTarget[]): Exp
   const remembered = targets
     .filter((target) => target.source === "remembered")
     .sort((left, right) => right.score - left.score || left.url.localeCompare(right.url));
+  const common = targets
+    .filter((target) => target.source === "common_route")
+    .sort((left, right) => right.score - left.score || left.url.localeCompare(right.url));
   const byFamily = new Map<ExplorationFamily, ExplorationTarget[]>();
   for (const family of ENABLED_EXPLORATION_FAMILIES) byFamily.set(family, []);
   for (const target of targets) {
-    if (target.source !== "remembered") byFamily.get(explorationFamilyForTarget(target))!.push(target);
+    if (target.source !== "remembered" && target.source !== "common_route") {
+      byFamily.get(explorationFamilyForTarget(target))!.push(target);
+    }
   }
   for (const queue of byFamily.values()) queue.sort((left, right) => right.score - left.score || left.url.localeCompare(right.url));
 
@@ -501,7 +506,7 @@ export function rankExplorationQueue(targets: readonly ExplorationTarget[]): Exp
   while (ENABLED_EXPLORATION_FAMILIES.some((family) => byFamily.get(family)!.length)) {
     for (const family of ENABLED_EXPLORATION_FAMILIES) take(family);
   }
-  return [...remembered, ...result];
+  return [...remembered, ...common, ...result];
 }
 
 /**

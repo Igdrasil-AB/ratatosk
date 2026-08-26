@@ -22,6 +22,7 @@ const BLIND_MENU_ORDER = [1, 2, 3, 4].map((value, index, values) =>
 const ACQUISITION_CASES = [
   { name: "network", host: "network-acquisition.ratatosk.test", route: "/network-acquisition", adapterId: "network-json", expectedActions: 0, fallback: false },
   { name: "direct-dom", host: "direct-acquisition.ratatosk.test", route: "/direct-acquisition", adapterId: "dom-links", expectedActions: 0, fallback: false },
+  { name: "stripe-common", host: "stripe-common-acquisition.ratatosk.test", route: "/stripe-home", adapterId: "dom-links", expectedActions: 0, fallback: false },
   { name: "semantic-dom", host: "semantic-acquisition.ratatosk.test", route: "/semantic-acquisition", adapterId: "dom-actions", expectedActions: 1, fallback: false },
   { name: "candidate-fallback", host: "fallback-acquisition.ratatosk.test", route: "/fallback-acquisition", adapterId: "network-json", expectedActions: 0, fallback: true },
   { name: "blind-synthetic", host: "blind-acquisition.ratatosk.test", route: "/blind-home", adapterId: "dom-actions", expectedActions: 1, fallback: false },
@@ -42,11 +43,16 @@ const ACQUISITION_PAGE_ROUTES = new Map<string, ReadonlySet<string>>([
   [DESTINATION_RETRY_CASE.host, new Set([DESTINATION_RETRY_CASE.route])],
 ]);
 ACQUISITION_PAGE_ROUTES.set("blind-acquisition.ratatosk.test", new Set(["/blind-home", BLIND_ROUTE]));
+ACQUISITION_PAGE_ROUTES.set("stripe-common-acquisition.ratatosk.test", new Set(["/stripe-home", "/billing"]));
 const FIXTURE_HOSTS = [
   FIXTURE_HOST,
   ...ACQUISITION_CASES.map((item) => item.host),
   ...NEGATIVE_ACQUISITION_CASES.map((item) => item.host),
   DESTINATION_RETRY_CASE.host,
+  "invoice.stripe.com",
+  "pay.stripe.com",
+  "files.stripe.com",
+  "stripe-upload-api.s3.us-west-1.amazonaws.com",
 ];
 
 type DiscoveryStatus = {
@@ -137,6 +143,11 @@ try {
       response.end(path.includes("invalid") ? "not a pdf" : "%PDF-1.4\n%%EOF\n");
       return;
     }
+    if (requestHost === "pay.stripe.com" && /^\/invoice\/[^/]+\/[^/]+\/pdf$/.test(path)) {
+      response.writeHead(200, { "content-type": "application/pdf" });
+      response.end("%PDF-1.4\n%%EOF\n");
+      return;
+    }
     if (path === "/api/invoices") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ invoices: [{
@@ -188,6 +199,11 @@ try {
         : "<!doctype html><html><head><title>Workspace</title></head><body><main>Workspace home</main></body></html>");
       return;
     }
+    if (requestHost === "stripe-common-acquisition.ratatosk.test" && path === "/billing") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end('<!doctype html><html><head><title>Billing</title></head><body><h1>Invoices</h1><a href="https://invoice.stripe.com/i/acct_fixture/live_fixture">View invoice</a></body></html>');
+      return;
+    }
     const allowedAcquisitionPages = ACQUISITION_PAGE_ROUTES.get(requestHost);
     if (allowedAcquisitionPages && !allowedAcquisitionPages.has(path)) {
       response.writeHead(404, { "content-type": "text/html; charset=utf-8" });
@@ -211,6 +227,7 @@ try {
       headless: true,
       ignoreHTTPSErrors: true,
       args: [
+        "--ignore-certificate-errors",
         `--disable-extensions-except=${extensionPath}`,
         `--load-extension=${extensionPath}`,
         `--host-resolver-rules=${FIXTURE_HOSTS.map((host) => `MAP ${host} 127.0.0.1:${address.port}`).join(", ")}`,
@@ -657,6 +674,9 @@ function fixturePage(path: string): string {
   if (path === "/network-acquisition") {
     return `<!doctype html><html><head><title>Invoices | Network Acquisition</title></head><body>
       <h1>Invoices</h1><script>fetch('/api/invoices').then(response => response.json())</script></body></html>`;
+  }
+  if (path === "/stripe-home") {
+    return "<!doctype html><html><head><title>Workspace</title></head><body><main>Workspace home</main></body></html>";
   }
   if (path === "/direct-acquisition") {
     return `<!doctype html><html><head><title>Invoices | Direct Acquisition</title></head><body>

@@ -331,7 +331,9 @@ export async function discoverSupplierInTab(
       // Observe the user's page before starting its visible disposable replay.
       // A structured answer can then stop without a background foreground-lease
       // operation surviving into the next supplier run.
-      const width = 1;
+      const width = isEntryWave
+        ? 1
+        : Math.min(DEFAULT_SAFE_CONCURRENCY.routeProbes, remainingPages);
       const scheduled = queue.splice(0, Math.min(width, remainingPages)).map((target) => {
         const page = diagnostic.pages.attempted + 1;
         diagnostic.pages.attempted = page;
@@ -341,17 +343,7 @@ export async function discoverSupplierInTab(
         return { target, page, pageStartedAt: Date.now() };
       });
       const foregroundCandidateIndex = foregroundProbeBudget.remaining > 0
-        ? scheduled.findIndex(({ target }) => {
-          // The active entry tab is already foreground; only a disposable
-          // exploration tab can spend the shared visibility lease.
-          if (target.source === "entry") return false;
-          if (target.source === "entry_replay") return true;
-          try {
-            return FOREGROUND_BILLING_ROUTE.test(new URL(target.url).pathname);
-          } catch {
-            return false;
-          }
-        })
+        ? scheduled.findIndex(({ target }) => target.source === "entry_replay")
         : -1;
       // Settle order, not queue order. A wave is only as useful as its first
       // sufficient answer, and waiting out the siblings of a page that already
@@ -576,8 +568,8 @@ export async function discoverSupplierInTab(
         // every page seen. The entry page is the one whose title matters most
         // and the cheapest to wait for — it is the tab already in front of the
         // person — so it is never the page a shortcut skips.
-        if (structuredProofRetained(retained) && entryObserved) {
-          console.info(`[collector] discovery stopped wave ${exploredWaves + 1} early on structured evidence`);
+        if ((structuredProofRetained(retained) || (target.source === "common_route" && retained.length > 0)) && entryObserved) {
+          console.info(`[collector] discovery stopped wave ${exploredWaves + 1} early on proven evidence`);
           break;
         }
       }

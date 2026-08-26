@@ -16,7 +16,7 @@ describe("public discovery-limit disclosures", () => {
     const privacy = readFileSync("PRIVACY.md", "utf8");
 
     expect(listing).toMatch(/active page and at most thirty-nine additional[\s\S]*forty total[\s\S]*depth four/i);
-    expect(checklist).toMatch(/maximum forty-page\/depth-four serial search/i);
+    expect(checklist).toMatch(/maximum forty-page\/depth-four search with four inactive route tabs/i);
     expect(security).toMatch(/capped at 40 pages, depth four, and 60 seconds interactively/i);
     expect(privacy).toMatch(/active page and up to\s+thirty-nine additional same-origin pages[\s\S]*depth\s+four/i);
   });

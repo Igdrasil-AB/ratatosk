@@ -58,8 +58,9 @@ reviewed universal list such as billing, settings/billing, account/billing,
 invoices, and receipts, including a bounded tenant prefix already present in the
 active URL. No supplier-specific route is packaged or downloaded. If it reaches
 its safe cap, the person may explicitly continue the retained safe frontier under
-a longer bounded envelope. It uses one temporary tab at a time, performs page navigation
-and bounded same-origin GET probes. The active page remains passive; a disposable
+a longer bounded envelope. It may use up to four inactive temporary tabs for the
+universal route wave, performs page navigation and bounded same-origin GET probes,
+and closes the unused tabs when evidence wins. The active page remains passive; a disposable
     replay may open up to four native menus and two localized Settings/Billing
     controls, never activates a document control or
     submits a form, and closes the tabs when the search ends. While those controls

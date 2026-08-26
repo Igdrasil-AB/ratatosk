@@ -100,7 +100,7 @@ vendor's optional host access.
 **activeTab** — Lets Ratatosk identify the current HTTPS supplier app after the
 user explicitly selects Find Invoices. After exact-origin approval, Ratatosk
 checks the active page and at most thirty-nine additional same-origin billing-related
-pages (forty total), one at a time and to depth four. It is not used
+pages (forty total), using at most four inactive route tabs and depth four. It is not used
 to monitor browsing.
 
 **sidePanel** — Keeps the Ratatosk Collector UI open in Chrome's side panel while
