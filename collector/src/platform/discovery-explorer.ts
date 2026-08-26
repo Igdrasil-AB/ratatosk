@@ -319,7 +319,7 @@ export function explorationProbeOptions(
  * only for late billing widgets — never for a cold application boot. */
 export function entryProbeOptions(mode: ExplorationMode = "fast"): ExplorationProbeOptions {
   return mode === "fast"
-    ? { settleMs: 500, maxResources: 6, deadlineMs: 2_200 }
+    ? { settleMs: 900, maxResources: 6, deadlineMs: 2_200 }
     : { settleMs: 1_500, maxResources: 12, deadlineMs: 3_500 };
 }
 

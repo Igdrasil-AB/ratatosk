@@ -286,8 +286,7 @@ export async function discoverSupplierInTab(
   const incompleteTargets: ExplorationTarget[] = [];
   const foregroundProbeBudget = { remaining: 1 };
   const explorers = Array.from(
-    // One tab per concurrent probe slot, and never fewer than the two the entry
-    // wave needs to snapshot the live page and replay it cold at the same time.
+    // One tab per concurrent disposable-route slot.
     { length: Math.max(2, DEFAULT_SAFE_CONCURRENCY.routeProbes) },
     () => new BackgroundExplorationTab(expectedOrigin, foregroundProbeBudget),
   );
@@ -332,12 +331,11 @@ export async function discoverSupplierInTab(
       if (options.shouldContinue && !(await options.shouldContinue())) throw new Error("supplier discovery was cancelled");
       const remainingPages = budget.pages - diagnostic.pages.attempted;
       const isEntryWave = entryWave(queue);
-      // The user's active entry tab is a unique trust boundary, so it is never
-      // batched with explored routes. Its cold replay uses a separate disposable
-      // tab, though, so the two run together: they cannot interfere, and
-      // serializing them spent seconds of the interactive budget on nothing.
+      // Observe the user's page before starting its visible disposable replay.
+      // A structured answer can then stop without a background foreground-lease
+      // operation surviving into the next supplier run.
       const width = isEntryWave
-        ? entryWaveWidth(queue)
+        ? 1
         : Math.min(DEFAULT_SAFE_CONCURRENCY.routeProbes, remainingPages);
       const scheduled = queue.splice(0, Math.min(width, remainingPages)).map((target) => {
         const page = diagnostic.pages.attempted + 1;
@@ -1795,8 +1793,8 @@ export async function collectPageEvidenceInPage(
       return [];
     }
   };
-  const waitForObservedEvidenceQuiescence = async (): Promise<void> => {
-    const settleDeadline = Math.min(deadline, Date.now() + Math.max(0, Math.min(5_000, options.settleMs)));
+  const waitForObservedEvidenceQuiescence = async (maxWaitMs = options.settleMs): Promise<void> => {
+    const settleDeadline = Math.min(deadline, Date.now() + Math.max(0, Math.min(5_000, maxWaitMs)));
     let previous = "";
     let stableSince = Date.now();
     while (Date.now() < settleDeadline) {
@@ -1832,7 +1830,10 @@ export async function collectPageEvidenceInPage(
     let revealStatus: "complete" | "time_cap" | "action_cap" = "complete";
     const mutationBlocked = await withDiscoveryMutationGuard(async (mutationAttempted, runNavigationAction) => {
       revealStatus = await revealSemanticNavigation(mutationAttempted, runNavigationAction);
-      if (!mutationAttempted()) await waitForObservedEvidenceQuiescence();
+      // Semantic reveal already waited for the application to mount. A short
+      // network-stability tail captures its requests without spending the same
+      // page lease a second time.
+      if (!mutationAttempted()) await waitForObservedEvidenceQuiescence(600);
     });
     semanticNavigationStatus = mutationBlocked ? "mutation_blocked" : revealStatus;
   } else {
@@ -1851,7 +1852,7 @@ export async function collectPageEvidenceInPage(
   const durableEvidencePresent = () => Boolean(
     document.querySelector(routePolicy.documentSelector) || observedHighSignal,
   );
-  if (!durableEvidencePresent() && options.settleMs > 0 && Date.now() < deadline) {
+  if (semanticNavigationStatus === "disabled" && !durableEvidencePresent() && options.settleMs > 0 && Date.now() < deadline) {
     await new Promise<void>((resolve) => {
       let settled = false;
       let semanticQuietTimer: ReturnType<typeof setTimeout> | undefined;
@@ -2627,26 +2628,14 @@ export function discoveryProofIsSufficient(
 }
 
 /**
- * Targets that may share a wave with the user's active tab.
- *
- * The entry snapshot, its cold replay, and a remembered route. The last two run
- * in disposable tabs of their own, so none of the three can interfere with
- * another — and a remembered route only earns its keep by running here. Held
- * back to the following wave it merely joins probes that were going to happen
- * anyway, costing a page and saving no time at all.
+ * Entry-priority targets that run serially before ordinary linked-route waves.
+ * This keeps the one visible replay owned by its supplier run and lets a
+ * structured active-page answer avoid opening a disposable tab at all.
  */
 const ENTRY_WAVE_SOURCES: ReadonlySet<ExplorationPageSource> = new Set(["entry", "entry_replay", "remembered"]);
 
 function entryWave(queue: readonly ExplorationTarget[]): boolean {
   return queue[0] !== undefined && ENTRY_WAVE_SOURCES.has(queue[0].source);
-}
-
-function entryWaveWidth(queue: readonly ExplorationTarget[]): number {
-  let width = 0;
-  while (width < queue.length && width < ENTRY_WAVE_SOURCES.size && ENTRY_WAVE_SOURCES.has(queue[width].source)) {
-    width += 1;
-  }
-  return Math.max(1, width);
 }
 
 function retainCandidate(
