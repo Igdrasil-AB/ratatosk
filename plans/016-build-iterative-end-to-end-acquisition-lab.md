@@ -711,6 +711,19 @@ data.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | I-000 | 0.8.52 / discovery 42 / acquisition 3 | candidate replay `list_failed` | Replay loses workspace-scoped invoice state; a phase trace will stop before document enumeration | pending Phase 0 case | 1 compiled, 1 previewed, 0 retained; fast time cap | revise | Candidate discovery is not the current first failure; replay must become red and typed before another behavior change |
 
+### I-001 hypotheses — record before the next ClickUp run
+
+| Hypothesis | Falsifiable prediction in the closed trace | Shared seam if confirmed |
+| --- | --- | --- |
+| H1: replay reaches billing but does not reveal the invoice-history section | `menu_reveal`, `settings_select`, and `billing_select` complete; `invoice_section_select` is `not_present` or `time_cap` | packaged semantic section recognition/reveal |
+| H2: replay enters a personal/account shell instead of the workspace billing shell | `supplier_commit` completes, then `menu_reveal`, `settings_select`, or `billing_select` is `not_present`; no later phase appears | semantic menu ranking and workspace/personal disambiguation |
+| H3: the right surface hydrates after the candidate budget has already been consumed | the first failure is `time_cap` at `invoice_section_select` or `document_enumeration`, with earlier phases complete and zero verified documents | replay deadline allocation and incremental evidence return |
+| H4: controls are present but their stable invoice identity cannot be reproduced | `document_enumeration` completes, then `identity_validation/ambiguous`; action/control counts are nonzero | shared row/cell identity evidence |
+
+The exact `0.8.53` live snapshot must distinguish these predictions before any
+production behavior edit. A generic `list_failed`, `outer_deadline`, or manually
+described page is not enough evidence to select one.
+
 ### Decision meanings
 
 - **promote**: live failure moved later or end-to-end acceptance passed; shared
