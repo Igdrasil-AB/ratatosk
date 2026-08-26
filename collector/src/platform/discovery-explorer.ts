@@ -428,9 +428,14 @@ export function planExplorationTargets(input: {
  * turn before any family receives a second.
  */
 export function rankExplorationQueue(targets: readonly ExplorationTarget[]): ExplorationTarget[] {
+  const remembered = targets
+    .filter((target) => target.source === "remembered")
+    .sort((left, right) => right.score - left.score || left.url.localeCompare(right.url));
   const byFamily = new Map<ExplorationFamily, ExplorationTarget[]>();
   for (const family of ENABLED_EXPLORATION_FAMILIES) byFamily.set(family, []);
-  for (const target of targets) byFamily.get(explorationFamilyForTarget(target))!.push(target);
+  for (const target of targets) {
+    if (target.source !== "remembered") byFamily.get(explorationFamilyForTarget(target))!.push(target);
+  }
   for (const queue of byFamily.values()) queue.sort((left, right) => right.score - left.score || left.url.localeCompare(right.url));
 
   const result: ExplorationTarget[] = [];
@@ -441,7 +446,7 @@ export function rankExplorationQueue(targets: readonly ExplorationTarget[]): Exp
   while (ENABLED_EXPLORATION_FAMILIES.some((family) => byFamily.get(family)!.length)) {
     for (const family of ENABLED_EXPLORATION_FAMILIES) take(family);
   }
-  return result;
+  return [...remembered, ...result];
 }
 
 /**

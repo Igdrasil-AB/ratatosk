@@ -213,20 +213,8 @@ export function createInitialExplorationTargets(
     hintSource: "active_entry",
     score: Number.MAX_SAFE_INTEGER,
   }];
-  if (observerReady) {
-    targets.push({
-      url: entryUrl,
-      depth: 0,
-      source: "entry_replay",
-      family: "exact_entry",
-      hintSource: "cold_replay",
-      score: Number.MAX_SAFE_INTEGER - 1,
-    });
-  }
-  // Where this supplier's invoices were last found. Ranked above every curated
-  // guess but kept out of `exact_entry`, so it is probed in the first explored
-  // wave rather than sharing the trust boundary of the user's own tab — and so
-  // a stale route costs one probe in a wave that was going to run regardless.
+  // Where this supplier's invoices were last proven. Try it before spending the
+  // visible cold-replay lease; a stale route still costs only one bounded probe.
   if (rememberedRoute && rememberedRoute !== entryUrl) {
     targets.push({
       url: rememberedRoute,
@@ -237,12 +225,21 @@ export function createInitialExplorationTargets(
       score: REMEMBERED_ROUTE_SCORE,
     });
   }
+  if (observerReady) {
+    targets.push({
+      url: entryUrl,
+      depth: 0,
+      source: "entry_replay",
+      family: "exact_entry",
+      hintSource: "cold_replay",
+      score: Number.MAX_SAFE_INTEGER - 2,
+    });
+  }
   return targets;
 }
 
-/** Above the curated billing paths (which top out near 68) and every observed
- * link, but far below the entry page. */
-const REMEMBERED_ROUTE_SCORE = 5_000;
+/** Immediately below the active page and above its visible cold replay. */
+const REMEMBERED_ROUTE_SCORE = Number.MAX_SAFE_INTEGER - 1;
 
 export async function discoverSupplierInTab(
   tabId: number,
