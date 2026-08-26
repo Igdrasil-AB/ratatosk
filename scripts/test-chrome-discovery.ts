@@ -8,9 +8,33 @@ import { chromium, type BrowserContext, type Page, type Worker } from "playwrigh
 
 const FIXTURE_HOST = "discovery-fixture.ratatosk.test";
 const FIXTURE_ORIGIN = `https://${FIXTURE_HOST}`;
+const ACQUISITION_CASES = [
+  { name: "network", host: "network-acquisition.ratatosk.test", route: "/network-acquisition", adapterId: "network-json", expectedActions: 0, fallback: false },
+  { name: "direct-dom", host: "direct-acquisition.ratatosk.test", route: "/direct-acquisition", adapterId: "dom-links", expectedActions: 0, fallback: false },
+  { name: "semantic-dom", host: "semantic-acquisition.ratatosk.test", route: "/semantic-acquisition", adapterId: "dom-actions", expectedActions: 1, fallback: false },
+  { name: "candidate-fallback", host: "fallback-acquisition.ratatosk.test", route: "/fallback-acquisition", adapterId: "network-json", expectedActions: 0, fallback: true },
+] as const;
+const NEGATIVE_ACQUISITION_CASES = [
+  { name: "invalid-pdf", host: "invalid-acquisition.ratatosk.test", route: "/invalid-acquisition", adapterId: "dom-links", result: "document_invalid" },
+  { name: "partial-traversal", host: "partial-acquisition.ratatosk.test", route: "/partial-acquisition", adapterId: "network-json", result: "retrieval_incomplete" },
+] as const;
+const DESTINATION_RETRY_CASE = {
+  name: "destination-retry",
+  host: "destination-acquisition.ratatosk.test",
+  route: "/destination-acquisition",
+  adapterId: "dom-links",
+} as const;
+const FIXTURE_HOSTS = [
+  FIXTURE_HOST,
+  ...ACQUISITION_CASES.map((item) => item.host),
+  ...NEGATIVE_ACQUISITION_CASES.map((item) => item.host),
+  DESTINATION_RETRY_CASE.host,
+];
 
 type DiscoveryStatus = {
   stage: string;
+  vendorId?: string;
+  adapterId?: string;
   candidateCount?: number;
   diagnostic?: {
     result?: string;
@@ -43,7 +67,10 @@ try {
   await cp(resolve("dist/collector"), extensionPath, { recursive: true });
   const manifestPath = join(extensionPath, "manifest.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { host_permissions?: string[] };
-  manifest.host_permissions = [...new Set([...(manifest.host_permissions ?? []), `${FIXTURE_ORIGIN}/*`])];
+  manifest.host_permissions = [...new Set([
+    ...(manifest.host_permissions ?? []),
+    ...FIXTURE_HOSTS.map((host) => `https://${host}/*`),
+  ])];
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
   const keyPath = join(temporary, "fixture.key");
@@ -51,21 +78,26 @@ try {
   execFileSync("openssl", [
     "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
     "-subj", `/CN=${FIXTURE_HOST}`,
-    "-addext", `subjectAltName=DNS:${FIXTURE_HOST}`,
+    "-addext", `subjectAltName=${FIXTURE_HOSTS.map((host) => `DNS:${host}`).join(",")}`,
     "-keyout", keyPath,
     "-out", certPath,
   ], { stdio: "ignore" });
 
   let opaqueDirectVisits = 0;
   let replayFailureVisits = 0;
+  const documentRequests = new Map<string, number>();
   const server = createServer({
     key: await readFile(keyPath),
     cert: await readFile(certPath),
   }, (request, response) => {
-    const path = new URL(request.url ?? "/", FIXTURE_ORIGIN).pathname;
-    if (request.url === "/documents/invoice-1.pdf") {
-      response.writeHead(200, { "content-type": "application/pdf" });
-      response.end("%PDF-1.4\n%%EOF\n");
+    const requestHost = String(request.headers.host ?? FIXTURE_HOST).split(":", 1)[0];
+    const requestOrigin = `https://${requestHost}`;
+    const path = new URL(request.url ?? "/", requestOrigin).pathname;
+    if (path.startsWith("/documents/") && path.endsWith(".pdf")) {
+      const key = `${requestHost}${path}`;
+      documentRequests.set(key, (documentRequests.get(key) ?? 0) + 1);
+      response.writeHead(200, { "content-type": path.includes("invalid") ? "text/plain" : "application/pdf" });
+      response.end(path.includes("invalid") ? "not a pdf" : "%PDF-1.4\n%%EOF\n");
       return;
     }
     if (path === "/api/invoices") {
@@ -73,8 +105,30 @@ try {
       response.end(JSON.stringify({ invoices: [{
         id: "fixture-invoice-1",
         issued_at: "2026-08-01",
-        pdf_url: "/documents/invoice-1.pdf",
+        pdf_url: `${requestOrigin}/documents/network.pdf`,
       }] }));
+      return;
+    }
+    if (path === "/api/fallback-invoices") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ invoices: [{
+        id: "fixture-invalid-1",
+        issued_at: "2026-08-01",
+        pdf_url: `${requestOrigin}/documents/invalid.pdf`,
+      }] }));
+      return;
+    }
+    if (path === "/api/partial-invoices") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        has_more: true,
+        next_cursor: "cur_2",
+        results: [{
+          invoice_number: "FIXTURE-PARTIAL-1",
+          invoice_date: "2026-08-01",
+          download_url: `${requestOrigin}/documents/partial.pdf`,
+        }],
+      }));
       return;
     }
     if (path === "/frame-content") {
@@ -125,7 +179,7 @@ try {
       args: [
         `--disable-extensions-except=${extensionPath}`,
         `--load-extension=${extensionPath}`,
-        `--host-resolver-rules=MAP ${FIXTURE_HOST} 127.0.0.1:${address.port}`,
+        `--host-resolver-rules=${FIXTURE_HOSTS.map((host) => `MAP ${host} 127.0.0.1:${address.port}`).join(", ")}`,
       ],
     });
     const worker = await extensionWorker(context);
@@ -133,7 +187,60 @@ try {
     const extensionPage = await context.newPage();
     await extensionPage.goto(`chrome-extension://${extensionId}/collector/src/ui/popup/popup.html`);
     const page = await context.newPage();
-    const requestedCase = iterationOptions.caseName ?? process.env.RATATOSK_CHROME_CASE;
+    if (iterationOptions.acquisition) {
+      for (const testCase of ACQUISITION_CASES) {
+        if (iterationOptions.caseName && iterationOptions.caseName !== testCase.name) continue;
+        const origin = `https://${testCase.host}`;
+        await page.goto(`${origin}${testCase.route}`, { waitUntil: "domcontentloaded" });
+        await page.bringToFront();
+        const result = await runAcquisition(extensionPage, origin, testCase.adapterId);
+        assert.equal(result.first.count, 1, `${testCase.name}: first run did not accept one document`);
+        assert.equal(result.first.verifiedCount, 1, `${testCase.name}: first run did not verify one document`);
+        assert.equal(result.first.documentActionCount ?? 0, testCase.expectedActions, `${testCase.name}: unexpected first-run action count`);
+        assert.equal(result.immediate.count, 0, `${testCase.name}: immediate rerun delivered a duplicate`);
+        assert.equal(result.immediate.documentActionCount ?? 0, 0, `${testCase.name}: immediate rerun activated an accepted control`);
+        assert.equal(result.cadenceActionCount, 0, `${testCase.name}: cadence rerun activated an accepted control`);
+        assert.equal(result.ledgerDelta, 1, `${testCase.name}: ledger did not commit exactly one document`);
+        assert.equal(result.downloadDelta, 1, `${testCase.name}: browser created an unexpected download`);
+        if (testCase.fallback) {
+          assert((documentRequests.get(`${testCase.host}/documents/invalid.pdf`) ?? 0) >= 1, "fallback case did not exercise the failed candidate");
+          assert((documentRequests.get(`${testCase.host}/documents/fallback.pdf`) ?? 0) >= 1, "fallback case did not reach the working candidate");
+        }
+        console.info(`[chrome-acquisition] ${testCase.name} first=1 immediate=0 cadence=0 actions=${testCase.expectedActions}/0/0 downloads=1 page_owned=0`);
+      }
+      for (const testCase of NEGATIVE_ACQUISITION_CASES) {
+        if (iterationOptions.caseName && iterationOptions.caseName !== testCase.name) continue;
+        const origin = `https://${testCase.host}`;
+        await page.goto(`${origin}${testCase.route}`, { waitUntil: "domcontentloaded" });
+        await page.bringToFront();
+        const result = await runFailedAcquisition(extensionPage, origin, testCase.adapterId);
+        assert.equal(result, testCase.result, `${testCase.name}: wrong closed verification result`);
+        console.info(`[chrome-acquisition] ${testCase.name} rejected=${result} ledger=0 downloads=0 committed=0`);
+      }
+      if (!iterationOptions.caseName || iterationOptions.caseName === DESTINATION_RETRY_CASE.name) {
+        const origin = `https://${DESTINATION_RETRY_CASE.host}`;
+        await page.goto(`${origin}${DESTINATION_RETRY_CASE.route}`, { waitUntil: "domcontentloaded" });
+        await page.bringToFront();
+        await fillFilesystemDeliveryJournal(extensionPage);
+        const rejected = await runFailedAcquisition(extensionPage, origin, DESTINATION_RETRY_CASE.adapterId);
+        assert.equal(rejected, "destination_unavailable", "destination rejection did not fail at delivery");
+        await clearFilesystemDeliveryJournal(extensionPage);
+        const retry = await runAcquisition(extensionPage, origin, DESTINATION_RETRY_CASE.adapterId);
+        assert.equal(retry.first.count, 1, "destination retry did not accept the previously rejected document");
+        assert.equal(retry.immediate.count, 0, "destination retry immediate run duplicated the document");
+        assert.equal(retry.cadenceActionCount, 0, "destination retry cadence run activated a document control");
+        console.info("[chrome-acquisition] destination-retry rejected=destination_unavailable retry=1 immediate=0 cadence=0 committed_after_acceptance=1");
+      }
+      assert(
+        !iterationOptions.caseName ||
+        ACQUISITION_CASES.some((item) => item.name === iterationOptions.caseName) ||
+        NEGATIVE_ACQUISITION_CASES.some((item) => item.name === iterationOptions.caseName) ||
+        DESTINATION_RETRY_CASE.name === iterationOptions.caseName,
+        `unknown acquisition case ${iterationOptions.caseName}`,
+      );
+      await writeFile(join(temporary, "iteration-result.json"), `${JSON.stringify({ results: iterationResults }, null, 2)}\n`);
+    } else {
+      const requestedCase = iterationOptions.caseName ?? process.env.RATATOSK_CHROME_CASE;
     const cases = [
       { name: "server", route: "/server", expected: "preview" },
       { name: "delayed", route: "/delayed", expected: "preview" },
@@ -194,7 +301,8 @@ try {
       }
       assert.equal(signatures.size, 1, `${testCase.name}: nondeterministic terminal signatures ${[...signatures].join(", ")}`);
     }
-    await writeFile(join(temporary, "iteration-result.json"), `${JSON.stringify({ results: iterationResults }, null, 2)}\n`);
+      await writeFile(join(temporary, "iteration-result.json"), `${JSON.stringify({ results: iterationResults }, null, 2)}\n`);
+    }
   } finally {
     await context?.close();
     context = undefined;
@@ -205,7 +313,7 @@ try {
   await rm(temporary, { recursive: true, force: true });
 }
 
-function parseIterationOptions(args: readonly string[]): { caseName?: string; repeat: number } {
+function parseIterationOptions(args: readonly string[]): { caseName?: string; repeat: number; acquisition: boolean } {
   let caseName: string | undefined;
   let repeat = 1;
   for (let index = 0; index < args.length; index += 1) {
@@ -214,7 +322,7 @@ function parseIterationOptions(args: readonly string[]): { caseName?: string; re
   }
   if (caseName !== undefined && !/^[a-z0-9-]{1,80}$/.test(caseName)) throw new Error("invalid discovery case name");
   if (!Number.isInteger(repeat) || repeat < 1 || repeat > 20) throw new Error("repeat must be an integer from 1 to 20");
-  return { ...(caseName ? { caseName } : {}), repeat };
+  return { ...(caseName ? { caseName } : {}), repeat, acquisition: args.includes("--acquisition") };
 }
 
 async function inspectFixtureFrames(page: Page): Promise<unknown> {
@@ -261,7 +369,247 @@ async function runDiscovery(extensionPage: Page, origin: string): Promise<Discov
   }, origin) as Promise<DiscoveryStatus>;
 }
 
+type RunSummary = {
+  count: number;
+  verifiedCount?: number;
+  documentActionCount?: number;
+};
+
+async function runAcquisition(
+  extensionPage: Page,
+  origin: string,
+  expectedAdapter: string,
+): Promise<{
+  first: RunSummary;
+  immediate: RunSummary;
+  cadenceActionCount: number;
+  ledgerDelta: number;
+  downloadDelta: number;
+}> {
+  type Source = {
+    id: string;
+    connection?: { lastAttemptAt?: number; lastCount?: number; lastDocumentActionCount?: number } | null;
+  };
+  await sendExtensionMessage(extensionPage, { type: "dismissDiscovery" });
+  await sendExtensionMessage(extensionPage, {
+      type: "setLocalDestination",
+      destination: { kind: "filesystem", rootFolder: "Ratatosk Browser Acquisition", dateMode: "extraction" },
+  });
+  const tabId = await extensionPage.evaluate(async () => {
+    const extensionChrome = (globalThis as typeof globalThis & {
+      chrome: { tabs: { query(input: unknown): Promise<Array<{ id?: number }>> } };
+    }).chrome;
+    const [tab] = await extensionChrome.tabs.query({ active: true, currentWindow: true });
+    return tab?.id;
+  });
+  if (tabId === undefined) throw new Error("fixture tab is not active");
+  const ledgerBefore = ((await sendExtensionMessage(extensionPage, { type: "getLedger" })).ledger as unknown[]).length;
+  const downloadsBefore = await extensionDownloadCount(extensionPage);
+  await sendExtensionMessage(extensionPage, { type: "beginDiscovery", tabId, origin });
+  const preview = (await sendExtensionMessage(extensionPage, { type: "completeDiscovery" })).discovery as DiscoveryStatus;
+  if (preview.stage !== "preview" || !preview.vendorId || preview.adapterId !== expectedAdapter) {
+    throw new Error(`unexpected acquisition preview ${JSON.stringify(preview)}`);
+  }
+  await sendExtensionMessage(extensionPage, { type: "beginDiscoveryConnect", vendorId: preview.vendorId, destinationId: "local" });
+  const connected = await sendExtensionMessage(extensionPage, { type: "completeDiscoveryConnect", vendorId: preview.vendorId });
+  let first = (connected.summaries as RunSummary[] | undefined)?.[0];
+  if (!first) {
+    const firstDeadline = Date.now() + 12_000;
+    while (Date.now() < firstDeadline) {
+      const status = (await sendExtensionMessage(extensionPage, { type: "getDiscoveryStatus" })).discovery as DiscoveryStatus & { count?: number };
+      const source = ((await sendExtensionMessage(extensionPage, { type: "listSources" })).sources as Source[])
+        .find((candidate) => candidate.id === preview.vendorId);
+      if (status.stage === "complete" && source?.connection) {
+        first = {
+          count: status.count ?? source.connection.lastCount ?? 0,
+          verifiedCount: status.count ?? source.connection.lastCount ?? 0,
+          documentActionCount: source.connection.lastDocumentActionCount ?? 0,
+        };
+        break;
+      }
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+    }
+  }
+  if (!first) throw new Error("discovered connection returned no first-run result");
+
+  const immediateReply = await sendExtensionMessage(extensionPage, { type: "runNow", vendorId: preview.vendorId });
+  const immediate = (immediateReply.summaries as RunSummary[] | undefined)?.[0];
+  if (!immediate) throw new Error("immediate rerun returned no summary");
+  const sourceBeforeCadence = ((await sendExtensionMessage(extensionPage, { type: "listSources" })).sources as Source[])
+    .find((source) => source.id === preview.vendorId);
+  const attemptBeforeCadence = sourceBeforeCadence?.connection?.lastAttemptAt ?? 0;
+  await sendExtensionMessage(extensionPage, { type: "setSchedule", schedule: { mode: "daily" } });
+  await extensionPage.evaluate(async (when) => {
+    const extensionChrome = (globalThis as typeof globalThis & {
+      chrome: { alarms: { create(name: string, info: { when: number }): Promise<void> } };
+    }).chrome;
+    await extensionChrome.alarms.create("collector-sync", { when });
+  }, Date.now() + 250);
+  const cadenceDeadline = Date.now() + 12_000;
+  let cadenceActionCount: number | undefined;
+  while (Date.now() < cadenceDeadline) {
+    const source = ((await sendExtensionMessage(extensionPage, { type: "listSources" })).sources as Source[])
+      .find((candidate) => candidate.id === preview.vendorId);
+    if ((source?.connection?.lastAttemptAt ?? 0) > attemptBeforeCadence) {
+      cadenceActionCount = source?.connection?.lastDocumentActionCount ?? 0;
+      break;
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  }
+  if (cadenceActionCount === undefined) throw new Error("scheduled acquisition did not complete");
+  const ledgerAfter = ((await sendExtensionMessage(extensionPage, { type: "getLedger" })).ledger as unknown[]).length;
+  const downloadsAfter = await extensionDownloadCount(extensionPage);
+  return {
+    first,
+    immediate,
+    cadenceActionCount,
+    ledgerDelta: ledgerAfter - ledgerBefore,
+    downloadDelta: downloadsAfter - downloadsBefore,
+  };
+}
+
+async function sendExtensionMessage(
+  extensionPage: Page,
+  message: Record<string, unknown>,
+): Promise<Record<string, unknown> & { ok?: boolean; error?: string }> {
+  const reply = await sendRawExtensionMessage(extensionPage, message);
+  if (!reply?.ok) throw new Error(String(reply?.error ?? `message ${message.type} failed`));
+  return reply;
+}
+
+async function sendRawExtensionMessage(
+  extensionPage: Page,
+  message: Record<string, unknown>,
+): Promise<Record<string, unknown> & { ok?: boolean; error?: string }> {
+  return extensionPage.evaluate(async (input) => {
+    const extensionChrome = (globalThis as typeof globalThis & {
+      chrome: { runtime: { sendMessage(value: unknown): Promise<Record<string, unknown>> } };
+    }).chrome;
+    return extensionChrome.runtime.sendMessage(input);
+  }, message) as Promise<Record<string, unknown> & { ok?: boolean; error?: string }>;
+}
+
+function extensionDownloadCount(extensionPage: Page): Promise<number> {
+  return extensionPage.evaluate(async () => {
+    const extensionChrome = (globalThis as typeof globalThis & {
+      chrome: { downloads: { search(query: Record<string, never>): Promise<unknown[]> } };
+    }).chrome;
+    return (await extensionChrome.downloads.search({})).length;
+  });
+}
+
+function fillFilesystemDeliveryJournal(extensionPage: Page): Promise<void> {
+  return extensionPage.evaluate(async () => {
+    const journal: Record<string, unknown> = {};
+    for (let index = 0; index < 500; index += 1) {
+      journal[index.toString(16).padStart(64, "0")] = {
+        source: "ext:seed",
+        destination: "blocked",
+        path: `blocked/${index}`,
+        status: "pending",
+        updatedAt: index,
+      };
+    }
+    const extensionChrome = (globalThis as typeof globalThis & {
+      chrome: { storage: { local: { set(value: Record<string, unknown>): Promise<void> } } };
+    }).chrome;
+    await extensionChrome.storage.local.set({ filesystemDeliveryJournalV1: journal });
+  });
+}
+
+function clearFilesystemDeliveryJournal(extensionPage: Page): Promise<void> {
+  return extensionPage.evaluate(async () => {
+    const extensionChrome = (globalThis as typeof globalThis & {
+      chrome: { storage: { local: { remove(key: string): Promise<void> } } };
+    }).chrome;
+    await extensionChrome.storage.local.remove("filesystemDeliveryJournalV1");
+  });
+}
+
+async function runFailedAcquisition(
+  extensionPage: Page,
+  origin: string,
+  expectedAdapter: string,
+): Promise<string> {
+  await sendExtensionMessage(extensionPage, { type: "dismissDiscovery" });
+  await sendExtensionMessage(extensionPage, {
+    type: "setLocalDestination",
+    destination: { kind: "filesystem", rootFolder: "Ratatosk Browser Acquisition", dateMode: "extraction" },
+  });
+  const tabId = await extensionPage.evaluate(async () => {
+    const extensionChrome = (globalThis as typeof globalThis & {
+      chrome: { tabs: { query(input: unknown): Promise<Array<{ id?: number }>> } };
+    }).chrome;
+    return (await extensionChrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
+  });
+  if (tabId === undefined) throw new Error("fixture tab is not active");
+  const ledgerBefore = ((await sendExtensionMessage(extensionPage, { type: "getLedger" })).ledger as unknown[]).length;
+  const downloadsBefore = await extensionDownloadCount(extensionPage);
+  await sendExtensionMessage(extensionPage, { type: "beginDiscovery", tabId, origin });
+  const preview = (await sendExtensionMessage(extensionPage, { type: "completeDiscovery" })).discovery as DiscoveryStatus;
+  if (preview.stage !== "preview" || !preview.vendorId || preview.adapterId !== expectedAdapter) {
+    throw new Error(`unexpected negative acquisition preview ${JSON.stringify(preview)}`);
+  }
+  await sendExtensionMessage(extensionPage, { type: "beginDiscoveryConnect", vendorId: preview.vendorId, destinationId: "local" });
+  await sendRawExtensionMessage(extensionPage, { type: "completeDiscoveryConnect", vendorId: preview.vendorId });
+  const deadline = Date.now() + 12_000;
+  let result: string | undefined;
+  let lastStatus: DiscoveryStatus | undefined;
+  while (Date.now() < deadline) {
+    const status = (await sendExtensionMessage(extensionPage, { type: "getDiscoveryStatus" })).discovery as DiscoveryStatus;
+    lastStatus = status;
+    if (status.stage === "failed") {
+      const diagnostic = (await sendExtensionMessage(extensionPage, { type: "getDiscoveryDiagnostic" })).discoveryDiagnostic as {
+        verification?: { outcomes?: Array<{ result?: string }> };
+      };
+      result = diagnostic.verification?.outcomes?.[0]?.result;
+      if (result) break;
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  }
+  if (!result) throw new Error(`negative acquisition did not reach a closed verification result: ${JSON.stringify(lastStatus)}`);
+  const ledgerAfter = ((await sendExtensionMessage(extensionPage, { type: "getLedger" })).ledger as unknown[]).length;
+  const downloadsAfter = await extensionDownloadCount(extensionPage);
+  const sources = (await sendExtensionMessage(extensionPage, { type: "listSources" })).sources as Array<{ id?: string }>;
+  assert.equal(ledgerAfter, ledgerBefore, "failed acquisition changed the ledger");
+  assert.equal(downloadsAfter, downloadsBefore, "failed acquisition created a browser download");
+  assert(!sources.some((source) => source.id === preview.vendorId), "failed acquisition persisted a supplier");
+  return result;
+}
+
 function fixturePage(path: string): string {
+  if (path === "/network-acquisition") {
+    return `<!doctype html><html><head><title>Invoices | Network Acquisition</title></head><body>
+      <h1>Invoices</h1><script>fetch('/api/invoices').then(response => response.json())</script></body></html>`;
+  }
+  if (path === "/direct-acquisition") {
+    return `<!doctype html><html><head><title>Invoices | Direct Acquisition</title></head><body>
+      <h1>Invoices</h1><a href="/documents/direct.pdf">Download invoice</a></body></html>`;
+  }
+  if (path === "/semantic-acquisition") {
+    return `<!doctype html><html><head><title>Invoices | Semantic Acquisition</title></head><body>
+      <h1>Invoices</h1><table><thead><tr><th>Invoice Number</th><th>Actions</th></tr></thead>
+      <tbody><tr data-invoice-id="fixture-semantic-1"><td>FIXTURE-SEM-1</td><td><button id="download">Download invoice</button></td></tr></tbody></table>
+      <script>document.querySelector('#download').addEventListener('click', () => { fetch('/documents/semantic.pdf').catch(() => undefined); });</script>
+      </body></html>`;
+  }
+  if (path === "/fallback-acquisition") {
+    return `<!doctype html><html><head><title>Invoices | Candidate Fallback</title></head><body>
+      <h1>Invoices</h1><a href="/documents/fallback.pdf">Download invoice</a>
+      <script>fetch('/api/fallback-invoices').then(response => response.json())</script></body></html>`;
+  }
+  if (path === "/invalid-acquisition") {
+    return `<!doctype html><html><head><title>Invoices | Invalid Document</title></head><body>
+      <h1>Invoices</h1><a href="/documents/invalid.pdf">Download invoice</a></body></html>`;
+  }
+  if (path === "/partial-acquisition") {
+    return `<!doctype html><html><head><title>Invoices | Partial Traversal</title></head><body>
+      <h1>Invoices</h1><script>fetch('/api/partial-invoices?cursor=cur_1&limit=25').then(response => response.json())</script></body></html>`;
+  }
+  if (path === "/destination-acquisition") {
+    return `<!doctype html><html><head><title>Invoices | Destination Retry</title></head><body>
+      <h1>Invoices</h1><a href="/documents/destination-retry.pdf">Download invoice</a></body></html>`;
+  }
   if (path === "/") {
     return activeFixtureCase === "semantic-replay-timeout"
       ? "<!doctype html><html><head><title>Workspace</title></head><body><main>Workspace home</main></body></html>"

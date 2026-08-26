@@ -26,6 +26,7 @@
     "test:collector-release-regressions": "vitest run test/core/dom-acquisition-transaction.test.ts test/core/semantic-action-observer.test.ts test/core/browser-dom-boundary.test.ts",
     "test:chrome-discovery": "npx playwright-core install chromium && npm run build:collector && npm run test:chrome-discovery:built",
     "test:chrome-discovery:built": "tsx scripts/test-chrome-discovery.ts",
+    "test:chrome-acquisition": "npx playwright-core install chromium && npm run build:collector && tsx scripts/test-chrome-discovery.ts --acquisition",
     "test:discovery-iteration": "npx playwright-core install chromium && npm run build:collector && tsx scripts/test-chrome-discovery.ts",
     "prepare:live-supplier-test": "npm run assert:release-source && npm run ci && npm run audit:security && npm run build:collector && npm run assert:release-source && npm run package:collector && npm run verify:collector-artifact && tsx scripts/prepare-live-supplier-test.ts",
     "validate:collector-release": "npm run validate:release && npm run test:collector-release-regressions && npm run test:chrome-discovery:built && npm run verify:collector-artifact && tsx scripts/validate-semantic-dom-acceptance.ts",

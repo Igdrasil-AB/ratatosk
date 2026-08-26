@@ -719,7 +719,10 @@ async function completePendingDiscoveryPermission(addedOrigins: readonly string[
 
 function completeDiscoveredConnect(vendorId: string, expectedRunId?: string): Promise<Response> {
   const key = `${vendorId}:${expectedRunId ?? "current"}`;
-  const existing = discoveredConnectionsInFlight.get(key);
+  const existing = discoveredConnectionsInFlight.get(key) ?? (!expectedRunId
+    ? [...discoveredConnectionsInFlight.entries()]
+      .find(([candidate]) => candidate.startsWith(`${vendorId}:`))?.[1]
+    : undefined);
   if (existing) return existing;
   const task = collectionRuns.runInteractive(async (): Promise<Response> => {
     const pending = await getPendingSupplierDiscoveryConnect();
