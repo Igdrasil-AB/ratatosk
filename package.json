@@ -1,6 +1,6 @@
 {
   "name": "ratatosk",
-  "version": "0.8.55",
+  "version": "0.8.56",
   "description": "Open-source browser extension that collects supplier invoices and receipts from vendor portals using the user's own session — no credential custody.",
   "license": "MIT",
   "type": "module",

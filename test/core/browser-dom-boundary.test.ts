@@ -90,9 +90,10 @@ describe("browser DOM boundary", () => {
   });
 
   it.each([
-    ["blocks a mutation", "{}", true],
-    ["allows an explicit read-only GraphQL query", JSON.stringify({ query: "query Billing { invoices { id } }" }), false],
-  ] as const)("%s from a pre-connect navigation control", async (_name, body, blocked) => {
+    ["blocks a mutation", "{}", true, false, false],
+    ["allows an explicit read-only GraphQL query", JSON.stringify({ query: "query Billing { invoices { id } }" }), false, false, true],
+    ["ignores a blocked background mutation", "{}", false, true, false],
+  ] as const)("%s from a pre-connect navigation control", async (_name, body, blocked, background, reachesNetwork) => {
     const originalFetch = vi.fn(async () => new Response("{}", {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -110,18 +111,29 @@ describe("browser DOM boundary", () => {
       querySelectorAll(): unknown[] { return []; }
       getBoundingClientRect() { return { width: 120, height: 32 }; }
       click(): void {
-        void (window.fetch as typeof fetch)("https://vendor.example/api/account", { method: "POST", body }).catch(() => undefined);
+        if (!background) {
+          void (window.fetch as typeof fetch)("https://vendor.example/api/account", { method: "POST", body }).catch(() => undefined);
+        }
       }
       dispatchEvent(): boolean { return true; }
     }
     const trigger = new PageElement();
+    let backgroundQueued = false;
     const documentStub = {
       title: "Vendor",
       activeElement: trigger,
       documentElement: { outerHTML: "<html></html>", scrollHeight: 0 },
       getElementById: () => null,
       querySelector: () => null,
-      querySelectorAll: (selector: string) => selector.includes("aria-haspopup") ? [trigger] : [],
+      querySelectorAll: (selector: string) => {
+        if (selector.includes("aria-haspopup") && background && !backgroundQueued) {
+          backgroundQueued = true;
+          queueMicrotask(() => {
+            void (window.fetch as typeof fetch)("https://vendor.example/api/background", { method: "POST", body }).catch(() => undefined);
+          });
+        }
+        return selector.includes("aria-haspopup") ? [trigger] : [];
+      },
     };
     const windowStub: Record<string, unknown> = {
       fetch: originalFetch,
@@ -161,7 +173,7 @@ describe("browser DOM boundary", () => {
           origin: "https://vendor.example",
           stats: { semanticNavigationStatus: "complete" },
         });
-        expect(originalFetch).toHaveBeenCalledOnce();
+        expect(originalFetch).toHaveBeenCalledTimes(reachesNetwork ? 1 : 0);
       }
     } finally {
       vi.unstubAllGlobals();

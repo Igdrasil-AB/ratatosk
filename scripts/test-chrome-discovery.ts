@@ -284,6 +284,7 @@ try {
       { name: "opaque-active", route: "/9012345678901/billing", expected: "preview" },
       { name: "opaque-direct-active", route: "/9012345678901/direct-billing", expected: "preview" },
       { name: "weak-active-fallback", route: "/9012345678901/weak-active-fallback", expected: "preview" },
+      { name: "background-mutation-menu", route: "/background-mutation-menu", expected: "preview" },
       { name: "blocked", route: "/blocked", expected: "preview" },
     ] as const;
     const selectedCases = requestedCase ? cases.filter((item) => item.name === requestedCase) : cases;
@@ -770,6 +771,23 @@ function fixturePage(path: string): string {
           document.querySelector('#workspace-settings').addEventListener('click', () => {
             document.querySelector('#overlay').innerHTML = '<button id="workspace-billing">Billing</button>';
             document.querySelector('#workspace-billing').addEventListener('click', () => {
+              document.querySelector('#main').innerHTML = '<h1>Invoices</h1><button data-href="/documents/invoice-1.pdf">Download invoice</button>';
+            });
+          });
+        });
+      </script></body></html>`;
+  }
+  if (path === "/background-mutation-menu") {
+    return `<!doctype html><html><head><title>Workspace | Background Mutation</title></head><body>
+      <header><button aria-haspopup="menu" id="workspace">Workspace menu</button></header>
+      <div id="overlay"></div><main id="main"><h1>Workspace home</h1></main>
+      <script>
+        setInterval(() => { fetch('/telemetry', { method: 'POST', body: '{}' }).catch(() => undefined); }, 75);
+        document.querySelector('#workspace').addEventListener('click', () => {
+          document.querySelector('#overlay').innerHTML = '<div role="menu"><button id="settings">Settings</button></div>';
+          document.querySelector('#settings').addEventListener('click', () => {
+            document.querySelector('#overlay').innerHTML = '<button id="billing">Billing</button>';
+            document.querySelector('#billing').addEventListener('click', () => {
               document.querySelector('#main').innerHTML = '<h1>Invoices</h1><button data-href="/documents/invoice-1.pdf">Download invoice</button>';
             });
           });
