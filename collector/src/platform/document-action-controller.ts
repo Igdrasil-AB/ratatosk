@@ -942,9 +942,9 @@ export async function runSemanticDocumentOperationInPage(
     try { control.click(); } finally { observer?.endDocumentAction?.(); }
   };
   const navigationLabelsOf = (element: Element): string[] => accessibleLabelSources(element, 120);
-  const navigationControl = (tier: RegExp, root: ParentNode = document): HTMLElement | undefined => Array.from(
+  const navigationControls = (tier: RegExp, root: ParentNode = document): HTMLElement[] => Array.from(
     root.querySelectorAll<HTMLElement>('button,[role="button"],[role="menuitem"],[role="tab"],a:not([href])'),
-  ).find((element) => {
+  ).filter((element) => {
     const labels = navigationLabelsOf(element);
     return Boolean(
       labels.length && !labels.some((label) => unsafe.test(label)) &&
@@ -952,6 +952,8 @@ export async function runSemanticDocumentOperationInPage(
       !element.closest("form") && visible(element)
     );
   });
+  const navigationControl = (tier: RegExp, root: ParentNode = document): HTMLElement | undefined =>
+    navigationControls(tier, root)[0];
   const menuTriggers = (): HTMLElement[] => Array.from(document.querySelectorAll<HTMLElement>(
     'button,[role="button"],[aria-haspopup="menu"],[aria-haspopup="true"]',
   )).filter((element) => {
@@ -970,7 +972,10 @@ export async function runSemanticDocumentOperationInPage(
     };
     return score(right) - score(left);
   }).slice(0, 4);
-  const settingsAfterMenu = (trigger: HTMLElement): HTMLElement | undefined => {
+  const settingsAfterMenu = (
+    trigger: HTMLElement,
+    settingsVisibleBeforeClick: ReadonlySet<HTMLElement>,
+  ): HTMLElement | undefined => {
     const controlledId = trigger.getAttribute("aria-controls");
     const controlled = controlledId ? document.getElementById(controlledId) : null;
     const roots = controlled && visible(controlled)
@@ -980,7 +985,12 @@ export async function runSemanticDocumentOperationInPage(
       const settings = navigationControl(settingsNavigation, root);
       if (settings) return settings;
     }
-    return undefined;
+    // Some applications portal a menu into a generic overlay without a menu
+    // role or aria-controls. Accept only a Settings control that became visible
+    // after this exact trigger click, preserving causal proof without requiring
+    // a framework-specific container selector.
+    return navigationControls(settingsNavigation)
+      .find((settings) => !settingsVisibleBeforeClick.has(settings));
   };
   let navigationSteps = 0;
   const revealBillingSurface = async (): Promise<void> => {
@@ -993,13 +1003,14 @@ export async function runSemanticDocumentOperationInPage(
       let settings: HTMLElement | undefined;
       for (const trigger of menuTriggers()) {
         if (Date.now() >= deadline || navigationSteps >= 4) return;
+        const settingsVisibleBeforeClick = new Set(navigationControls(settingsNavigation));
         safeNavigationClick(trigger);
         menuRevealed = true;
         navigationSteps += 1;
         const menuDeadline = Math.min(deadline, Date.now() + 600);
         let emptyMenuObservedAt: number | undefined;
         while (!settings && Date.now() < menuDeadline) {
-          settings = settingsAfterMenu(trigger);
+          settings = settingsAfterMenu(trigger, settingsVisibleBeforeClick);
           if (settings) break;
           const visibleMenu = Array.from(document.querySelectorAll<HTMLElement>('[role="menu"]')).some(visible);
           if (visibleMenu) emptyMenuObservedAt ??= Date.now();
