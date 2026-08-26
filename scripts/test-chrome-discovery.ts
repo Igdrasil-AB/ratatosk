@@ -283,6 +283,7 @@ try {
       { name: "avatar-menus", route: "/avatar-menus", expected: "preview" },
       { name: "opaque-active", route: "/9012345678901/billing", expected: "preview" },
       { name: "opaque-direct-active", route: "/9012345678901/direct-billing", expected: "preview" },
+      { name: "weak-active-fallback", route: "/9012345678901/weak-active-fallback", expected: "preview" },
       { name: "blocked", route: "/blocked", expected: "preview" },
     ] as const;
     const selectedCases = requestedCase ? cases.filter((item) => item.name === requestedCase) : cases;
@@ -702,9 +703,18 @@ function fixturePage(path: string): string {
       <script>document.querySelector('#blind-download').addEventListener('click', () => { fetch('/documents/blind.pdf').catch(() => undefined); });</script></body></html>`;
   }
   if (path === "/") {
-    return activeFixtureCase === "semantic-replay-timeout"
+    return activeFixtureCase === "semantic-replay-timeout" || activeFixtureCase === "weak-active-fallback"
       ? "<!doctype html><html><head><title>Workspace</title></head><body><main>Workspace home</main></body></html>"
       : fixturePage("/semantic");
+  }
+  if (path === "/9012345678901/weak-active-fallback") {
+    return `<!doctype html><html><head><title>Workspace | Weak Active Evidence</title></head><body>
+      <main><h1>Workspace</h1><a href="/documents/unrelated.pdf" aria-label="More"></a>
+      <a href="/billing-center">Billing</a></main></body></html>`;
+  }
+  if (path === "/billing-center") {
+    return `<!doctype html><html><head><title>Invoices | Observed Billing Route</title></head><body>
+      <main><h1>Invoices</h1><a href="/documents/invoice-1.pdf">Download invoice PDF</a></main></body></html>`;
   }
   if (path === "/9012345678901/billing") {
     return `<!doctype html><html><head><title>Invoices | Opaque Active Fixture</title></head><body>
