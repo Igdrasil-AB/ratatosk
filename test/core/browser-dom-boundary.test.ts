@@ -1123,6 +1123,10 @@ describe("browser DOM boundary", () => {
     expect(policySource).toContain("(?:delete|remove|cancel|pay|purchase|checkout|upgrade|downgrade|authorize|logout)");
   });
 
+  it("keeps a patient bounded mount window for cold semantic supplier shells", () => {
+    expect(DISCOVERY_DOM_POLICY.navigationTriggerMountMs).toBe(20_000);
+  });
+
   it("recognizes framework download anchors from bounded structural semantics", () => {
     expect(policySource).toContain('a:not([href])');
     expect(actionControllerSource).toContain("safeNavigationHref(element)");

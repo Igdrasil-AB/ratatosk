@@ -172,6 +172,7 @@ describe("Collector popup layout regressions", () => {
   it("identifies the exact collector and discovery engine on load and every search", () => {
     expect(serviceWorkerSource).toContain("[collector] ready ${formatCollectorRuntimeIdentity()}");
     expect(serviceWorkerSource).toContain("[collector] discovery start ${formatCollectorRuntimeIdentity()}");
+    expect(serviceWorkerSource).toContain('if (currentDiscovery.stage === "scanning") return { ok: true };');
   });
 
   it("offers local discovery with a reviewed-recipe fallback", () => {

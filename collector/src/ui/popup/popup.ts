@@ -1004,6 +1004,7 @@ async function connectFromUserGesture(vendorId: string, chosen?: DestinationId):
 }
 
 async function discoverFromUserGesture(): Promise<void> {
+  if (state.discovery.stage === "scanning" || state.discovery.stage === "connecting") return;
   const page = state.activeSupplierTab;
   if (!hasAnyDestination()) {
     screen = "settings";

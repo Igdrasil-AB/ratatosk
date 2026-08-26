@@ -37,4 +37,8 @@ describe("discovery search-limit UI", () => {
     expect(popup).toContain("Collection incomplete — some invoices may still be missing");
     expect(popup).toContain('connection.lastStatus === "partial" ? "Retry" : "Collect"');
   });
+
+  it("makes repeated discovery clicks idempotent", () => {
+    expect(popup).toContain('if (state.discovery.stage === "scanning" || state.discovery.stage === "connecting") return;');
+  });
 });
