@@ -138,6 +138,16 @@ try {
     const requestHost = String(request.headers.host ?? FIXTURE_HOST).split(":", 1)[0];
     const requestOrigin = `https://${requestHost}`;
     const path = new URL(request.url ?? "/", requestOrigin).pathname;
+    if (requestHost === "native-attachment-acquisition.ratatosk.test" && path === "/opaque/attachment") {
+      const key = `${requestHost}${path}`;
+      documentRequests.set(key, (documentRequests.get(key) ?? 0) + 1);
+      response.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-disposition": "attachment",
+      });
+      response.end("%PDF-1.4\n%%EOF\n");
+      return;
+    }
     if (path.startsWith("/documents/") && path.endsWith(".pdf")) {
       const key = `${requestHost}${path}`;
       documentRequests.set(key, (documentRequests.get(key) ?? 0) + 1);
@@ -216,7 +226,7 @@ try {
         <tbody><tr data-invoice-id="native-1"><td>NATIVE-1</td><td><button id="download">Download invoice</button></td></tr></tbody></table>
         <script>document.querySelector('#download').addEventListener('click', () => {
           const frame = document.createElement('iframe'); frame.hidden = true;
-          frame.src = '/documents/native-attachment.pdf'; document.body.append(frame);
+          frame.src = '/opaque/attachment'; document.body.append(frame);
         });</script></body></html>`);
       return;
     }

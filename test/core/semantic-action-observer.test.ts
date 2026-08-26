@@ -98,7 +98,7 @@ describe("semantic action observer boundary", () => {
       method: "GET",
       responseHeaders: [
         { name: "Content-Type", value: "application/octet-stream" },
-        { name: "Content-Disposition", value: 'attachment; filename="invoice.pdf"' },
+        { name: "Content-Disposition", value: "attachment" },
       ],
     });
 
@@ -114,14 +114,6 @@ describe("semantic action observer boundary", () => {
           source: "content-disposition",
           confidence: "medium",
           filename: "receipt-42.pdf",
-        }],
-      },
-      {
-        url: "https://documents.example/signed/opaque-item",
-        evidence: [{
-          source: "content-disposition",
-          confidence: "medium",
-          filename: "invoice.pdf",
         }],
       },
     ]);
