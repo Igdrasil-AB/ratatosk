@@ -186,6 +186,7 @@ finish() {
 TOTAL_STAGES=4
 SESSION_FILE="artifacts/live/session.json"
 RESULT_FILE="artifacts/live/results.tsv"
+SNAPSHOT_FILE="artifacts/live/snapshots.ndjson"
 
 [[ -f "$SESSION_FILE" ]] || {
   printf 'Run npm run prepare:live-supplier-test -- --browser chrome first.\n' >&2
@@ -195,6 +196,23 @@ RESULT_FILE="artifacts/live/results.tsv"
 EXTENSION_PATH=$(node -e 'const s=require("./artifacts/live/session.json"); process.stdout.write(s.extensionPath)')
 EXPECTED_RUNTIME=$(node -e 'const s=require("./artifacts/live/session.json"); process.stdout.write("v"+s.collectorVersion+" discovery-engine="+s.discoveryEngine+" document-acquisition="+s.documentAcquisition)')
 EXPECTED_CHUNK=$(node -e 'const s=require("./artifacts/live/session.json"); process.stdout.write(s.serviceWorkerChunk.split("/").pop())')
+ACCEPTANCE_NONCE=$(node -e 'process.stdout.write(require("./artifacts/live/session.json").acceptanceNonce)')
+
+capture_snapshot() {
+  local host="$1" stage="$2"
+  step "In the Ratatosk service-worker console, run: chrome.runtime.sendMessage({type:'getLiveAcceptanceSnapshot',hostname:'$host',sessionNonce:'$ACCEPTANCE_NONCE'}).then(r=>copy(JSON.stringify(r.acceptanceSnapshot)))"
+  ask SNAPSHOT_JSON "Paste the copied $stage snapshot:"
+  CAPTURED_SNAPSHOT=$(printf '%s' "$SNAPSHOT_JSON" | npx tsx scripts/validate-live-acceptance-snapshot.ts \
+    --hostname "$host" --stage "$stage" \
+    --collector-version "$(node -e 'process.stdout.write(require("./artifacts/live/session.json").collectorVersion)')" \
+    --discovery-revision "$(node -e 'process.stdout.write(String(require("./artifacts/live/session.json").discoveryEngine))')" \
+    --acquisition-revision "$(node -e 'process.stdout.write(String(require("./artifacts/live/session.json").documentAcquisition))')" \
+    --session-nonce "$ACCEPTANCE_NONCE") || {
+      warn "snapshot did not match the approved hostname, stage, or prepared runtime"
+      return 1
+    }
+  printf '%s\n' "$CAPTURED_SNAPSHOT" >> "$SNAPSHOT_FILE"
+}
 
 banner "Ratatosk live supplier test"
 
@@ -218,6 +236,7 @@ ask RUNTIME_LINE "Paste the ready line:"
   exit 1
 }
 printf '  %s✓ runtime identity matched%s\n' "$GREEN" "$RESET"
+node -e 'const fs=require("node:fs"); const p="artifacts/live/session.json"; const s=JSON.parse(fs.readFileSync(p,"utf8")); s.state="runtime_matched"; s.runtimeMatchedAt=new Date().toISOString(); fs.writeFileSync(p,JSON.stringify(s,null,2)+"\n")'
 
 stage "Approve the supplier tabs"
 step "List the hostnames of the supplier tabs already open and signed in."
@@ -225,6 +244,7 @@ step "Use comma-separated hostnames only — no paths, query strings, account na
 ask SUPPLIER_HOSTS "Supplier hostnames:"
 IFS=',' read -r -a HOSTS <<< "$SUPPLIER_HOSTS"
 : > "$RESULT_FILE"
+: > "$SNAPSHOT_FILE"
 : > "artifacts/live/approved-hosts.txt"
 for raw in "${HOSTS[@]}"; do
   host=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | xargs)
@@ -237,6 +257,7 @@ done
 sort -u "artifacts/live/approved-hosts.txt" -o "artifacts/live/approved-hosts.txt"
 
 stage "Run the bounded supplier matrix"
+printf 'hostname\tfamily\tdestination_readback\tresult\tboundary\n' > "$RESULT_FILE"
 while IFS= read -r host; do
   say "Supplier: $host"
   step "Switch to the already-open tab for this hostname."
@@ -248,10 +269,58 @@ while IFS= read -r host; do
     step "From the sanitized log or report, copy only result@phase/result (for example list_failed@menu_reveal/not_present)."
     ask BOUNDARY "Closed first boundary:"
     [[ "$BOUNDARY" =~ ^[a-z_]+(@[a-z_]+/[a-z_]+)?$ ]] || { warn "invalid closed boundary"; exit 1; }
+    printf '%s\tna\t0\tfailed\t%s\n' "$host" "$BOUNDARY" >> "$RESULT_FILE"
+    continue
   fi
-  printf '%s\t%s\t%s\n' "$host" "$OUTCOME" "$BOUNDARY" >> "$RESULT_FILE"
-  printf '  %s✓ recorded hostname-only outcome%s\n' "$GREEN" "$RESET"
+  if [[ "$OUTCOME" == "blocked" ]]; then
+    printf '%s\tna\t0\tblocked\tmanual_handoff\n' "$host" >> "$RESULT_FILE"
+    continue
+  fi
+
+  ask SUPPLIER_FAMILY "Family (opaque_semantic_spa, server_rendered_documents, or structured_api):"
+  [[ "$SUPPLIER_FAMILY" =~ ^(opaque_semantic_spa|server_rendered_documents|structured_api)$ ]] || { warn "invalid supplier family"; exit 1; }
+  if ! capture_snapshot "$host" preview; then
+    printf '%s\t%s\t0\tblocked\tsnapshot_invalid\n' "$host" "$SUPPLIER_FAMILY" >> "$RESULT_FILE"
+    continue
+  fi
+  step "Choose the intended destination in Ratatosk, then select Connect & Collect."
+  step "Wait for the first run to finish, then capture its extension-generated snapshot."
+  if ! capture_snapshot "$host" connected; then
+    ask BOUNDARY "Closed first-run boundary:"
+    [[ "$BOUNDARY" =~ ^[a-z_]+(@[a-z_]+/[a-z_]+)?$ ]] || BOUNDARY="snapshot_invalid"
+    printf '%s\t%s\t0\tfailed\t%s\n' "$host" "$SUPPLIER_FAMILY" "$BOUNDARY" >> "$RESULT_FILE"
+    continue
+  fi
+  ask DESTINATION_READBACK "Documents confirmed in the selected destination:"
+  if [[ ! "$DESTINATION_READBACK" =~ ^[0-9]{1,5}$ ]]; then
+    warn "readback must be an integer from 0 to 99999"
+    printf '%s\t%s\t0\tblocked\tdestination_readback_invalid\n' "$host" "$SUPPLIER_FAMILY" >> "$RESULT_FILE"
+    continue
+  fi
+
+  step "Run this connected supplier again immediately."
+  step "Wait for it to finish, then capture the next extension-generated snapshot."
+  if ! capture_snapshot "$host" connected; then
+    ask BOUNDARY "Closed immediate-run boundary:"
+    [[ "$BOUNDARY" =~ ^[a-z_]+(@[a-z_]+/[a-z_]+)?$ ]] || BOUNDARY="snapshot_invalid"
+    printf '%s\t%s\t%s\tfailed\t%s\n' "$host" "$SUPPLIER_FAMILY" "$DESTINATION_READBACK" "$BOUNDARY" >> "$RESULT_FILE"
+    continue
+  fi
+
+  step "In the Ratatosk service-worker console, run: chrome.alarms.create('collector-sync', { when: Date.now() + 1000 })"
+  step "Wait for the scheduled run to finish, then capture the final extension-generated snapshot."
+  if ! capture_snapshot "$host" connected; then
+    ask BOUNDARY "Closed cadence-run boundary:"
+    [[ "$BOUNDARY" =~ ^[a-z_]+(@[a-z_]+/[a-z_]+)?$ ]] || BOUNDARY="snapshot_invalid"
+    printf '%s\t%s\t%s\tfailed\t%s\n' "$host" "$SUPPLIER_FAMILY" "$DESTINATION_READBACK" "$BOUNDARY" >> "$RESULT_FILE"
+    continue
+  fi
+  printf '%s\t%s\t%s\tcaptured\tnone\n' "$host" "$SUPPLIER_FAMILY" "$DESTINATION_READBACK" >> "$RESULT_FILE"
+  printf '  %s✓ recorded four privacy-safe extension snapshots%s\n' "$GREEN" "$RESET"
 done < "artifacts/live/approved-hosts.txt"
+
+node -e 'const fs=require("node:fs"); const rows=fs.readFileSync("artifacts/live/results.tsv","utf8").trim().split("\n").slice(1).map(line=>line.split("\t")); const totals={approved:rows.length,captured:rows.filter(row=>row[3]==="captured").length,failed:rows.filter(row=>row[3]==="failed").length,blocked:rows.filter(row=>row[3]==="blocked").length}; fs.writeFileSync("artifacts/live/summary.json",JSON.stringify(totals,null,2)+"\n"); console.log("Session totals: "+JSON.stringify(totals));'
 
 finish
 note "Sanitized session results: $RESULT_FILE"
+note "When every required family is captured, run: npm run build:live-acceptance-receipt"

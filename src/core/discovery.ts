@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Extractor, RequestSpec, VendorRecipe } from "./types";
+import type { Extractor, ReplayPlanKind, RequestSpec, VendorRecipe } from "./types";
 import { VendorRecipeSchema, validateRecipe } from "./schema";
 import { deriveVendorId } from "./recorder/infer";
 import { isSafeStaticDiscoveryQueryValue } from "./discovery-query";
@@ -96,6 +96,16 @@ const discoveredSupplierCandidateSetSchema = z.object({
 export type DiscoveredSupplierCandidateSetV1 = Omit<z.infer<typeof discoveredSupplierCandidateSetSchema>, "candidates"> & {
   candidates: DiscoveredSupplierProfileV1[];
 };
+
+/** Closed replay family used by diagnostics and live acceptance. */
+export function replayPlanKindForRecipe(recipe: VendorRecipe): ReplayPlanKind {
+  if (recipe.invoices.strategy === "network") return "network";
+  if (recipe.invoices.strategy === "html") return "embedded";
+  if (recipe.config?.length) return "typed_dom";
+  return recipe.invoices.list.steps.some((step) => step.action === "extractSemanticDownloads")
+    ? "semantic_dom"
+    : "exact_dom";
+}
 
 export function parseDiscoveredSupplierProfile(value: unknown): DiscoveredSupplierProfileV1 {
   const size = new TextEncoder().encode(JSON.stringify(value)).byteLength;

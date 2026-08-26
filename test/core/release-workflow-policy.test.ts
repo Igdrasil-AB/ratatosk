@@ -9,13 +9,20 @@ describe("release metadata workflow policy", () => {
     expect(workflow).not.toContain("allow-unverified-pilot-baseline");
     expect(workflow.indexOf("npm run validate:release")).toBeLessThan(workflow.indexOf("npm run package:collector"));
     expect(workflow).not.toContain("actions/upload-artifact");
+    expect(workflow).toContain("npm run test:chrome-acquisition:built");
 
     const pkg = JSON.parse(readFileSync("package.json", "utf8"));
     expect(pkg.scripts["release:collector"]).toContain("npm run validate:collector-release");
     expect(pkg.scripts["validate:collector-release"]).toContain("npm run validate:release");
     expect(pkg.scripts["validate:collector-release"]).toContain("npm run test:collector-release-regressions");
+    expect(pkg.scripts["validate:collector-release"]).toContain("npm run test:chrome-acquisition:built");
     expect(pkg.scripts["validate:collector-release"]).toContain("validate-semantic-dom-acceptance.ts");
     expect(pkg.scripts["release:collector"]).not.toContain("allow-unverified-pilot-baseline");
+
+    const chromeRunner = readFileSync("scripts/run-chrome-discovery.sh", "utf8");
+    expect(pkg.scripts["test:chrome-discovery:built"]).toContain("run-chrome-discovery.sh");
+    expect(chromeRunner).toContain("trap cleanup EXIT");
+    expect(chromeRunner).toContain("ratatosk-chrome-discovery-");
   });
 
   it("rechecks source provenance after generation and build, immediately before packaging", () => {
@@ -37,12 +44,22 @@ describe("release metadata workflow policy", () => {
     expect(prepare).toContain("npm run ci");
     expect(prepare).toContain("npm run audit:security");
     expect(prepare).toContain("npm run build:collector");
+    expect(prepare).toContain("npm run test:chrome-discovery:built");
+    expect(prepare).toContain("npm run test:chrome-acquisition:built");
     expect(prepare.at(-1)).toBe("tsx scripts/prepare-live-supplier-test.ts");
 
     execFileSync("bash", ["-n", "scripts/live-supplier-test.sh"]);
     const wizard = readFileSync("scripts/live-supplier-test.sh", "utf8");
     expect(wizard).toContain("serviceWorkerChunk");
+    expect(wizard).toContain('s.state="runtime_matched"');
     expect(wizard).toContain("approved-hosts.txt");
+    expect(wizard).toContain("destination_readback");
+    expect(wizard).toContain("getLiveAcceptanceSnapshot");
+    expect(wizard).toContain("snapshots.ndjson");
     expect(wizard).not.toMatch(/HAR|page source|network body/i);
+
+    const receiptBuilder = readFileSync("scripts/build-live-acceptance-receipt.ts", "utf8");
+    expect(receiptBuilder).toContain('session.state !== "runtime_matched"');
+    expect(receiptBuilder).toContain("new Set(hosts).size !== hosts.length");
   });
 });

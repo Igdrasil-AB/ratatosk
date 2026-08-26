@@ -22,6 +22,7 @@ import {
   UnexpectedResponse,
 } from "../../../src/core/errors";
 import { readDocumentBytes } from "../../../src/core/document-size";
+import { replayTraceWithPrefix as withReplayPrefix } from "../../../src/core/replay-trace";
 import { exactPublicHttpsOriginPattern } from "../../../src/core/origin-policy";
 import { PageFetcher } from "./page-fetch";
 import { createRetrievalProof } from "../../../src/core/retrieval";
@@ -89,6 +90,7 @@ export class BrowserDomDriver implements DomDriver {
     private readonly recipe: VendorRecipe,
     private readonly createInlineDocumentStore: () => InlineDocumentStore = () => new InlineDocumentStore(),
     onSemanticDocumentAction: () => void = () => undefined,
+    onPageOwnedDownloadObservation: (attempted: boolean) => void = () => undefined,
     private readonly expiresAt?: number,
   ) {
     this.allowedOrigins = new Set(recipe.hosts.map((host) => new URL(host.slice(0, -2)).origin));
@@ -96,6 +98,7 @@ export class BrowserDomDriver implements DomDriver {
       this.allowedOrigins,
       recipe.id,
       onSemanticDocumentAction,
+      onPageOwnedDownloadObservation,
     );
   }
 
@@ -900,16 +903,6 @@ function mergeDocumentObservations(
 
 function collectedSize(collected: Record<string, Set<string>>): number {
   return Math.max(0, ...Object.values(collected).map((values) => values.size));
-}
-
-function withReplayPrefix(replay: ReplayTrace, prefix: readonly ReplayPhaseAttempt[]): ReplayTrace {
-  const phases = [...prefix, ...replay.phases.filter((item) => !prefix.some((prefixItem) => prefixItem.phase === item.phase))];
-  const firstFailure = phases.find((item) => item.result !== "complete");
-  return {
-    ...replay,
-    phases,
-    ...(firstFailure ? { firstFailure: { phase: firstFailure.phase, result: firstFailure.result } } : {}),
-  };
 }
 
 function throwDomRunError(code: DomRunErrorCode, vendorId: string): never {
