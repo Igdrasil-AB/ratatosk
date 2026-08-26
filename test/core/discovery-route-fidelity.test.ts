@@ -80,6 +80,7 @@ describe("discovery route fidelity", () => {
     );
 
     const recipe = candidates.find((candidate) => candidate.adapterId === "dom-actions")?.recipe;
+    expect(candidates.find((candidate) => candidate.adapterId === "dom-actions")?.previewCount).toBe(1);
     expect(recipe?.invoices.strategy).toBe("dom");
     if (recipe?.invoices.strategy === "dom") {
       expect(recipe.invoices.list.open).toBe("https://vendor.example/");
@@ -87,7 +88,7 @@ describe("discovery route fidelity", () => {
     }
   });
 
-  it("can verify an active-only direct link without persisting its opaque route", () => {
+  it("refuses an active-only direct link when its opaque route cannot be reproduced", () => {
     const candidates = compileCandidates(
       {
         ...base,
@@ -108,13 +109,7 @@ describe("discovery route fidelity", () => {
       null,
     );
 
-    expect(candidates.map((candidate) => candidate.adapterId)).toEqual(["dom-actions"]);
-    const recipe = candidates[0]?.recipe;
-    expect(recipe?.invoices.strategy).toBe("dom");
-    if (recipe?.invoices.strategy === "dom") {
-      expect(recipe.invoices.list.open).toBe("https://vendor.example/");
-      expect(JSON.stringify(recipe)).not.toContain("9012345678901");
-    }
+    expect(candidates).toEqual([]);
   });
 
   it("keeps direct document links anchored to the requested route", () => {

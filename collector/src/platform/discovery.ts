@@ -160,6 +160,8 @@ export interface PageEvidence {
 type Candidate = {
   adapterId: DiscoveryAdapterId;
   recipe: VendorRecipe;
+  /** Bounded DOM evidence count. Full verification remains Connect & Collect. */
+  previewCount?: number;
   admission: CandidateAdmissionSignal[];
 };
 
@@ -241,7 +243,6 @@ export function createInitialExplorationTargets(
 /** Above the curated billing paths (which top out near 68) and every observed
  * link, but far below the entry page. */
 const REMEMBERED_ROUTE_SCORE = 5_000;
-const WEAK_SEMANTIC_PREVIEW_MS = 2_500;
 
 export async function discoverSupplierInTab(
   tabId: number,
@@ -351,6 +352,7 @@ export async function discoverSupplierInTab(
           // The active entry tab is already foreground; only a disposable
           // exploration tab can spend the shared visibility lease.
           if (target.source === "entry") return false;
+          if (target.source === "entry_replay") return true;
           try {
             return FOREGROUND_BILLING_ROUTE.test(new URL(target.url).pathname);
           } catch {
@@ -374,6 +376,7 @@ export async function discoverSupplierInTab(
         const probeOptions: ProbeOptions = {
           ...timing.probeOptions,
           allowForegroundRetry: index === foregroundCandidateIndex,
+          foregroundRetryWithoutBillingIntent: target.source === "entry_replay",
           // The page the person chose is observational only. Menu exploration
           // and scrolling belong to the disposable cold replay/background tabs.
           allowSemanticNavigation: target.source !== "entry",
@@ -470,25 +473,18 @@ export async function discoverSupplierInTab(
         const evaluations = await mapConcurrentOrdered(candidates, {
           limit: DEFAULT_SAFE_CONCURRENCY.candidatePreviews,
         }, async (candidate) => {
+          if (candidate.previewCount !== undefined) {
+            return { candidate, candidateCount: candidate.previewCount, replay: undefined, deferred: true };
+          }
           diagnostic.candidates.previewed += 1;
           const remainingMs = explorationDeadline - Date.now();
           const planKind = candidateReplayPlanKind(candidate);
           if (remainingMs <= 0) throw new CandidatePreviewError(
             "limit_reached", replayFailure(planKind, "document_enumeration", "time_cap"),
           );
-          // A lone document-shaped link on an ordinary application page is
-          // useful enough to verify, but too weak to monopolize the interactive
-          // search. Give that semantic fallback a short causal replay lease so
-          // observed billing routes still receive most of the global budget.
-          const weakSemanticLink = candidate.adapterId === "dom-actions" &&
-            candidate.admission.length === 1 && candidate.admission[0] === "direct_document_link";
-          const candidateDeadline = weakSemanticLink
-            ? Math.min(explorationDeadline, Date.now() + WEAK_SEMANTIC_PREVIEW_MS)
-            : explorationDeadline;
-          const candidateRemainingMs = Math.max(1, candidateDeadline - Date.now());
           const preview = await runWithinExplorationBudget(
-            previewCandidate(candidate.recipe, candidateDeadline, planKind),
-            candidateRemainingMs,
+            previewCandidate(candidate.recipe, explorationDeadline, planKind),
+            remainingMs,
           ).catch((error) => {
             if (discoveryProbeFailureCode(error) === "outer_deadline") {
               throw new CandidatePreviewError(
@@ -497,7 +493,7 @@ export async function discoverSupplierInTab(
             }
             throw error;
           });
-          return { candidate, candidateCount: preview.count, replay: preview.replay };
+          return { candidate, candidateCount: preview.count, replay: preview.replay, deferred: false };
         });
         for (const evaluation of evaluations) {
           if (evaluation.status === "cancelled") continue;
@@ -513,10 +509,10 @@ export async function discoverSupplierInTab(
             });
             continue;
           }
-          const { candidate, candidateCount, replay } = evaluation.value;
+          const { candidate, candidateCount, replay, deferred } = evaluation.value;
           try {
             console.info(
-              `[collector] discovery page ${page}/${budget.pages} (${target.source}) ${candidate.adapterId} -> previewed`,
+              `[collector] discovery page ${page}/${budget.pages} (${target.source}) ${candidate.adapterId} -> ${deferred ? "deferred-verification" : "previewed"}`,
             );
             retainCandidate(retained, {
               score: candidateScore(candidate.adapterId, candidateCount, target.score),
@@ -838,17 +834,15 @@ export function compileCandidates(
   if (domCandidate) candidates.push({
     adapterId: "dom-links",
     recipe: domCandidate,
+    previewCount: Math.min(500, links.length),
     admission: ["direct_document_link"],
   });
-  const semanticEvidenceCount = evidence.stats.semanticControls + (evidence.stats.semanticSections ?? 0) +
-    (!domCandidate && evidence.stats.documentLinks > 0 && (
-      (evidence.stats.semanticNavigationSteps ?? 0) > 0 || evidence.stats.semanticNavigationStatus === "disabled"
-    ) ? evidence.stats.documentLinks : 0);
+  const semanticEvidenceCount = evidence.stats.semanticControls + (evidence.stats.semanticSections ?? 0);
   const semanticOpen: { url: string; config?: VendorRecipe["config"] } | null = domOpen ?? (() => {
     const replayProved = evidence.stats.semanticNavigationStatus === "complete" &&
       (evidence.stats.semanticNavigationSteps ?? 0) > 0;
     const userOpenedInvoiceSurface = evidence.stats.semanticNavigationStatus === "disabled" &&
-      (evidence.stats.documentLinks > 0 || evidence.stats.semanticControls > 0 || (evidence.stats.semanticSections ?? 0) > 0);
+      (evidence.stats.semanticControls > 0 || (evidence.stats.semanticSections ?? 0) > 0);
     if (!replayProved && !userOpenedInvoiceSurface) return null;
     try {
       return safeEntryUrl(openUrl) === openUrl && new URL(openUrl).origin === evidence.origin
@@ -870,15 +864,12 @@ export function compileCandidates(
     : undefined;
   if (semanticCandidate) {
     const admission: CandidateAdmissionSignal[] = [];
-    if (
-      evidence.stats.documentLinks > 0 && evidence.stats.semanticControls === 0 &&
-      (evidence.stats.semanticSections ?? 0) === 0
-    ) admission.push("direct_document_link");
     if ((evidence.stats.semanticSections ?? 0) > 0) admission.push("independent_invoice_context");
     if (evidence.stats.semanticControls > 0) admission.push("semantic_document_control");
     candidates.push({
       adapterId: "dom-actions",
       recipe: semanticCandidate,
+      previewCount: Math.min(500, semanticEvidenceCount),
       admission,
     });
   }
@@ -890,6 +881,7 @@ type ProbeOptions = {
   maxResources: number;
   deadlineMs: number;
   allowForegroundRetry?: boolean;
+  foregroundRetryWithoutBillingIntent?: boolean;
   allowSemanticNavigation?: boolean;
   allowScroll?: boolean;
 };
@@ -2318,6 +2310,7 @@ const FOREGROUND_BILLING_ROUTE = /(?:^|\/)(?:billing|invoices?|receipts?|stateme
 export function shouldRetryProbeInForeground(
   url: string,
   evidence: ForegroundProbeEvidence,
+  allowWithoutBillingIntent = false,
 ): boolean {
   let pathname: string;
   try {
@@ -2325,7 +2318,7 @@ export function shouldRetryProbeInForeground(
   } catch {
     return false;
   }
-  return FOREGROUND_BILLING_ROUTE.test(pathname) &&
+  return (allowWithoutBillingIntent || FOREGROUND_BILLING_ROUTE.test(pathname)) &&
     evidence.stats.documentLinks === 0 &&
     evidence.stats.semanticControls === 0 &&
     (evidence.stats.semanticSections ?? 0) === 0;
@@ -2363,8 +2356,9 @@ class BackgroundExplorationTab {
     // scan. The inactive pass is held to most of the route's budget rather than
     // a fixed fraction of it, so the reserve is enough for the retry to render
     // without starving the pass that usually succeeds on its own.
-    const inactiveOptions = leaseAvailable && FOREGROUND_BILLING_ROUTE.test(new URL(target).pathname)
-      ? { ...options, deadlineMs: Math.trunc(options.deadlineMs * 0.6) }
+    const inactiveRatio = options.foregroundRetryWithoutBillingIntent ? 0.45 : 0.6;
+    const inactiveOptions = leaseAvailable
+      ? { ...options, deadlineMs: Math.trunc(options.deadlineMs * inactiveRatio) }
       : options;
     const evidence = await probeSupplierTab(
       this.tabId!,
@@ -2372,7 +2366,7 @@ class BackgroundExplorationTab {
       capExplorationProbeOptions(inactiveOptions, Math.min(inactiveOptions.deadlineMs, remainingMs())),
     );
     if (
-      !shouldRetryProbeInForeground(target, evidence) ||
+      !shouldRetryProbeInForeground(target, evidence, options.foregroundRetryWithoutBillingIntent) ||
       this.foregroundProbeBudget.remaining <= 0 ||
       options.allowForegroundRetry !== true ||
       remainingMs() < 500
