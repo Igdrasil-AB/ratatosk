@@ -15,6 +15,7 @@ const blindSeed = process.env.RATATOSK_BLIND_SEED ?? "a10393d04be2";
 if (!/^[a-f0-9]{12}$/.test(blindSeed)) throw new Error("blind seed must be 12 lowercase hex characters");
 const acceptanceNonce = randomBytes(16).toString("hex");
 const BLIND_ROUTE = `/x${blindSeed.slice(0, 6)}/z${blindSeed.slice(6)}`;
+const NATIVE_TENANT_ROUTE = "/9012345678901/settings/billing-details";
 const BLIND_WRAPPER = `w${blindSeed}`;
 const BLIND_DELAY_MS = 200 + Number.parseInt(blindSeed.slice(0, 2), 16) % 700;
 const BLIND_MENU_ORDER = [1, 2, 3, 4].map((value, index, values) =>
@@ -23,7 +24,7 @@ const ACQUISITION_CASES = [
   { name: "network", host: "network-acquisition.ratatosk.test", route: "/network-acquisition", adapterId: "network-json", expectedActions: 0, fallback: false },
   { name: "direct-dom", host: "direct-acquisition.ratatosk.test", route: "/direct-acquisition", adapterId: "dom-links", expectedActions: 0, fallback: false },
   { name: "stripe-common", host: "stripe-common-acquisition.ratatosk.test", route: "/stripe-home", adapterId: "dom-links", expectedActions: 0, fallback: false },
-  { name: "native-attachment", host: "native-attachment-acquisition.ratatosk.test", route: "/native-home", adapterId: "dom-actions", expectedActions: 1, fallback: false },
+  { name: "native-attachment", host: "native-attachment-acquisition.ratatosk.test", route: NATIVE_TENANT_ROUTE, adapterId: "dom-actions", expectedActions: 1, fallback: false },
   { name: "semantic-dom", host: "semantic-acquisition.ratatosk.test", route: "/semantic-acquisition", adapterId: "dom-actions", expectedActions: 1, fallback: false },
   { name: "candidate-fallback", host: "fallback-acquisition.ratatosk.test", route: "/fallback-acquisition", adapterId: "network-json", expectedActions: 0, fallback: true },
   { name: "blind-synthetic", host: "blind-acquisition.ratatosk.test", route: "/blind-home", adapterId: "dom-actions", expectedActions: 1, fallback: false },
@@ -45,7 +46,7 @@ const ACQUISITION_PAGE_ROUTES = new Map<string, ReadonlySet<string>>([
 ]);
 ACQUISITION_PAGE_ROUTES.set("blind-acquisition.ratatosk.test", new Set(["/blind-home", BLIND_ROUTE]));
 ACQUISITION_PAGE_ROUTES.set("stripe-common-acquisition.ratatosk.test", new Set(["/stripe-home", "/billing"]));
-ACQUISITION_PAGE_ROUTES.set("native-attachment-acquisition.ratatosk.test", new Set(["/native-home", "/billing"]));
+ACQUISITION_PAGE_ROUTES.set("native-attachment-acquisition.ratatosk.test", new Set(["/", NATIVE_TENANT_ROUTE]));
 const FIXTURE_HOSTS = [
   FIXTURE_HOST,
   ...ACQUISITION_CASES.map((item) => item.host),
@@ -219,15 +220,14 @@ try {
       response.end('<!doctype html><html><head><title>Billing</title></head><body><h1>Invoices</h1><a href="https://invoice.stripe.com/i/acct_fixture/live_fixture">View invoice</a></body></html>');
       return;
     }
-    if (requestHost === "native-attachment-acquisition.ratatosk.test" && path === "/billing") {
+    if (requestHost === "native-attachment-acquisition.ratatosk.test" && path === "/") {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end(`<!doctype html><html><head><title>Billing</title></head><body>
-        <h1>Invoices</h1><table><thead><tr><th>Invoice Number</th><th>Actions</th></tr></thead>
-        <tbody><tr data-invoice-id="native-1"><td>NATIVE-1</td><td><button id="download">Download invoice</button></td></tr></tbody></table>
-        <script>document.querySelector('#download').addEventListener('click', () => {
-          const frame = document.createElement('iframe'); frame.hidden = true;
-          frame.src = '/opaque/attachment'; document.body.append(frame);
-        });</script></body></html>`);
+      response.end(nativeTenantShell());
+      return;
+    }
+    if (requestHost === "native-attachment-acquisition.ratatosk.test" && path === NATIVE_TENANT_ROUTE) {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(nativeBillingPage());
       return;
     }
     const allowedAcquisitionPages = ACQUISITION_PAGE_ROUTES.get(requestHost);
@@ -696,15 +696,44 @@ async function runFailedAcquisition(
   return result;
 }
 
+function nativeBillingPage(): string {
+  return `<!doctype html><html><head><title>Billing</title></head><body>
+    <h1>Invoices</h1><table><thead><tr><th>Invoice Number</th><th>Actions</th></tr></thead>
+    <tbody><tr data-invoice-id="native-1"><td>NATIVE-1</td><td><button id="download">Download invoice</button></td></tr></tbody></table>
+    <script>document.querySelector('#download').addEventListener('click', () => {
+      const frame = document.createElement('iframe'); frame.hidden = true;
+      frame.src = '/opaque/attachment'; document.body.append(frame);
+    });</script></body></html>`;
+}
+
+function nativeTenantShell(): string {
+  return `<!doctype html><html><head><title>Workspace</title></head><body>
+    <button id="workspace" aria-haspopup="menu" aria-label="Workspace picker">Workspace</button>
+    <div id="overlay"></div><main id="main"><h1>Workspace home</h1></main>
+    <script>
+      document.querySelector('#workspace').addEventListener('click', () => {
+        document.querySelector('#overlay').innerHTML = '<div role="menu"><button id="settings">Settings</button></div>';
+        document.querySelector('#settings').addEventListener('click', () => {
+          document.querySelector('#overlay').innerHTML = '<a id="billing" href="${NATIVE_TENANT_ROUTE}">Billing</a>';
+          document.querySelector('#billing').addEventListener('click', (event) => {
+            event.preventDefault(); history.pushState({}, '', '${NATIVE_TENANT_ROUTE}');
+            document.querySelector('#main').innerHTML = '<h1>Invoices</h1><table><thead><tr><th>Invoice Number</th><th>Actions</th></tr></thead><tbody><tr data-invoice-id="native-1"><td>NATIVE-1</td><td><button id="download">Download invoice</button></td></tr></tbody></table>';
+            document.querySelector('#download').addEventListener('click', () => {
+              const frame = document.createElement('iframe'); frame.hidden = true;
+              frame.src = '/opaque/attachment'; document.body.append(frame);
+            });
+          });
+        });
+      });
+    </script></body></html>`;
+}
+
 function fixturePage(path: string): string {
   if (path === "/network-acquisition") {
     return `<!doctype html><html><head><title>Invoices | Network Acquisition</title></head><body>
       <h1>Invoices</h1><script>fetch('/api/invoices').then(response => response.json())</script></body></html>`;
   }
   if (path === "/stripe-home") {
-    return "<!doctype html><html><head><title>Workspace</title></head><body><main>Workspace home</main></body></html>";
-  }
-  if (path === "/native-home") {
     return "<!doctype html><html><head><title>Workspace</title></head><body><main>Workspace home</main></body></html>";
   }
   if (path === "/billing" && activeFixtureCase === null) {

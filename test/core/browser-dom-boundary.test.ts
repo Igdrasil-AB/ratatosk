@@ -1102,6 +1102,7 @@ describe("browser DOM boundary", () => {
 
   it("recognizes framework download anchors from bounded structural semantics", () => {
     expect(policySource).toContain('a:not([href])');
+    expect(actionControllerSource).toContain("safeNavigationHref(element)");
     expect(policySource).toContain('data-test');
     expect(policySource).toContain('data-testid');
     for (const source of [discoverySource, actionControllerSource]) {
@@ -1428,7 +1429,7 @@ function stubSemanticPage(options: {
       control({ role: "button", "aria-haspopup": "menu" }, `Menu ${index + 2}`))]
     : [];
 
-  const navigationSelector = 'button,[role="button"],[role="menuitem"],[role="tab"],a:not([href])';
+  const navigationSelector = 'button,[role="button"],[role="menuitem"],[role="tab"],a';
   const menuTriggerSelector = 'button,[role="button"],[aria-haspopup="menu"],[aria-haspopup="true"]';
   vi.stubGlobal("document", {
     title: "Vendor",

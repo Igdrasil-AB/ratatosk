@@ -997,14 +997,25 @@ export async function runSemanticDocumentOperationInPage(
     try { control.click(); } finally { observer?.endDocumentAction?.(); }
   };
   const navigationLabelsOf = (element: Element): string[] => accessibleLabelSources(element, 120);
+  const safeNavigationHref = (element: HTMLElement): boolean => {
+    const raw = element.getAttribute("href");
+    if (!raw) return true;
+    try {
+      const url = new URL(raw, location.href);
+      return url.protocol === "https:" && url.origin === location.origin &&
+        !url.username && !url.password && !unsafePath.test(url.pathname);
+    } catch {
+      return false;
+    }
+  };
   const navigationControls = (tier: RegExp, root: ParentNode = document): HTMLElement[] => Array.from(
-    root.querySelectorAll<HTMLElement>('button,[role="button"],[role="menuitem"],[role="tab"],a:not([href])'),
+    root.querySelectorAll<HTMLElement>('button,[role="button"],[role="menuitem"],[role="tab"],a'),
   ).filter((element) => {
     const labels = navigationLabelsOf(element);
     return Boolean(
       labels.length && !labels.some((label) => unsafe.test(label)) &&
       labels.some((label) => semanticNavigation.test(label) && tier.test(label)) &&
-      !element.closest("form") && visible(element)
+      safeNavigationHref(element) && !element.closest("form") && visible(element)
     );
   });
   const navigationControl = (tier: RegExp, root: ParentNode = document): HTMLElement | undefined =>
