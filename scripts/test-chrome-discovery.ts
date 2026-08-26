@@ -222,23 +222,9 @@ function fixturePage(path: string): string {
       </script></body></html>`;
   }
   if (path === "/semantic") {
-    return `<!doctype html><html><head><title>Workspace | Semantic Fixture</title></head><body>
-      <header>${[1, 2, 3, 4].map((index) => `<button aria-haspopup="menu" data-menu="${index}">Workspace ${index}</button>`).join("")}</header>
-      <div id="overlay"></div><main id="main"><h1>Workspace home</h1></main>
-      <script>
-        document.querySelectorAll('[data-menu]').forEach(button => button.addEventListener('click', () => {
-          const index = button.getAttribute('data-menu');
-          document.querySelector('#overlay').innerHTML = index === '4'
-            ? '<div role="menu"><button id="settings">Settings</button></div>'
-            : '<div role="menu"><button>Activity</button></div>';
-          document.querySelector('#settings')?.addEventListener('click', () => {
-            document.querySelector('#overlay').innerHTML = '<button id="billing">Billing</button>';
-            document.querySelector('#billing').addEventListener('click', () => {
-              document.querySelector('#main').innerHTML = '<h1>Invoices</h1><button data-href="/documents/invoice-1.pdf">Download invoice</button>';
-            });
-          });
-        }));
-      </script></body></html>`;
+    return `<!doctype html><html><head><title>Invoices | Semantic Fixture</title></head><body>
+      <main><h1>Invoices</h1><button data-href="/documents/invoice-1.pdf">Download invoice</button></main>
+      </body></html>`;
   }
   if (path === "/avatar-menus") {
     return `<!doctype html><html><head><title>Workspace | Avatar Fixture</title></head><body>
