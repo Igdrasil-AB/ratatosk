@@ -226,8 +226,11 @@ describe("supplier discovery across portal shapes", () => {
     expect(result.candidates.candidates[0].adapter.id).toBe("dom-links");
     expect(trace.probes.map((probe) => new URL(probe.url).pathname)).toContain("/surface/r7");
     expect(trace.probes.map((probe) => new URL(probe.url).pathname)).not.toContain("/billing");
-    const activeEntry = trace.probes.findIndex((probe) => probe.foreground && new URL(probe.url).pathname === "/home");
-    const coldReplay = trace.probes.findIndex((probe) => !probe.foreground && new URL(probe.url).pathname === "/home");
+    const homeProbes = trace.probes.flatMap((probe, index) =>
+      new URL(probe.url).pathname === "/home" ? [index] : []);
+    expect(homeProbes).toHaveLength(2);
+    const [activeEntry, coldReplay] = homeProbes;
+    expect(trace.probes[coldReplay].foreground).toBe(true);
     expect(trace.probePhases[activeEntry].semanticRevealMs).toBe(0);
     expect(trace.probePhases[coldReplay].semanticRevealMs).toBeGreaterThan(0);
     expect(trace.probePhases).toContainEqual(expect.objectContaining({

@@ -442,7 +442,8 @@ async function runAcquisition(
   await sendExtensionMessage(extensionPage, { type: "beginDiscovery", tabId, origin });
   const preview = (await sendExtensionMessage(extensionPage, { type: "completeDiscovery" })).discovery as DiscoveryStatus;
   if (preview.stage !== "preview" || !preview.vendorId || preview.adapterId !== expectedAdapter) {
-    throw new Error(`unexpected acquisition preview ${JSON.stringify(preview)}`);
+    const detail = await sendExtensionMessage(extensionPage, { type: "getDiscoveryDiagnostic" });
+    throw new Error(`unexpected acquisition preview ${JSON.stringify({ preview, diagnostic: detail.discoveryDiagnostic })}`);
   }
   const hostname = new URL(origin).hostname;
   const previewSnapshot = (await sendExtensionMessage(extensionPage, {

@@ -371,7 +371,12 @@ export async function discoverSupplierInTab(
         if (remainingMs <= 0) throw new Error("supplier exploration deadline exceeded");
         const baseOptions = target.source === "entry"
           ? entryProbeOptions(mode)
-          : explorationProbeOptions(target, mode);
+          // The exact replay is the only generic route that can discover a
+          // visibility-gated SPA's own billing navigation. Give that one probe
+          // the patient envelope while leaving the global cap time to clean up.
+          : target.source === "entry_replay"
+            ? capExplorationProbeOptions(explorationProbeOptions(target, "deep"), 8_000)
+            : explorationProbeOptions(target, mode);
         const timing = explorationProbeTiming(baseOptions, remainingMs);
         const probeOptions: ProbeOptions = {
           ...timing.probeOptions,
@@ -2336,6 +2341,27 @@ class BackgroundExplorationTab {
     const startedAt = Date.now();
     const target = canonicalPageUrl(url, this.expectedOrigin);
     if (!target) throw new Error("exploration target left the approved origin");
+    const leaseAvailable = options.allowForegroundRetry === true && this.foregroundProbeBudget.remaining > 0;
+    if (options.foregroundRetryWithoutBillingIntent && leaseAvailable) {
+      if (this.tabId === undefined) {
+        const tab = await chrome.tabs.create({ url: "about:blank", active: false });
+        if (tab.id === undefined) throw new Error("could not open a bounded exploration tab");
+        this.tabId = tab.id;
+      }
+      this.foregroundProbeBudget.remaining -= 1;
+      return withForegroundTabVisibility(this.tabId, async () => {
+        const tab = await chrome.tabs.update(this.tabId!, { url: target, active: true });
+        if (tab.status !== "complete") {
+          await waitForTabComplete(this.tabId!, Math.min(8_000, Math.max(1, options.deadlineMs)));
+        }
+        const remainingMs = options.deadlineMs - (Date.now() - startedAt);
+        return probeSupplierTab(
+          this.tabId!,
+          this.expectedOrigin,
+          capExplorationProbeOptions(options, remainingMs),
+        );
+      });
+    }
     if (this.tabId === undefined) {
       const tab = await chrome.tabs.create({ url: target, active: false });
       if (tab.id === undefined) throw new Error("could not open a bounded exploration tab");
@@ -2348,8 +2374,6 @@ class BackgroundExplorationTab {
       }
     }
     const remainingMs = () => options.deadlineMs - (Date.now() - startedAt);
-    const leaseAvailable = options.allowForegroundRetry === true && this.foregroundProbeBudget.remaining > 0;
-
     // Spend an inactive pass first: bringing a tab forward is visible to the
     // person, so it stays a repair for the minority of applications that defer
     // billing hydration until their tab is visible — never the default cost of a

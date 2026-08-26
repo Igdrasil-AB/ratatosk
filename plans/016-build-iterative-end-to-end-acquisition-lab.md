@@ -54,10 +54,13 @@
   boundary and exposed delayed SPA menu hydration. Collector 0.8.57 / discovery
   47 / acquisition 5 applied one packaged menu-mount contract but the cold shell
   remained visibility-gated. A historical audit then identified mandatory cold
-  DOM preview, added in `4eb9e99`, as the fundamental regression. Collector
-  0.8.59 / discovery 49 / acquisition 5 restores guarded deferred DOM
-  verification while preserving the disposable foreground lease and awaits
-  exact-build live replay; the three-family receipt remains open
+  DOM preview, added in `4eb9e99`, as one fundamental regression. The 0.8.59
+  live run then proved a second: exact replay opened hidden first and a blanket
+  DNR method rule contradicted the page guard's read-only GraphQL allowance.
+  Collector 0.8.60 / discovery 50 / acquisition 5 restores deferred DOM
+  verification, boots the one exact replay visibly inside the existing lease,
+  and leaves method semantics to the page guard; exact-build live replay and
+  the three-family receipt remain open
 
 ## Goal
 
@@ -184,6 +187,10 @@ a more precise closed cause and a red browser case reproduces it.
   enumerate inside the same 10-second Find Invoices run. Opaque and
   visibility-gated SPAs could therefore expose valid evidence yet never be
   shown to the user.
+- The same evidence-first change added a blanket DNR block for every POST, PUT,
+  PATCH, and DELETE during semantic navigation even though the in-page guard
+  explicitly allows bounded read-only GraphQL POSTs. That made safe SPA billing
+  hydration impossible before candidate evidence could be observed.
 - The old common/contextual route arrays are intentionally not restored. Route
   authority still comes only from observed links, navigation, requests,
   structured data, typed runtime scope, or remembered verified evidence.
@@ -192,6 +199,11 @@ a more precise closed cause and a red browser case reproduces it.
   link that cannot reproduce its opaque route is rejected. Network and embedded
   candidates still execute preview, while Connect & Collect remains the
   authoritative full replay, PDF, destination, commit, and deduplication gate.
+- The active user page remains passive. Its exact disposable replay is the one
+  generic route allowed to boot visibly and use the patient probe envelope. DNR
+  still blocks unsafe route families and native downloads; the injected guard
+  blocks mutating page methods while allowing an explicit read-only GraphQL
+  query.
 
 ### What existing evidence does not prove
 
@@ -753,6 +765,7 @@ data.
 | I-003 | 0.8.55 / discovery 45 / acquisition 4 | cold replay `no_candidate` with `mutation_blocked` | The mutation guard counts blocked background application traffic as if Ratatosk's exact navigation action caused it; scoping failure attribution to the synchronous control activation will retain safety and allow navigation evidence | `background-mutation-menu` | weak preview closed at `document_enumeration/time_cap` after 2.8 seconds; cold replay completed in 3.6 seconds with 8 observed JSON requests, 0 navigation steps, and `mutation_blocked`; four linked probes completed before the cap | promote | The weak-candidate fix moved the failure later. The mutation guard must continue blocking every non-read request, but unrelated background attempts must not erase safe navigation evidence |
 | I-004 | 0.8.56 / discovery 46 / acquisition 4 | cold replay `no_candidate` with zero navigation steps | The workspace menu mounts after the one-time trigger snapshot; polling the packaged trigger surface briefly in both discovery and candidate replay will let the same plan survive delayed SPA hydration | `delayed-menu-navigation` | active entry closed in 1.3 seconds; cold replay observed 11 JSON requests with `complete` navigation status but 0 steps; six linked pages completed before later probes met the cap | promote | Mutation attribution is fixed. The remaining gap is duplicated hydration behavior: discovery and replay must consume one packaged `navigationTriggerMountMs` contract |
 | I-005 | 0.8.57 / discovery 47 / acquisition 5 | cold replay `no_candidate` with zero navigation steps | The ordinary cold entry shell is visibility-gated, but the one-use foreground lease is restricted to paths already containing billing intent; allowing only `entry_replay` to bypass path intent will expose the workspace navigation surface | `discovery-foreground-lease > explicit cold entry replay` | weak active evidence yielded after 2.9 seconds; cold replay and two linked pages completed around 4.0 seconds, but the cold replay still had 11 JSON requests, 5 rejected controls, `complete` status, and 0 navigation steps | revise | A hydration delay alone is insufficient when the inactive document never mounts the toolbar. The user's tab remains passive; only its exact disposable replay may spend the existing lease, and only for an empty evidence shell |
+| I-006 | 0.8.59 / discovery 49 / acquisition 5 | cold replay `probe_failed/outer_deadline` | Starting the one-use exact replay visibly before navigation and removing the DNR/page-guard contradiction will let the generic semantic lane observe the workspace menu without restoring route guesses | `exact-entry cold replay > visible patient replay`; `browser DOM boundary > read-only POST hydration` | active entry correctly rejected 3 unrelated document links and 228 controls; exact replay exhausted 4.2 seconds; 24 observed requests across later linked pages produced no candidate | revise | Deferred verification cannot help until the semantic lane reaches billing. A hidden-first 45/55 split spends the foreground lease too late, and blanket method DNR blocks reads the page guard intentionally permits |
 
 ### I-001 hypotheses — record before the next ClickUp run
 

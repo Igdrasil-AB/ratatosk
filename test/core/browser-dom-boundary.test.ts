@@ -180,6 +180,12 @@ describe("browser DOM boundary", () => {
     }
   });
 
+  it("does not let the route backstop block read-only POST hydration", () => {
+    expect(actionControllerSource).not.toContain('requestMethods: ["post", "put", "patch", "delete"]');
+    expect(actionControllerSource).toContain("let the page guard own method semantics");
+    expect(actionControllerSource).toContain("condition: { tabIds: [tabId], urlFilter }");
+  });
+
   it("emits every packaged passive route-evidence lane from the real page probe", async () => {
     const observedRequest = "https://vendor.example/api/billing-feed";
     const resourceRoute = "https://vendor.example/receipts-history";

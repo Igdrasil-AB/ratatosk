@@ -575,29 +575,24 @@ async function installDiscoveryMutationGuard(tabId: number): Promise<() => Promi
   // ponytail: Chrome tab ids may exceed DNR's signed rule-id range. The active
   // discovery width is two; move to a leased id registry only if modulo slots
   // ever collide in observed Chrome sessions.
-  const methodRuleId = 1_000_000 + (tabId % 400_000) * 2;
+  const firstRuleId = 1_000_000 + (tabId % 400_000) * 32;
   const unsafeFilters = [
     "*logout*", "*log-out*", "*signout*", "*sign-out*", "*delete*", "*remove*", "*cancel*", "*checkout*",
     "*purchase*", "*upgrade*", "*downgrade*", "*authorize*", "*oauth*", "*callback*", "*invite*",
     "*payment-method*", "*payment_method*", "*payment/method*",
   ];
-  const unsafeRuleIds = unsafeFilters.map((_filter, index) => methodRuleId + index + 1);
-  const rules = [{
-    id: methodRuleId,
-    priority: 2,
-    action: { type: "block" },
-    condition: {
-      tabIds: [tabId],
-      urlFilter: "|https",
-      requestMethods: ["post", "put", "patch", "delete"],
-    },
-  }, ...unsafeFilters.map((urlFilter, index) => ({
+  const unsafeRuleIds = unsafeFilters.map((_filter, index) => firstRuleId + index);
+  // The in-page guard can distinguish a read-only GraphQL POST from a mutation.
+  // DNR cannot inspect request bodies, so a blanket method rule would block the
+  // very billing reads semantic navigation is trying to reveal. Keep DNR as the
+  // route backstop and let the page guard own method semantics.
+  const rules = unsafeFilters.map((urlFilter, index) => ({
     id: unsafeRuleIds[index],
     priority: 2,
     action: { type: "block" },
-    condition: { tabIds: [tabId], urlFilter, requestMethods: ["get", "head"] },
-  }))];
-  const ruleIds = [methodRuleId, ...unsafeRuleIds];
+    condition: { tabIds: [tabId], urlFilter },
+  }));
+  const ruleIds = unsafeRuleIds;
   await chrome.declarativeNetRequest.updateSessionRules({
     removeRuleIds: ruleIds,
     addRules: rules as unknown as chrome.declarativeNetRequest.Rule[],
