@@ -222,6 +222,20 @@ describe("durable supplier discovery handoff", () => {
     await expect(continueSupplierDiscovery()).resolves.toBeUndefined();
   });
 
+  it("keeps the failed supplier origin even when no resumable checkpoint exists", async () => {
+    const runId = await beginSupplierDiscovery(42, "https://vendor.example");
+    await markSupplierDiscoveryScanning();
+    await failSupplierDiscovery(runId, DISCOVERY_FAILURE_MESSAGES.pageChanged, ["https://vendor.example/*"]);
+
+    await expect(getSupplierDiscoveryStatus()).resolves.toEqual({
+      stage: "failed",
+      origin: "https://vendor.example",
+      message: DISCOVERY_FAILURE_MESSAGES.pageChanged,
+      reason: "failed",
+      diagnosticAvailable: false,
+    });
+  });
+
   it("does not offer deep search when the unfinished routes cannot be reconstructed safely", async () => {
     const runId = await beginSupplierDiscovery(42, "https://vendor.example");
     await markSupplierDiscoveryScanning();

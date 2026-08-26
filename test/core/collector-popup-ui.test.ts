@@ -29,5 +29,12 @@ describe("discovery search-limit UI", () => {
     expect(popup).toContain('data-action="dismiss-discovery"');
     expect(popup).toContain("state.discovery.origin !== page.origin");
     expect(popup).toContain('send({ type: "dismissDiscovery" })');
+    expect(popup).toContain('data-action="dismiss-discovery">Dismiss');
+    expect(popup).not.toContain("Check This Vendor Instead");
+  });
+
+  it("never presents a partial collection as no new invoices", () => {
+    expect(popup).toContain("Collection incomplete — some invoices may still be missing");
+    expect(popup).toContain('connection.lastStatus === "partial" ? "Retry" : "Collect"');
   });
 });

@@ -7,13 +7,13 @@ import {
 describe("collector runtime identity", () => {
   it("makes the versioned discovery engine and its search bounds observable", () => {
     expect(COLLECTOR_RUNTIME_IDENTITY).toEqual({
-      collectorVersion: "0.8.69",
-      discoveryEngine: 55,
+      collectorVersion: "0.8.70",
+      discoveryEngine: 56,
       documentAcquisition: 9,
       pages: 40,
       depth: 4,
       durationMs: 60_000,
     });
-    expect(formatCollectorRuntimeIdentity()).toBe("v0.8.69 discovery-engine=55 document-acquisition=9 pages=40 depth=4 budget=60000ms");
+    expect(formatCollectorRuntimeIdentity()).toBe("v0.8.70 discovery-engine=56 document-acquisition=9 pages=40 depth=4 budget=60000ms");
   });
 });

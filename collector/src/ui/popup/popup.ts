@@ -510,13 +510,14 @@ function renderVendors(): void {
       sub = connection.lastStatus === "ok" && connection.lastCode === "month_range_fallback_all"
         ? `${count > 0 ? `${count} collected` : "No new invoices"} · all history checked, no invoice dates`
         : connection.lastStatus === "partial"
-          ? `${count > 0 ? `${count} collected` : "No new invoices"} · ${connection.lastFailedScopes ?? 0} account scope${connection.lastFailedScopes === 1 ? "" : "s"} skipped`
+          ? count > 0 ? `${count} collected · collection incomplete` : "Collection incomplete · invoices may still be missing"
         : connection.lastStatus === "rate_limited"
           ? `Paused by vendor · resumes ${relTime(connection.nextEligibleRunAt)}`
           : connection.lastStatus === "error"
         ? connection.lastError ? `Collection failed — ${connection.lastError}` : "Collection failed"
         : count > 0 ? `${count} collected · ${synced}` : `Connected · ${synced}`;
-      action = `<button type="button" class="btn outline sm" data-action="sync" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}">Collect</button>`;
+      const actionLabel = connection.lastStatus === "partial" ? "Retry" : "Collect";
+      action = `<button type="button" class="btn outline sm" data-action="sync" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}">${actionLabel}</button>`;
       if (!bound) {
         // Left behind by a company disconnect. Paused, never redirected: the
         // one thing worse than not collecting is collecting somewhere else.
@@ -620,7 +621,7 @@ function discoveryCard(): string {
       ? `<button type="button" class="quiet-link compact" data-action="report-discovery">Report Issue</button>`
       : "";
     const retry = emptyResult && !discovery.canSearchDeeper ? "Open Billing Page &amp; Search Again" : emptyResult ? "Search Again" : "Try Again";
-    return `<aside class="supplier-request discovery-failed" role="${emptyResult ? "status" : "alert"}"><span class="supplier-request-mark" aria-hidden="true">${emptyResult ? "–" : "!"}</span><span class="supplier-request-copy"><strong>${title}</strong><small>${esc(detail)}</small></span><span class="discovery-actions">${deep}<button type="button" class="supplier-request-link" data-action="retry-discovery">${retry}</button><button type="button" class="quiet-link compact" data-action="dismiss-discovery">Check This Vendor Instead</button>${diagnostic}</span></aside>`;
+    return `<aside class="supplier-request discovery-failed" role="${emptyResult ? "status" : "alert"}"><span class="supplier-request-mark" aria-hidden="true">${emptyResult ? "–" : "!"}</span><span class="supplier-request-copy"><strong>${title}</strong><small>${esc(detail)}</small></span><span class="discovery-actions">${deep}<button type="button" class="supplier-request-link" data-action="retry-discovery">${retry}</button><button type="button" class="quiet-link compact" data-action="dismiss-discovery">Dismiss</button>${diagnostic}</span></aside>`;
   }
   if (hasAnyDestination() && !page && !state.tabAwarenessEnabled) {
     return `<aside class="supplier-request tab-awareness" aria-labelledby="tab-awareness-title"><span class="supplier-request-mark" aria-hidden="true">${branchIcon()}</span><span class="supplier-request-copy"><strong id="tab-awareness-title">Find invoices on this site</strong><small>Chrome will ask once to recognize your active tab.</small></span><span class="discovery-actions"><button type="button" class="supplier-request-link" data-action="enable-tab-awareness" ${state.tabAwarenessRequestPending ? "disabled" : ""}>${state.tabAwarenessRequestPending ? "Preparing…" : "Find Invoices"}</button></span></aside>`;
@@ -1173,6 +1174,7 @@ function showRunCompletion(summaries: readonly VendorRunSummary[]): void {
   const waiting = summaries.find((summary) => summary.status === "rate_limited" || summary.status === "skipped");
   const expired = summaries.find((summary) => summary.status === "auth_expired");
   const failed = summaries.find((summary) => summary.status === "error");
+  const partial = summaries.find((summary) => summary.status === "partial");
   const fallbackCount = summaries.filter((summary) => summary.code === "month_range_fallback_all").length;
   const bounded = summaries.find((summary) => summary.syncWindow?.mode === "bounded");
   const attention = summaries.filter((summary) =>
@@ -1181,13 +1183,15 @@ function showRunCompletion(summaries: readonly VendorRunSummary[]): void {
   if (collected && fallbackCount) {
     toast(`Collected ${collected} Invoice${collected === 1 ? "" : "s"} · used all history for ${fallbackCount} supplier${fallbackCount === 1 ? "" : "s"} because invoice dates were unavailable`);
   } else if (collected) {
-    toast(`Collected ${collected} Invoice${collected === 1 ? "" : "s"}${attention ? ` · ${attention} need attention` : ""}`);
+    toast(`Collected ${collected} Invoice${collected === 1 ? "" : "s"}${partial ? " · collection incomplete" : attention ? ` · ${attention} need attention` : ""}`);
   } else if (waiting) {
     toast(`Supplier asked Ratatosk to wait until ${relTime(waiting.nextEligibleRunAt)}`);
   } else if (expired) {
     toast("Session expired — sign in to the supplier and reconnect");
   } else if (failed?.error) {
     toast(failed.error);
+  } else if (partial) {
+    toast("Collection incomplete — some invoices may still be missing");
   } else if (fallbackCount) {
     toast(`Checked all available history for ${fallbackCount} supplier${fallbackCount === 1 ? "" : "s"} because invoice dates were unavailable · no new invoices`);
   } else if (bounded?.syncWindow) {

@@ -261,13 +261,17 @@ export async function failSupplierDiscovery(
   diagnostic?: DiscoveryDiagnosticV1,
 ): Promise<boolean> {
   return transition(async () => {
-  let resumable: { tabId: number; origin: string; checkpoint: ExplorationCheckpoint } | undefined;
+  let failedContext: { tabId?: number; origin: string; checkpoint?: ExplorationCheckpoint } | undefined;
   if (runId) {
     const state = await read();
-    if (!state || state.runId !== runId || (state.stage !== "scanning" && state.stage !== "confirming")) return false;
-    if (state.stage === "scanning" && state.checkpoint) {
-      resumable = { tabId: state.tabId, origin: state.origin, checkpoint: state.checkpoint };
-    }
+    if (!state || state.runId !== runId) return false;
+    if (state.stage === "scanning") {
+      failedContext = state.checkpoint
+        ? { tabId: state.tabId, origin: state.origin, checkpoint: state.checkpoint }
+        : { origin: state.origin };
+    } else if (state.stage === "confirming") {
+      failedContext = { origin: state.candidates.primaryOrigin };
+    } else return false;
   }
   await write({
     stage: "failed",
@@ -275,7 +279,11 @@ export async function failSupplierDiscovery(
     message: safeMessage(message),
     origins: safeOrigins(origins),
     diagnostic: diagnostic ? parseDiscoveryDiagnostic(diagnostic) : undefined,
-    ...(resumable ? { tabId: resumable.tabId, origin: resumable.origin, checkpoint: resumable.checkpoint } : {}),
+    ...(failedContext ? {
+      origin: failedContext.origin,
+      ...(failedContext.tabId !== undefined ? { tabId: failedContext.tabId } : {}),
+      ...(failedContext.checkpoint ? { checkpoint: failedContext.checkpoint } : {}),
+    } : {}),
     updatedAt: Date.now(),
   });
   return true;
@@ -453,17 +461,20 @@ function parseState(value: unknown): DiscoveryState | undefined {
     try {
       const checkpoint = raw.checkpoint === undefined ? undefined : parseExplorationCheckpoint(raw.checkpoint);
       if (raw.checkpoint !== undefined && !checkpoint) return undefined;
-      const hasContinuation = raw.tabId !== undefined || raw.origin !== undefined || checkpoint !== undefined;
+      const origin = raw.origin === undefined ? undefined : typeof raw.origin === "string" ? raw.origin : null;
+      if (origin === null) return undefined;
+      if (origin) exactOriginPattern(origin);
+      const hasContinuation = raw.tabId !== undefined || checkpoint !== undefined;
       if (hasContinuation) {
-        if (!Number.isInteger(raw.tabId) || Number(raw.tabId) < 0 || typeof raw.origin !== "string" || !checkpoint) return undefined;
-        exactOriginPattern(raw.origin);
+        if (!Number.isInteger(raw.tabId) || Number(raw.tabId) < 0 || !origin || !checkpoint) return undefined;
       }
       return {
         stage: raw.stage,
         runId: raw.runId, message: safeMessage(raw.message),
         origins: safeOrigins(raw.origins),
         diagnostic: raw.diagnostic === undefined ? undefined : parseDiscoveryDiagnostic(raw.diagnostic),
-        ...(hasContinuation ? { tabId: Number(raw.tabId), origin: raw.origin as string, checkpoint: checkpoint! } : {}),
+        ...(origin ? { origin } : {}),
+        ...(hasContinuation ? { tabId: Number(raw.tabId), checkpoint: checkpoint! } : {}),
         updatedAt,
       };
     } catch {
