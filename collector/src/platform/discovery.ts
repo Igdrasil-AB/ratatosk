@@ -1553,6 +1553,7 @@ export async function collectPageEvidenceInPage(
   );
   const revealSemanticNavigation = async (
     mutationAttempted: () => boolean = () => false,
+    runNavigationAction: (action: () => void) => void = (action) => action(),
   ): Promise<"complete" | "time_cap" | "action_cap"> => {
     if (billingSurfaceObserved()) return "complete";
     // A tier is worth waiting for only while something can still mount it: the
@@ -1571,7 +1572,7 @@ export async function collectPageEvidenceInPage(
     for (const trigger of triggers) {
       if (Date.now() >= revealDeadline || semanticNavigationSteps >= 4) break;
       inspectedTriggers += 1;
-      trigger.click();
+      runNavigationAction(() => trigger.click());
       semanticNavigationSteps += 1;
       if (mutationAttempted()) return "complete";
       const menuDeadline = Math.min(revealDeadline, Date.now() + 600);
@@ -1589,7 +1590,7 @@ export async function collectPageEvidenceInPage(
     }
 
     if (settingsControl && semanticNavigationSteps < 6) {
-      settingsControl.click();
+      runNavigationAction(() => settingsControl.click());
       semanticNavigationSteps += 1;
       if (mutationAttempted()) return "complete";
       const billingDeadline = Math.min(revealDeadline, Date.now() + 1_500);
@@ -1600,7 +1601,7 @@ export async function collectPageEvidenceInPage(
         billingControl = semanticNavigationControl(billingNavigation);
       }
       if (billingControl && semanticNavigationSteps < 6) {
-        billingControl.click();
+        runNavigationAction(() => billingControl.click());
         semanticNavigationSteps += 1;
       }
     }
@@ -1611,11 +1612,21 @@ export async function collectPageEvidenceInPage(
       : "complete";
   };
 
-  const withDiscoveryMutationGuard = async (operation: (mutationAttempted: () => boolean) => Promise<void>): Promise<boolean> => {
-    let mutationAttempts = 0;
+  const withDiscoveryMutationGuard = async (
+    operation: (
+      mutationAttempted: () => boolean,
+      runNavigationAction: (action: () => void) => void,
+    ) => Promise<void>,
+  ): Promise<boolean> => {
+    let navigationMutationAttempts = 0;
+    let navigationActionActive = false;
     const blocked = (): DOMException => {
-      mutationAttempts += 1;
+      if (navigationActionActive) navigationMutationAttempts += 1;
       return new DOMException("pre-connect navigation attempted a mutating request", "SecurityError");
+    };
+    const runNavigationAction = (action: () => void): void => {
+      navigationActionActive = true;
+      try { action(); } finally { navigationActionActive = false; }
     };
     const readOnlyGraphqlBody = (body: unknown): boolean => {
       if (typeof body !== "string" || body.length > 65_536) return false;
@@ -1729,9 +1740,9 @@ export async function collectPageEvidenceInPage(
     }
     pageNavigation?.addEventListener("navigate", preventUnsafeNavigation);
     try {
-      await operation(() => mutationAttempts > 0);
+      await operation(() => navigationMutationAttempts > 0, runNavigationAction);
     } catch (error) {
-      if (mutationAttempts === 0) throw error;
+      if (navigationMutationAttempts === 0) throw error;
     } finally {
       if (window.fetch === guardedFetch) window.fetch = originalFetch;
       if (window.open === guardedWindowOpen) window.open = originalWindowOpen;
@@ -1744,7 +1755,7 @@ export async function collectPageEvidenceInPage(
       if (pageHistory?.replaceState === guardedReplaceState) pageHistory.replaceState = originalReplaceState!;
       pageNavigation?.removeEventListener("navigate", preventUnsafeNavigation);
     }
-    return mutationAttempts > 0;
+    return navigationMutationAttempts > 0;
   };
 
   let observedSnapshot: CapturedEntry[] = [];
@@ -1815,8 +1826,8 @@ export async function collectPageEvidenceInPage(
     topLevelFrame && options.allowSemanticNavigation !== false ? "complete" : "disabled";
   if (semanticNavigationStatus !== "disabled") {
     let revealStatus: "complete" | "time_cap" | "action_cap" = "complete";
-    const mutationBlocked = await withDiscoveryMutationGuard(async (mutationAttempted) => {
-      revealStatus = await revealSemanticNavigation(mutationAttempted);
+    const mutationBlocked = await withDiscoveryMutationGuard(async (mutationAttempted, runNavigationAction) => {
+      revealStatus = await revealSemanticNavigation(mutationAttempted, runNavigationAction);
       if (!mutationAttempted()) await waitForObservedEvidenceQuiescence();
     });
     semanticNavigationStatus = mutationBlocked ? "mutation_blocked" : revealStatus;
