@@ -150,6 +150,9 @@ export class DocumentActionController {
             result.replay, "identity_validation", "ambiguous",
           ));
         }
+        if (result.observedItems === 0 && !result.sectionObserved && result.replay.firstFailure) {
+          throw new ReplayPhaseFailed("document_action_ambiguous", result.replay);
+        }
         return result;
       }, recoverSemanticEnumeration);
     } catch (error) {

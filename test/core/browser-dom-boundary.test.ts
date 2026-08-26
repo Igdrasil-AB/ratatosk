@@ -756,6 +756,29 @@ describe("browser DOM boundary", () => {
     }
   });
 
+  it("does not report an empty supplier when replay never reached an invoice surface", async () => {
+    vi.stubGlobal("chrome", {
+      ...actionBoundaryChromeApis(),
+      scripting: {
+        executeScript: vi.fn(async () => [{ result: {
+          ...emptySemanticEnumeration,
+          replay: {
+            planKind: "semantic_dom",
+            phases: [{ phase: "billing_select", result: "not_present", durationMs: 0 }],
+            firstFailure: { phase: "billing_select", result: "not_present" },
+          },
+        } }]),
+      },
+    });
+
+    await expect(new DocumentActionController(origins, "vendor").enumerateOnTab(
+      7,
+      8,
+      DISCOVERY_DOM_POLICY,
+      Date.now() + 2_000,
+    )).rejects.toMatchObject({ kind: "document_action_ambiguous" });
+  });
+
   it("preserves semantic authentication outcomes and refuses an unarmed page observer", async () => {
     vi.stubGlobal("chrome", {
       ...actionBoundaryChromeApis(),
