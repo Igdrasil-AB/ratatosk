@@ -285,6 +285,7 @@ try {
       { name: "opaque-direct-active", route: "/9012345678901/direct-billing", expected: "preview" },
       { name: "weak-active-fallback", route: "/9012345678901/weak-active-fallback", expected: "preview" },
       { name: "background-mutation-menu", route: "/background-mutation-menu", expected: "preview" },
+      { name: "delayed-menu-navigation", route: "/delayed-menu-navigation", expected: "preview" },
       { name: "blocked", route: "/blocked", expected: "preview" },
     ] as const;
     const selectedCases = requestedCase ? cases.filter((item) => item.name === requestedCase) : cases;
@@ -792,6 +793,24 @@ function fixturePage(path: string): string {
             });
           });
         });
+      </script></body></html>`;
+  }
+  if (path === "/delayed-menu-navigation") {
+    return `<!doctype html><html><head><title>Workspace | Delayed Menu</title></head><body>
+      <header id="header"></header><div id="overlay"></div><main id="main"><h1>Workspace home</h1></main>
+      <script>
+        setTimeout(() => {
+          document.querySelector('#header').innerHTML = '<button aria-haspopup="menu" id="workspace">Workspace menu</button>';
+          document.querySelector('#workspace').addEventListener('click', () => {
+            document.querySelector('#overlay').innerHTML = '<div role="menu"><button id="settings">Settings</button></div>';
+            document.querySelector('#settings').addEventListener('click', () => {
+              document.querySelector('#overlay').innerHTML = '<button id="billing">Billing</button>';
+              document.querySelector('#billing').addEventListener('click', () => {
+                document.querySelector('#main').innerHTML = '<h1>Invoices</h1><button data-href="/documents/invoice-1.pdf">Download invoice</button>';
+              });
+            });
+          });
+        }, 900);
       </script></body></html>`;
   }
   if (path === "/blocked") {
