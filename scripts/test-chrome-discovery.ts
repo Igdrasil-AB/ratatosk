@@ -27,6 +27,14 @@ type DiscoveryStatus = {
 };
 
 let activeFixtureCase = "";
+const iterationOptions = parseIterationOptions(process.argv.slice(2));
+const iterationResults: Array<{
+  case: string;
+  repeat: number;
+  stage: string;
+  candidateCount: number;
+  firstFailure?: { phase: string; result: string };
+}> = [];
 
 const temporary = await mkdtemp(join(tmpdir(), "ratatosk-chrome-discovery-"));
 let context: BrowserContext | undefined;
@@ -94,7 +102,7 @@ try {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(replayFailureVisits === 1
         ? `<!doctype html><html><head><title>Invoices | Replay Failure Fixture</title></head><body>
-            <main><h1>Invoices</h1><a href="/documents/invoice-1.pdf" aria-label="More"></a></main>
+            <main><h1>Invoices</h1><button data-href="/documents/invoice-1.pdf">Download invoice</button></main>
           </body></html>`
         : "<!doctype html><html><head><title>Workspace</title></head><body><main>Workspace home</main></body></html>");
       return;
@@ -125,7 +133,7 @@ try {
     const extensionPage = await context.newPage();
     await extensionPage.goto(`chrome-extension://${extensionId}/collector/src/ui/popup/popup.html`);
     const page = await context.newPage();
-    const requestedCase = process.env.RATATOSK_CHROME_CASE;
+    const requestedCase = iterationOptions.caseName ?? process.env.RATATOSK_CHROME_CASE;
     const cases = [
       { name: "server", route: "/server", expected: "preview" },
       { name: "delayed", route: "/delayed", expected: "preview" },
@@ -138,34 +146,55 @@ try {
       { name: "semantic-replay-timeout", route: "/9012345678901/replay-timeout", expected: "failed" },
       { name: "blocked", route: "/blocked", expected: "preview" },
     ] as const;
-    for (const testCase of requestedCase ? cases.filter((item) => item.name === requestedCase) : cases) {
-      const { name, route, expected } = testCase;
-      activeFixtureCase = name;
-      await page.goto(`${FIXTURE_ORIGIN}${route}`, { waitUntil: "domcontentloaded" });
-      await page.bringToFront();
-      const startedAt = Date.now();
-      const status = await runDiscovery(extensionPage, FIXTURE_ORIGIN);
-      const elapsedMs = Date.now() - startedAt;
-      if (status.stage !== expected) {
-        const frames = await inspectFixtureFrames(page);
-        console.error(`[chrome-discovery] ${name} frame_state=${JSON.stringify(frames)}`);
+    const selectedCases = requestedCase ? cases.filter((item) => item.name === requestedCase) : cases;
+    assert(selectedCases.length > 0, `unknown discovery case ${requestedCase}`);
+    for (const testCase of selectedCases) {
+      const signatures = new Set<string>();
+      for (let repeat = 1; repeat <= iterationOptions.repeat; repeat += 1) {
+        const { name, route, expected } = testCase;
+        activeFixtureCase = name;
+        opaqueDirectVisits = 0;
+        replayFailureVisits = 0;
+        await page.goto(`${FIXTURE_ORIGIN}${route}`, { waitUntil: "domcontentloaded" });
+        await page.bringToFront();
+        const startedAt = Date.now();
+        const status = await runDiscovery(extensionPage, FIXTURE_ORIGIN);
+        const elapsedMs = Date.now() - startedAt;
+        if (status.stage !== expected) {
+          const frames = await inspectFixtureFrames(page);
+          console.error(`[chrome-discovery] ${name} frame_state=${JSON.stringify(frames)}`);
+        }
+        assert.equal(status.stage, expected, `${route}: expected ${expected}, received ${JSON.stringify(status)}`);
+        assert(elapsedMs <= 15_000, `${route}: iteration exceeded 15 seconds (${elapsedMs}ms)`);
+        if (expected === "failed") {
+          const replay = status.diagnostic?.attempts
+            ?.find((attempt) => attempt.result === "list_failed" || attempt.result === "no_documents" || attempt.result === "limit_reached")
+            ?.replay;
+          const replayFailure = replay?.firstFailure;
+          assert(replayFailure?.phase, `${route}: missing closed replay failure phase in ${JSON.stringify(status)}`);
+          assert(replayFailure.result, `${route}: missing closed replay failure result in ${JSON.stringify(status)}`);
+          const timeline = replay?.phases?.map((phase) => `${phase.phase}:${phase.result}:${phase.durationMs ?? 0}ms`).join(",") ?? "";
+          const signature = `${status.stage}|${replayFailure.phase}|${replayFailure.result}`;
+          signatures.add(signature);
+          iterationResults.push({
+            case: name,
+            repeat,
+            stage: status.stage,
+            candidateCount: status.candidateCount ?? 0,
+            firstFailure: { phase: replayFailure.phase, result: replayFailure.result },
+          });
+          console.info(`[chrome-discovery] ${name} repeat=${repeat} replay_failed phase=${replayFailure.phase} result=${replayFailure.result} elapsed=${elapsedMs}ms timeline=${timeline}`);
+          continue;
+        }
+        assert((status.candidateCount ?? 0) >= 1, `${route}: Chrome discovery returned no candidate`);
+        assert(elapsedMs <= 10_000, `${route}: Chrome discovery exceeded the fast envelope (${elapsedMs}ms)`);
+        signatures.add(`${status.stage}|candidate_found`);
+        iterationResults.push({ case: name, repeat, stage: status.stage, candidateCount: status.candidateCount ?? 0 });
+        console.info(`[chrome-discovery] ${name} repeat=${repeat} candidate_found count=${status.candidateCount} elapsed=${elapsedMs}ms`);
       }
-      assert.equal(status.stage, expected, `${route}: expected ${expected}, received ${JSON.stringify(status)}`);
-      if (expected === "failed") {
-        const replay = status.diagnostic?.attempts
-          ?.find((attempt) => attempt.result === "list_failed" || attempt.result === "no_documents" || attempt.result === "limit_reached")
-          ?.replay;
-        const replayFailure = replay?.firstFailure;
-        assert(replayFailure?.phase, `${route}: missing closed replay failure phase in ${JSON.stringify(status)}`);
-        assert(replayFailure.result, `${route}: missing closed replay failure result in ${JSON.stringify(status)}`);
-        const timeline = replay?.phases?.map((phase) => `${phase.phase}:${phase.result}:${phase.durationMs ?? 0}ms`).join(",") ?? "";
-        console.info(`[chrome-discovery] ${name} replay_failed phase=${replayFailure.phase} result=${replayFailure.result} elapsed=${elapsedMs}ms timeline=${timeline}`);
-        continue;
-      }
-      assert((status.candidateCount ?? 0) >= 1, `${route}: Chrome discovery returned no candidate`);
-      assert(elapsedMs <= 10_000, `${route}: Chrome discovery exceeded the fast envelope (${elapsedMs}ms)`);
-      console.info(`[chrome-discovery] ${name} candidate_found count=${status.candidateCount} elapsed=${elapsedMs}ms`);
+      assert.equal(signatures.size, 1, `${testCase.name}: nondeterministic terminal signatures ${[...signatures].join(", ")}`);
     }
+    await writeFile(join(temporary, "iteration-result.json"), `${JSON.stringify({ results: iterationResults }, null, 2)}\n`);
   } finally {
     await context?.close();
     context = undefined;
@@ -174,6 +203,18 @@ try {
 } finally {
   await context?.close();
   await rm(temporary, { recursive: true, force: true });
+}
+
+function parseIterationOptions(args: readonly string[]): { caseName?: string; repeat: number } {
+  let caseName: string | undefined;
+  let repeat = 1;
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--case") caseName = args[index + 1];
+    if (args[index] === "--repeat") repeat = Number(args[index + 1]);
+  }
+  if (caseName !== undefined && !/^[a-z0-9-]{1,80}$/.test(caseName)) throw new Error("invalid discovery case name");
+  if (!Number.isInteger(repeat) || repeat < 1 || repeat > 20) throw new Error("repeat must be an integer from 1 to 20");
+  return { ...(caseName ? { caseName } : {}), repeat };
 }
 
 async function inspectFixtureFrames(page: Page): Promise<unknown> {

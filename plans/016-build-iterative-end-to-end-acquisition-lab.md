@@ -46,9 +46,10 @@
 - **Supersedes**: Plan 015's remaining iterative debugging and live-release work
 - **Category**: correctness, testing, diagnostics, performance, release safety
 - **Planned at**: commit `b4a84d3`, 2026-08-25
-- **Implementation status**: IN PROGRESS — Phase 0 replay tracing and the red
-  built-Chromium case are complete locally in Collector 0.8.53 / discovery 43.
-  Authorized ClickUp trace readback and Phases 1–6 remain; no exact build has
+- **Implementation status**: IN PROGRESS — Phases 0–1 now provide closed replay
+  tracing, a deterministic built-Chromium iteration command, and an exact-build
+  signed-in Chrome handoff in Collector 0.8.53 / discovery 43. Authorized
+  ClickUp trace readback and Phases 2–6 remain; no exact build has
   passed delivery, immediate duplicate, and cadence acceptance end to end
 
 ## Goal
@@ -404,6 +405,21 @@ page source, screenshot containing invoices, or DevTools network body.
 - `--repeat 20` produces identical terminal phase/cause for a deterministic case;
 - interruption leaves no running browser or fixture server;
 - the live wrapper validates build identity before accepting a diagnostic.
+
+### Phase 1 evidence (2026-08-26)
+
+- `test:discovery-iteration` builds once and accepts a closed `--case` plus a
+  bounded `--repeat`; twenty consecutive `semantic-replay-timeout` runs ended
+  at `invoice_section_select/time_cap` in 9.3–9.6 seconds each;
+- the runner rejects terminal-signature drift, enforces a 15-second ceiling,
+  and its `finally` cleanup left no Chromium, fixture server, profile, or
+  temporary directory after both a deliberately failing and a passing run;
+- `prepare:live-supplier-test` requires committed clean source, runs CI and the
+  security/package gates, records the exact commit and artifact checksum, and
+  mirrors a byte-matching unpacked tree under ignored `artifacts/live/`;
+- `scripts/live-supplier-test.sh` is syntax- and ShellCheck-clean, lists only
+  approved hostnames, and rejects a ready line unless both its runtime
+  revisions and hashed service-worker chunk match the prepared build.
 
 ## Phase 2 — Grow a supplier-shape corpus
 
