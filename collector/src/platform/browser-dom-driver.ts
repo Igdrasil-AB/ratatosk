@@ -85,6 +85,7 @@ export class BrowserDomDriver implements DomDriver {
   /** Run-namespaced owners keep earlier scope results available until each URL
    * is consumed, without sharing one run's byte/document budget with another. */
   private readonly inlineDocumentOwners = new Map<string, InlineDocumentStore>();
+  private semanticResolutionChain = Promise.resolve();
 
   constructor(
     private readonly recipe: VendorRecipe,
@@ -356,6 +357,15 @@ export class BrowserDomDriver implements DomDriver {
   }
 
   async resolve(handle: string, signal?: AbortSignal): Promise<{ kind: "url"; url: string } | { kind: "bytes"; bytes: ArrayBuffer; contentType: string }> {
+    const task = this.semanticResolutionChain.then(
+      () => this.resolveSemanticAction(handle, signal),
+      () => this.resolveSemanticAction(handle, signal),
+    );
+    this.semanticResolutionChain = task.then(() => undefined, () => undefined);
+    return task;
+  }
+
+  private async resolveSemanticAction(handle: string, signal?: AbortSignal): Promise<{ kind: "url"; url: string } | { kind: "bytes"; bytes: ArrayBuffer; contentType: string }> {
     const action = this.semanticActions.get(handle);
     if (!action) throw new DomActionFailed("semantic document action is no longer available", this.recipe.id);
     this.semanticActions.delete(handle);

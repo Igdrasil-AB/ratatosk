@@ -21,13 +21,13 @@ const BLIND_DELAY_MS = 200 + Number.parseInt(blindSeed.slice(0, 2), 16) % 700;
 const BLIND_MENU_ORDER = [1, 2, 3, 4].map((value, index, values) =>
   values[(index + Number.parseInt(blindSeed.slice(2, 4), 16)) % values.length]);
 const ACQUISITION_CASES = [
-  { name: "network", host: "network-acquisition.ratatosk.test", route: "/network-acquisition", adapterId: "network-json", expectedActions: 0, fallback: false },
-  { name: "direct-dom", host: "direct-acquisition.ratatosk.test", route: "/direct-acquisition", adapterId: "dom-links", expectedActions: 0, fallback: false },
-  { name: "stripe-common", host: "stripe-common-acquisition.ratatosk.test", route: "/stripe-home", adapterId: "dom-links", expectedActions: 0, fallback: false },
-  { name: "native-attachment", host: "native-attachment-acquisition.ratatosk.test", route: NATIVE_TENANT_ROUTE, adapterId: "dom-actions", expectedActions: 1, fallback: false },
-  { name: "semantic-dom", host: "semantic-acquisition.ratatosk.test", route: "/semantic-acquisition", adapterId: "dom-actions", expectedActions: 1, fallback: false },
-  { name: "candidate-fallback", host: "fallback-acquisition.ratatosk.test", route: "/fallback-acquisition", adapterId: "network-json", expectedActions: 0, fallback: true },
-  { name: "blind-synthetic", host: "blind-acquisition.ratatosk.test", route: "/blind-home", adapterId: "dom-actions", expectedActions: 1, fallback: false },
+  { name: "network", host: "network-acquisition.ratatosk.test", route: "/network-acquisition", adapterId: "network-json", expectedCount: 1, expectedActions: 0, fallback: false },
+  { name: "direct-dom", host: "direct-acquisition.ratatosk.test", route: "/direct-acquisition", adapterId: "dom-links", expectedCount: 1, expectedActions: 0, fallback: false },
+  { name: "stripe-common", host: "stripe-common-acquisition.ratatosk.test", route: "/stripe-home", adapterId: "dom-links", expectedCount: 1, expectedActions: 0, fallback: false },
+  { name: "native-attachment", host: "native-attachment-acquisition.ratatosk.test", route: NATIVE_TENANT_ROUTE, adapterId: "dom-actions", expectedCount: 4, expectedActions: 4, fallback: false },
+  { name: "semantic-dom", host: "semantic-acquisition.ratatosk.test", route: "/semantic-acquisition", adapterId: "dom-actions", expectedCount: 1, expectedActions: 1, fallback: false },
+  { name: "candidate-fallback", host: "fallback-acquisition.ratatosk.test", route: "/fallback-acquisition", adapterId: "network-json", expectedCount: 1, expectedActions: 0, fallback: true },
+  { name: "blind-synthetic", host: "blind-acquisition.ratatosk.test", route: "/blind-home", adapterId: "dom-actions", expectedCount: 1, expectedActions: 1, fallback: false },
 ] as const;
 const NEGATIVE_ACQUISITION_CASES = [
   { name: "invalid-pdf", host: "invalid-acquisition.ratatosk.test", route: "/invalid-acquisition", adapterId: "dom-links", result: "document_invalid" },
@@ -139,14 +139,14 @@ try {
     const requestHost = String(request.headers.host ?? FIXTURE_HOST).split(":", 1)[0];
     const requestOrigin = `https://${requestHost}`;
     const path = new URL(request.url ?? "/", requestOrigin).pathname;
-    if (requestHost === "native-attachment-acquisition.ratatosk.test" && path === "/opaque/attachment") {
+    if (requestHost === "native-attachment-acquisition.ratatosk.test" && /^\/opaque\/attachment-[1-4]$/.test(path)) {
       const key = `${requestHost}${path}`;
       documentRequests.set(key, (documentRequests.get(key) ?? 0) + 1);
       response.writeHead(200, {
         "content-type": "application/octet-stream",
         "content-disposition": "attachment",
       });
-      response.end("%PDF-1.4\n%%EOF\n");
+      response.end(`%PDF-1.4\n${path}\n%%EOF\n`);
       return;
     }
     if (path.startsWith("/documents/") && path.endsWith(".pdf")) {
@@ -270,20 +270,20 @@ try {
         const origin = `https://${testCase.host}`;
         await page.goto(`${origin}${testCase.route}`, { waitUntil: "domcontentloaded" });
         await page.bringToFront();
-        const result = await runAcquisition(extensionPage, origin, testCase.adapterId);
-        assert.equal(result.first.count, 1, `${testCase.name}: first run did not accept one document`);
-        assert.equal(result.first.verifiedCount, 1, `${testCase.name}: first run did not verify one document`);
+        const result = await runAcquisition(extensionPage, origin, testCase.adapterId, testCase.expectedCount);
+        assert.equal(result.first.count, testCase.expectedCount, `${testCase.name}: first run did not accept every document`);
+        assert.equal(result.first.verifiedCount, testCase.expectedCount, `${testCase.name}: first run did not verify every document`);
         assert.equal(result.first.documentActionCount ?? 0, testCase.expectedActions, `${testCase.name}: unexpected first-run action count`);
         assert.equal(result.immediate.count, 0, `${testCase.name}: immediate rerun delivered a duplicate`);
         assert.equal(result.immediate.documentActionCount ?? 0, 0, `${testCase.name}: immediate rerun activated an accepted control`);
         assert.equal(result.cadenceActionCount, 0, `${testCase.name}: cadence rerun activated an accepted control`);
-        assert.equal(result.ledgerDelta, 1, `${testCase.name}: ledger did not commit exactly one document`);
-        assert.equal(result.downloadDelta, 1, `${testCase.name}: browser created an unexpected download`);
+        assert.equal(result.ledgerDelta, testCase.expectedCount, `${testCase.name}: ledger did not commit every document exactly once`);
+        assert.equal(result.downloadDelta, testCase.expectedCount, `${testCase.name}: browser created an unexpected download count`);
         if (testCase.fallback) {
           assert((documentRequests.get(`${testCase.host}/documents/invalid.pdf`) ?? 0) >= 1, "fallback case did not exercise the failed candidate");
           assert((documentRequests.get(`${testCase.host}/documents/fallback.pdf`) ?? 0) >= 1, "fallback case did not reach the working candidate");
         }
-        console.info(`[chrome-acquisition] ${testCase.name} first=1 immediate=0 cadence=0 actions=${testCase.expectedActions}/0/0 downloads=1 page_owned=0`);
+        console.info(`[chrome-acquisition] ${testCase.name} first=${testCase.expectedCount} immediate=0 cadence=0 actions=${testCase.expectedActions}/0/0 downloads=${testCase.expectedCount} page_owned=0`);
       }
       for (const testCase of NEGATIVE_ACQUISITION_CASES) {
         if (iterationOptions.caseName && iterationOptions.caseName !== testCase.name) continue;
@@ -469,6 +469,7 @@ async function runAcquisition(
   extensionPage: Page,
   origin: string,
   expectedAdapter: string,
+  expectedCount = 1,
 ): Promise<{
   first: RunSummary;
   immediate: RunSummary;
@@ -572,10 +573,15 @@ async function runAcquisition(
     previewSnapshot.planCount < 1 || !previewSnapshot.planKinds.includes(firstSnapshot.selectedPlanKind) ||
     firstSnapshot.destinationToken !== immediateSnapshot.destinationToken ||
     firstSnapshot.destinationToken !== cadenceSnapshot.destinationToken ||
-    firstSnapshot.run.acceptedCount !== 1 || immediateSnapshot.run.acceptedCount !== 0 ||
+    firstSnapshot.run.acceptedCount !== expectedCount || immediateSnapshot.run.acceptedCount !== 0 ||
     immediateSnapshot.run.actionCount !== 0 || cadenceSnapshot.run.acceptedCount !== 0 ||
     cadenceSnapshot.run.actionCount !== 0
-  ) throw new Error("extension-generated live acceptance snapshots were inconsistent");
+  ) throw new Error(`extension-generated live acceptance snapshots were inconsistent ${JSON.stringify({
+    expectedCount,
+    first: "run" in firstSnapshot ? firstSnapshot.run : { stage: firstSnapshot.stage },
+    immediate: "run" in immediateSnapshot ? immediateSnapshot.run : { stage: immediateSnapshot.stage },
+    cadence: "run" in cadenceSnapshot ? cadenceSnapshot.run : { stage: cadenceSnapshot.stage },
+  })}`);
   const ledgerAfter = ((await sendExtensionMessage(extensionPage, { type: "getLedger" })).ledger as unknown[]).length;
   const downloadsAfter = await extensionDownloadCount(extensionPage);
   return {
@@ -696,14 +702,27 @@ async function runFailedAcquisition(
   return result;
 }
 
+function nativeInvoiceRows(): string {
+  return Array.from({ length: 4 }, (_, index) =>
+    `<tr data-invoice-id="native-${index + 1}"><td>NATIVE-${index + 1}</td><td><button data-native-download="${index + 1}">Download invoice</button></td></tr>`,
+  ).join("");
+}
+
+function nativeDownloadBinding(): string {
+  return `document.querySelectorAll('[data-native-download]').forEach((button) => button.addEventListener('click', () => {
+    const frame = document.createElement('iframe'); frame.hidden = true;
+    frame.src = '/opaque/attachment-' + button.getAttribute('data-native-download'); document.body.append(frame);
+  }));
+  const removeHiddenInvoiceControls = () => { if (document.hidden) document.querySelector('tbody')?.remove(); };
+  document.addEventListener('visibilitychange', removeHiddenInvoiceControls);
+  setTimeout(removeHiddenInvoiceControls, 0);`;
+}
+
 function nativeBillingPage(): string {
   return `<!doctype html><html><head><title>Billing</title></head><body>
     <h1>Invoices</h1><table><thead><tr><th>Invoice Number</th><th>Actions</th></tr></thead>
-    <tbody><tr data-invoice-id="native-1"><td>NATIVE-1</td><td><button id="download">Download invoice</button></td></tr></tbody></table>
-    <script>document.querySelector('#download').addEventListener('click', () => {
-      const frame = document.createElement('iframe'); frame.hidden = true;
-      frame.src = '/opaque/attachment'; document.body.append(frame);
-    });</script></body></html>`;
+    <tbody>${nativeInvoiceRows()}</tbody></table>
+    <script>${nativeDownloadBinding()}</script></body></html>`;
 }
 
 function nativeTenantShell(): string {
@@ -717,11 +736,8 @@ function nativeTenantShell(): string {
           document.querySelector('#overlay').innerHTML = '<a id="billing" href="${NATIVE_TENANT_ROUTE}">Billing</a>';
           document.querySelector('#billing').addEventListener('click', (event) => {
             event.preventDefault(); history.pushState({}, '', '${NATIVE_TENANT_ROUTE}');
-            document.querySelector('#main').innerHTML = '<h1>Invoices</h1><table><thead><tr><th>Invoice Number</th><th>Actions</th></tr></thead><tbody><tr data-invoice-id="native-1"><td>NATIVE-1</td><td><button id="download">Download invoice</button></td></tr></tbody></table>';
-            document.querySelector('#download').addEventListener('click', () => {
-              const frame = document.createElement('iframe'); frame.hidden = true;
-              frame.src = '/opaque/attachment'; document.body.append(frame);
-            });
+            document.querySelector('#main').innerHTML = ${JSON.stringify(`<h1>Invoices</h1><table><thead><tr><th>Invoice Number</th><th>Actions</th></tr></thead><tbody>${nativeInvoiceRows()}</tbody></table>`)};
+            ${nativeDownloadBinding()}
           });
         });
       });

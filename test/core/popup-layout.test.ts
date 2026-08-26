@@ -178,11 +178,11 @@ describe("Collector popup layout regressions", () => {
     expect(popupSource).toContain("Supplier not listed?");
     expect(popupSource).toContain("Find Invoices");
     expect(popupSource).toContain("Copy details");
-    expect(popupSource).toContain("Verify &amp; Collect");
+    expect(popupSource).toContain("Collect Invoices");
     expect(popupSource).not.toContain("Studio on GitHub");
     expect(popupSource).not.toContain("Build a reviewed recipe instead");
     expect(popupSource).not.toContain('data-action="open-add-supplier"');
-    expect(popupSource).toContain("Possible invoice source");
+    expect(popupSource).toContain("Invoice downloads found");
     expect(popupSource).toContain("No invoices found");
     expect(popupSource).toContain("possible invoice control");
     expect(popupStyles).toMatch(/\.supplier-request-link \{[^}]*min-height:\s*40px/s);
@@ -206,7 +206,10 @@ describe("Collector popup layout regressions", () => {
     expect(popupStyles).toContain('id="sync-from-month" name="fromMonth" type="month" min="1970-01"');
     expect(popupStyles).toContain('id="sync-all-history"');
     expect(popupStyles).toContain('id="sync-from-month-choice"');
-    expect(popupStyles).toContain("All available history");
+    expect(popupStyles).toContain("All available invoices");
+    expect(popupStyles).toContain("Verify and collect every invoice in one run");
+    expect(popupStyles).toContain(".dialog-field[hidden] { display: none; }");
+    expect(popupSource).toContain('confirmSync.textContent = fromMonth ? "Collect Invoices" : "Collect All"');
     expect(popupSource).toContain('openSyncDialog({ kind: "connected", vendorId: vendorId! })');
     expect(popupSource).toContain('openSyncDialog({ kind: "connected" })');
     expect(popupSource).toContain('openSyncDialog({ kind: "discovery", vendorId })');

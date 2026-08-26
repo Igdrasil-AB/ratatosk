@@ -702,6 +702,7 @@
       .dialog-body h2 { margin: 0 0 7px; font-size: 16px; line-height: 1.3; text-wrap: balance; }
       .dialog-body p { color: var(--muted); font-size: 12.5px; }
       .dialog-field { margin-top: 14px; display: grid; gap: 6px; }
+      .dialog-field[hidden] { display: none; }
       .dialog-field label { color: var(--fg); font-size: 12px; font-weight: 620; }
       .dialog-field input {
         min-height: 42px;
@@ -773,10 +774,10 @@
     <dialog id="sync-dialog" aria-labelledby="sync-title" aria-describedby="sync-description">
       <div class="dialog-body">
         <h2 id="sync-title">Collect invoices</h2>
-        <p id="sync-description">Choose how much invoice history to collect.</p>
+        <p id="sync-description">Choose what to collect in this run.</p>
         <fieldset class="sync-scope">
           <legend>Invoice history</legend>
-          <label class="sync-choice"><input id="sync-all-history" type="radio" name="sync-scope" value="all" checked><span>All available history<small>Collect every invoice Ratatosk can safely verify.</small></span></label>
+          <label class="sync-choice"><input id="sync-all-history" type="radio" name="sync-scope" value="all" checked><span>All available invoices<small>Verify and collect every invoice in one run.</small></span></label>
           <label class="sync-choice"><input id="sync-from-month-choice" type="radio" name="sync-scope" value="from-month"><span>Start from a month<small>Collect invoices from that month through today.</small></span></label>
         </fieldset>
         <div class="dialog-field" id="sync-month-field" hidden>
@@ -785,7 +786,7 @@
           <small>If invoice dates are unavailable, Ratatosk will collect all history and tell you when it finishes.</small>
         </div>
       </div>
-      <div class="dialog-actions"><button type="button" class="btn outline" id="cancel-sync">Cancel</button><button type="button" class="btn" id="confirm-sync">Collect</button></div>
+      <div class="dialog-actions"><button type="button" class="btn outline" id="cancel-sync">Cancel</button><button type="button" class="btn" id="confirm-sync">Collect All</button></div>
     </dialog>
     <script type="module" src="./popup.ts"></script>
   </body>

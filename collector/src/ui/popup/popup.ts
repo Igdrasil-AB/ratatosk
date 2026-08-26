@@ -587,17 +587,17 @@ function discoveryCard(): string {
     const sessionToken = discovery.usesSessionToken
       ? `<small class="discovery-consent">Uses the sign-in token ${esc(discovery.name)} issues to itself. Re-read each time, never stored.</small>`
       : "";
-    return `<aside class="supplier-request discovery-found" aria-labelledby="supplier-request-title"><span class="supplier-request-mark letter" aria-hidden="true">${esc(discovery.name.charAt(0).toUpperCase())}</span><span class="supplier-request-copy"><strong id="supplier-request-title">Possible invoice source</strong><small>${esc(discovery.name)} · ${clues} possible invoice control${clues === 1 ? "" : "s"} · ${sites} site${sites === 1 ? "" : "s"}</small><small class="discovery-hosts">Access: ${esc(hostnames)}</small>${sessionToken}</span><span class="discovery-actions"><button type="button" class="supplier-request-link" data-action="connect-discovery" data-id="${esc(discovery.vendorId)}">Verify &amp; Collect</button><button type="button" class="quiet-link compact" data-action="cancel-discovery">Cancel</button></span></aside>`;
+    return `<aside class="supplier-request discovery-found" aria-labelledby="supplier-request-title"><span class="supplier-request-mark letter" aria-hidden="true">${esc(discovery.name.charAt(0).toUpperCase())}</span><span class="supplier-request-copy"><strong id="supplier-request-title">Invoice downloads found</strong><small>${esc(discovery.name)} · ${clues} possible invoice control${clues === 1 ? "" : "s"} · ${sites} site${sites === 1 ? "" : "s"}</small><small class="discovery-hosts">Access: ${esc(hostnames)}</small>${sessionToken}</span><span class="discovery-actions"><button type="button" class="supplier-request-link" data-action="connect-discovery" data-id="${esc(discovery.vendorId)}">Collect Invoices</button><button type="button" class="quiet-link compact" data-action="cancel-discovery">Cancel</button></span></aside>`;
   }
   if (discovery.stage === "connecting") {
-    return `<aside class="supplier-request discovery-progress" role="status"><span class="discovery-spinner" aria-hidden="true"></span><span class="supplier-request-copy"><strong>Verifying a real PDF…</strong><small>${esc(discovery.name)} is saved only if one arrives.</small></span></aside>`;
+    return `<aside class="supplier-request discovery-progress" role="status"><span class="discovery-spinner" aria-hidden="true"></span><span class="supplier-request-copy"><strong>Collecting invoices…</strong><small>Each PDF is verified before it is saved.</small></span></aside>`;
   }
   if (discovery.stage === "complete") {
     const fallback = discovery.monthFallbackAll ? " All history checked, no invoice dates." : "";
     // No dismissal to perform: the supplier is already in the list above with
     // this same count, so the card retires itself. See `scheduleSuccessDismiss`.
     scheduleSuccessDismiss();
-    return `<aside class="supplier-request discovery-complete" role="status"><span class="supplier-request-mark success" aria-hidden="true">✓</span><span class="supplier-request-copy"><strong>${esc(discovery.name)} connected</strong><small>${discovery.count} invoice${discovery.count === 1 ? "" : "s"} collected.${fallback}</small></span></aside>`;
+    return `<aside class="supplier-request discovery-complete" role="status"><span class="supplier-request-mark success" aria-hidden="true">✓</span><span class="supplier-request-copy"><strong>${discovery.count} invoice${discovery.count === 1 ? "" : "s"} collected</strong><small>${esc(discovery.name)} is connected for future collections.${fallback}</small></span></aside>`;
   }
   if (discovery.stage === "failed") {
     const emptyResult = discovery.reason === "not_found" || discovery.reason === "limit_reached";
@@ -1213,6 +1213,7 @@ function updateSyncScope(focusMonth = false): void {
   syncMonthField.hidden = !fromMonth;
   syncFromMonth.disabled = !fromMonth;
   syncFromMonth.required = fromMonth;
+  confirmSync.textContent = fromMonth ? "Collect Invoices" : "Collect All";
   if (!fromMonth) syncFromMonth.value = "";
   if (focusMonth && fromMonth) requestAnimationFrame(() => syncFromMonth.focus());
 }
