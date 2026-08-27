@@ -368,7 +368,9 @@ async function handle(message: Message): Promise<Response> {
       return collectionRuns.runInteractive(async () => {
         if (!(await getConnections())[message.vendorId]) return { ok: false, error: "That supplier is not connected." };
         await setConnectionDestination(message.vendorId, message.destinationId);
-        return { ok: true };
+        await refreshActiveDiscoveredSupplierRoute(message.vendorId);
+        const summary = await runVendorById(message.vendorId);
+        return { ok: true, summaries: [summary] };
       });
     }
 
@@ -448,7 +450,7 @@ async function handle(message: Message): Promise<Response> {
 
     case "runNow": {
       if (message.vendorId) {
-        await adoptActiveDiscoveredBillingRoute(message.vendorId);
+        await refreshActiveDiscoveredSupplierRoute(message.vendorId);
         // Background contexts cannot open permission prompts. If a recipe gains
         // hosts, send the user back through Connect rather than silently failing.
         const recipe = (await resolveCollectorSource(message.vendorId))?.recipe;
@@ -630,6 +632,26 @@ async function adoptActiveDiscoveredBillingRoute(vendorId: string): Promise<void
   updated.entryUrl = safe;
   if (updated.recipe.invoices.strategy === "dom") updated.recipe.invoices.list.open = safe;
   await upsertDiscoveredSupplier(updated);
+}
+
+async function refreshActiveDiscoveredSupplierRoute(vendorId: string): Promise<void> {
+  await adoptActiveDiscoveredBillingRoute(vendorId);
+  const profile = await getDiscoveredSupplier(vendorId);
+  if (!profile || profile.recipe.invoices.strategy !== "dom") return;
+  const open = profile.recipe.invoices.list.open;
+  if (/(?:billing|invoice|receipt|statement)/i.test(new URL(open).pathname)) return;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id === undefined || !tab.url) return;
+  let active: URL;
+  try { active = new URL(tab.url); } catch { return; }
+  if (active.origin !== profile.primaryOrigin) return;
+  try {
+    const discovery = await discoverSupplierInTab(tab.id, profile.primaryOrigin, { mode: "fast" });
+    const replacement = discovery.candidates.candidates.find((candidate) => candidate.id === profile.id);
+    if (replacement) await upsertDiscoveredSupplier(replacement);
+  } catch (error) {
+    console.info("[collector] connected supplier route refresh did not find a replacement", error instanceof Error ? error.name : "unknown");
+  }
 }
 
 function liveAcceptanceEnvelope(

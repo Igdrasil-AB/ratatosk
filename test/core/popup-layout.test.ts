@@ -173,7 +173,8 @@ describe("Collector popup layout regressions", () => {
     expect(serviceWorkerSource).toContain("[collector] ready ${formatCollectorRuntimeIdentity()}");
     expect(serviceWorkerSource).toContain("[collector] discovery start ${formatCollectorRuntimeIdentity()}");
     expect(serviceWorkerSource).toContain('if (currentDiscovery.stage === "scanning") return { ok: true };');
-    expect(serviceWorkerSource).toContain("adoptActiveDiscoveredBillingRoute(message.vendorId)");
+    expect(serviceWorkerSource).toContain("refreshActiveDiscoveredSupplierRoute(message.vendorId)");
+    expect(serviceWorkerSource).toContain("discoverSupplierInTab(tab.id, profile.primaryOrigin, { mode: \"fast\" })");
   });
 
   it("offers local discovery with a reviewed-recipe fallback", () => {
@@ -209,6 +210,12 @@ describe("Collector popup layout regressions", () => {
     expect(popupSource).not.toContain("fromMonth");
     expect(popupSource).toContain('case "sync": void run({ type: "runNow", vendorId: vendorId! }, vendorId);');
     expect(popupSource).toContain('case "sync-all": void run({ type: "runNow" });');
+  });
+
+  it("makes destination rebinding perform the collection promised by its label", () => {
+    expect(popupSource).toContain('toast("Moving & Collecting…")');
+    expect(popupSource).toContain('if ("summaries" in response) showRunCompletion(response.summaries)');
+    expect(serviceWorkerSource).toContain("const summary = await runVendorById(message.vendorId)");
   });
 
   it("closes the date menu with Escape or an outside click and clears stale toast text", () => {

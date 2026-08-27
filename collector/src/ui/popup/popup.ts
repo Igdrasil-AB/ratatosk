@@ -1016,7 +1016,7 @@ async function discoverFromUserGesture(): Promise<void> {
     }
     if (!granted) {
       await send({ type: "cancelDiscovery" });
-      toast("Access wasn’t granted. Ratatosk did not inspect the site.");
+      toast("Chrome access is required — open Extensions and select Ratatosk for this site.");
       await load();
       return;
     }
@@ -1527,13 +1527,13 @@ cancelRebind.addEventListener("click", () => rebindDialog.close());
 rebindDialog.addEventListener("close", () => { pendingRebind = null; });
 
 async function rebindSupplier(vendorId: string, destinationId: DestinationId): Promise<void> {
+  toast("Moving & Collecting…");
   const response = await send({ type: "bindSupplier", vendorId, destinationId });
   if (!response.ok) {
     sourceError(vendorId, `${response.error} Try again.`);
     return;
   }
-  const target = findDestination(destinationId);
-  toast(target ? `Now sending to ${destinationName(target)}` : "Destination updated");
+  if ("summaries" in response) showRunCompletion(response.summaries);
   await load();
 }
 
