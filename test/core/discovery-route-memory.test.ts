@@ -53,6 +53,12 @@ describe("discovery route memory", () => {
     await expect(getRememberedRoute("https://other.example")).resolves.toBeUndefined();
   });
 
+  it("does not remember a site shell as an invoice shortcut", async () => {
+    await rememberSupplierRoute(origin, `${origin}/`);
+
+    await expect(getRememberedRoute(origin)).resolves.toBeUndefined();
+  });
+
   it("keeps one route per origin, the most recent", async () => {
     await rememberSupplierRoute(origin, `${origin}/billing`);
     await rememberSupplierRoute(origin, `${origin}/account/invoices`);

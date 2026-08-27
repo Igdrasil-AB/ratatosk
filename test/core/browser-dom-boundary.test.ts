@@ -679,11 +679,15 @@ describe("browser DOM boundary", () => {
     expect(updateSessionRules).toHaveBeenCalledWith({ removeRuleIds: [42] });
   });
 
-  it("rejects a stable semantic identity repeated across continuation pages", async () => {
+  it("deduplicates repeated controls across continuation passes and resolves unseen invoices on the retained page", async () => {
     const actionId = "a".repeat(32);
     let enumeration = 0;
-    const executeScript = vi.fn(async (details: { func?: unknown }) => {
+    const create = vi.fn(async () => ({ id: 42, windowId: 7, url: "about:blank", status: "complete" as const }));
+    const executeScript = vi.fn(async (details: { func?: unknown; args?: unknown[] }) => {
       if (details.func === runSemanticDocumentOperationInPage) {
+        if ((details.args?.[0] as { kind?: string })?.kind === "resolve") {
+          return [{ result: { ok: true, kind: "url", url: "https://documents.example/invoices/one.pdf" } }];
+        }
         enumeration += 1;
         return [{ result: {
           ...emptySemanticEnumeration,
@@ -701,7 +705,7 @@ describe("browser DOM boundary", () => {
     vi.stubGlobal("chrome", {
       ...actionBoundaryChromeApis(),
       tabs: {
-        create: vi.fn(async () => ({ id: 42, windowId: 7, url: "about:blank", status: "complete" })),
+        create,
         get: vi.fn(async () => ({
           id: 42,
           windowId: 7,
@@ -721,12 +725,21 @@ describe("browser DOM boundary", () => {
       scripting: semanticScripting(executeScript),
     });
 
-    await expect(new BrowserDomDriver(domRecipe()).run(
+    const driver = new BrowserDomDriver(domRecipe());
+    const result = await driver.run(
       "https://vendor.example/billing",
       [{ action: "extractSemanticDownloads", as: "documents", maxActions: 8 }],
       { mode: "auto", maxActions: 1, maxDocuments: 100, timeoutMs: 30_000, allowScroll: true },
-    )).rejects.toMatchObject({ kind: "document_action_ambiguous" });
+    );
+
+    expect(result.actions).toHaveLength(1);
+    await expect(driver.resolve(result.actions![0].handle)).resolves.toEqual({
+      kind: "url",
+      url: "https://documents.example/invoices/one.pdf",
+    });
     expect(enumeration).toBe(2);
+    expect(create).toHaveBeenCalledOnce();
+    await driver.dispose();
   });
 
   it("fails closed before activation when semantic identities are ambiguous or unstable", async () => {
@@ -1204,7 +1217,8 @@ describe("browser DOM boundary", () => {
     expect(identityPolicy).not.toContain("row.textContent");
     expect(identityPolicy).not.toContain("labelOf(element)");
     expect(identityPolicy).not.toContain("columnContextOf(element)");
-    expect(driverSource).toContain('throw new DocumentActionFailed("document_action_ambiguous"');
+    expect(actionControllerSource).toContain("counts.get(candidate.actionId) === 1");
+    expect(driverSource).toContain("if (semanticActions.has(actionRef.vendorInvoiceId)) continue");
   });
 
   it("captures invoice-shaped blob XHRs even without a PDF content type", () => {

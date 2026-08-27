@@ -227,31 +227,41 @@ export class DocumentActionController {
         throwIfDocumentActionAborted(signal);
       }
       throwIfDocumentActionAborted(signal);
-      return await this.runGuardedOnTab(tabId, "browser_download_unsupported", async () => {
-        throwIfDocumentActionAborted(signal);
-        // This is the single metric boundary for document-producing page
-        // activation. It contains no URL, selector, row data, or invoice data.
-        try { this.onDocumentAction(); } catch { /* observability cannot change acquisition */ }
-        const actionDeadline = Date.now() + 30_000;
-        const [injection] = await withinDeadline(chrome.scripting.executeScript({
-          target: { tabId: tabId! },
-          world: "MAIN",
-          func: runSemanticDocumentOperationInPage,
-          args: [
-            { kind: "resolve", actionId } satisfies SemanticPageOperation,
-            [...this.allowedOrigins],
-            semanticPolicy,
-            actionDeadline,
-          ],
-        }), actionDeadline);
-        throwIfDocumentActionAborted(signal);
-        return this.parseSemanticResolution(injection?.result);
-      }, recoverSemanticResolution);
+      return await this.resolveOnTab(tabId, actionId, semanticPolicy, signal);
     } finally {
       await releaseForeground();
       await pageObserver.dispose(tabId);
       if (tabId !== undefined) await chrome.tabs.remove(tabId).catch(() => undefined);
     }
+  }
+
+  async resolveOnTab(
+    tabId: number,
+    actionId: string,
+    semanticPolicy: typeof DISCOVERY_DOM_POLICY,
+    signal?: AbortSignal,
+  ): Promise<SemanticResolutionResult> {
+    throwIfDocumentActionAborted(signal);
+    return this.runGuardedOnTab(tabId, "browser_download_unsupported", async () => {
+      throwIfDocumentActionAborted(signal);
+      // This is the single metric boundary for document-producing page
+      // activation. It contains no URL, selector, row data, or invoice data.
+      try { this.onDocumentAction(); } catch { /* observability cannot change acquisition */ }
+      const actionDeadline = Date.now() + 30_000;
+      const [injection] = await withinDeadline(chrome.scripting.executeScript({
+        target: { tabId },
+        world: "MAIN",
+        func: runSemanticDocumentOperationInPage,
+        args: [
+          { kind: "resolve", actionId } satisfies SemanticPageOperation,
+          [...this.allowedOrigins],
+          semanticPolicy,
+          actionDeadline,
+        ],
+      }), actionDeadline);
+      throwIfDocumentActionAborted(signal);
+      return this.parseSemanticResolution(injection?.result);
+    }, recoverSemanticResolution);
   }
 
   async advanceOnTab(

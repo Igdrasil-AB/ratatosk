@@ -174,7 +174,7 @@ describe("Collector popup layout regressions", () => {
     expect(serviceWorkerSource).toContain("[collector] discovery start ${formatCollectorRuntimeIdentity()}");
     expect(serviceWorkerSource).toContain('currentDiscovery.origin === message.origin');
     expect(serviceWorkerSource).toContain('if (currentDiscovery.stage === "scanning") await cancelCurrentDiscovery();');
-    expect(serviceWorkerSource).toContain("refreshActiveDiscoveredSupplierRoute(message.vendorId)");
+    expect(serviceWorkerSource).toContain("runConnectedVendor(message.vendorId)");
     expect(serviceWorkerSource).toContain("discoverSupplierInTab(tab.id, profile.primaryOrigin, { mode: \"fast\" })");
   });
 
@@ -216,7 +216,7 @@ describe("Collector popup layout regressions", () => {
   it("makes destination rebinding perform the collection promised by its label", () => {
     expect(popupSource).toContain('toast("Moving & Collecting…")');
     expect(popupSource).toContain('if ("summaries" in response) showRunCompletion(response.summaries)');
-    expect(serviceWorkerSource).toContain("const summary = await runVendorById(message.vendorId)");
+    expect(serviceWorkerSource).toContain("const summary = await runConnectedVendor(message.vendorId)");
   });
 
   it("closes the date menu with Escape or an outside click and clears stale toast text", () => {

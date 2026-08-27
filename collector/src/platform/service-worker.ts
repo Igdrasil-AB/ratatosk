@@ -368,8 +368,7 @@ async function handle(message: Message): Promise<Response> {
       return collectionRuns.runInteractive(async () => {
         if (!(await getConnections())[message.vendorId]) return { ok: false, error: "That supplier is not connected." };
         await setConnectionDestination(message.vendorId, message.destinationId);
-        await refreshActiveDiscoveredSupplierRoute(message.vendorId);
-        const summary = await runVendorById(message.vendorId);
+        const summary = await runConnectedVendor(message.vendorId);
         return { ok: true, summaries: [summary] };
       });
     }
@@ -450,7 +449,7 @@ async function handle(message: Message): Promise<Response> {
 
     case "runNow": {
       if (message.vendorId) {
-        await refreshActiveDiscoveredSupplierRoute(message.vendorId);
+        await adoptActiveDiscoveredBillingRoute(message.vendorId);
         // Background contexts cannot open permission prompts. If a recipe gains
         // hosts, send the user back through Connect rather than silently failing.
         const recipe = (await resolveCollectorSource(message.vendorId))?.recipe;
@@ -458,7 +457,7 @@ async function handle(message: Message): Promise<Response> {
         if (recipe && !(await hasHostPermissions(vendorPermissionOrigins(recipe, connection)))) {
           return { ok: false, error: "vendor access changed; reconnect this vendor" };
         }
-        const summary = await collectionRuns.runInteractive(() => runVendorById(message.vendorId!));
+        const summary = await collectionRuns.runInteractive(() => runConnectedVendor(message.vendorId!));
         return { ok: true, summaries: [summary] };
       }
       return { ok: true, summaries: await collectionRuns.runInteractive(() => runAllConnected()) };
@@ -635,24 +634,36 @@ async function adoptActiveDiscoveredBillingRoute(vendorId: string): Promise<void
   await upsertDiscoveredSupplier(updated);
 }
 
-async function refreshActiveDiscoveredSupplierRoute(vendorId: string): Promise<void> {
+async function refreshActiveDiscoveredSupplierRoute(vendorId: string): Promise<boolean> {
   await adoptActiveDiscoveredBillingRoute(vendorId);
   const profile = await getDiscoveredSupplier(vendorId);
-  if (!profile || profile.recipe.invoices.strategy !== "dom") return;
+  if (!profile || profile.recipe.invoices.strategy !== "dom") return false;
   const open = profile.recipe.invoices.list.open;
-  if (/(?:billing|invoice|receipt|statement)/i.test(new URL(open).pathname)) return;
+  if (/(?:billing|invoice|receipt|statement)/i.test(new URL(open).pathname)) return false;
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tab?.id === undefined || !tab.url) return;
+  if (tab?.id === undefined || !tab.url) return false;
   let active: URL;
-  try { active = new URL(tab.url); } catch { return; }
-  if (active.origin !== profile.primaryOrigin) return;
+  try { active = new URL(tab.url); } catch { return false; }
+  if (active.origin !== profile.primaryOrigin) return false;
   try {
     const discovery = await discoverSupplierInTab(tab.id, profile.primaryOrigin, { mode: "fast" });
     const replacement = discovery.candidates.candidates.find((candidate) => candidate.id === profile.id);
-    if (replacement) await upsertDiscoveredSupplier(replacement);
+    if (!replacement) return false;
+    await upsertDiscoveredSupplier(replacement);
+    return true;
   } catch (error) {
     console.info("[collector] connected supplier route refresh did not find a replacement", error instanceof Error ? error.name : "unknown");
+    return false;
   }
+}
+
+async function runConnectedVendor(vendorId: string) {
+  await adoptActiveDiscoveredBillingRoute(vendorId);
+  const summary = await runVendorById(vendorId);
+  if (summary.failure?.stage !== "invoice_list") return summary;
+  return await refreshActiveDiscoveredSupplierRoute(vendorId)
+    ? runVendorById(vendorId)
+    : summary;
 }
 
 function liveAcceptanceEnvelope(

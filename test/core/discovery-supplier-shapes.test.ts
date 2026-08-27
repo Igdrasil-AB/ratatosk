@@ -78,6 +78,27 @@ describe("supplier discovery across portal shapes", () => {
     expect(trace.elapsedMs).toBeLessThanOrEqual(5_000);
   });
 
+  it("keeps a safe hash-routed billing surface replayable", async () => {
+    const portal: Portal = {
+      name: "hash-routed SPA billing",
+      origin: "https://app.hash-billing.example",
+      entryPath: "/new#settings/billing",
+      routes: [{
+        path: "/new",
+        title: "Billing | Example",
+        hydrateMs: 100,
+        html: '<html><body><h1>Invoices</h1><a href="https://invoice.stripe.com/i/acct_example/live_example">View</a></body></html>',
+      }],
+    };
+
+    const { result } = await discover(portal);
+    const recipe = result.candidates.candidates[0].recipe;
+    expect(recipe.invoices.strategy).toBe("dom");
+    if (recipe.invoices.strategy === "dom") {
+      expect(recipe.invoices.list.open).toBe(`${portal.origin}/new#settings/billing`);
+    }
+  });
+
   it("closes an exhausted correctness-first search within its bounded minute", async () => {
     const barren: Portal = {
       name: "portal with no billing surface",

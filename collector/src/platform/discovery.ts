@@ -2443,6 +2443,8 @@ function canonicalPageUrl(value: string, expectedOrigin: string): string | undef
     exactOriginPattern(expectedOrigin);
     const url = new URL(value);
     if (url.protocol !== "https:" || url.origin !== expectedOrigin || url.username || url.password || url.pathname.length > 320) return undefined;
+    const hashEntry = safeEntryUrl(url.toString());
+    if (url.hash && new URL(hashEntry).hash) return hashEntry;
     const exploration = safeExplorationUrl(url.toString(), expectedOrigin);
     if (exploration) return exploration;
     // Reopening the page the person already has open is not persistence, so it
@@ -2952,7 +2954,7 @@ function replayableDomOpen(
 ): { url: string; config?: VendorRecipe["config"] } | null {
   let requested: URL;
   try { requested = new URL(requestedUrl); } catch { return null; }
-  if (requested.origin !== evidence.origin || requested.search || requested.hash) return null;
+  if (requested.origin !== evidence.origin || requested.search) return null;
   try {
     if (safeEntryUrl(requested.toString()) === requested.toString()) return { url: requested.toString() };
   } catch {

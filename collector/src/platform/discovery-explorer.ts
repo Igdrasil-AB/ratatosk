@@ -11,7 +11,7 @@ import { isBoundedTenantIdentifierSegment, safeEntryUrl } from "../../../src/cor
 export const MAX_EXPLORATION_PAGES = 40;
 export const MAX_EXPLORATION_DEPTH = 4;
 export const EXPLORATION_DEADLINE_MS = 60_000;
-export const DISCOVERY_ENGINE_REVISION = 60;
+export const DISCOVERY_ENGINE_REVISION = 61;
 
 /**
  * A scan starts in the inexpensive fast lane, but its policy is deliberately

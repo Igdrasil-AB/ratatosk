@@ -40,6 +40,7 @@ import {
   DocumentActionController,
   ReplayPhaseFailed,
   type SemanticDocumentActionReference,
+  type SemanticResolutionResult,
 } from "./document-action-controller";
 export { parseDomAdvanceResult } from "./document-action-controller";
 
@@ -78,9 +79,13 @@ export class BrowserDomDriver implements DomDriver {
   private readonly semanticActions = new Map<string, {
     pageUrl: string;
     actionId: string;
+    tabId: number;
     continuationActions: number;
     documentSelector: string;
     allowScroll: boolean;
+  }>();
+  private readonly retainedSemanticTabs = new Map<number, {
+    observer?: { dispose(tabId?: number): Promise<void> };
   }>();
   /** Run-namespaced owners keep earlier scope results available until each URL
    * is consumed, without sharing one run's byte/document budget with another. */
@@ -263,13 +268,16 @@ export class BrowserDomDriver implements DomDriver {
             throw new DomActionFailed("semantic action page left the approved origin", this.recipe.id);
           }
           for (const actionRef of result.actions) {
-            if (semanticActions.has(actionRef.vendorInvoiceId)) {
-              throw new DocumentActionFailed("document_action_ambiguous", this.recipe.id);
-            }
+            // Load-more passes include the controls already seen above them.
+            // The enumeration itself has already rejected identity collisions,
+            // so the same stable action on a later pass is a duplicate, not an
+            // ambiguity that should discard the remaining invoices.
+            if (semanticActions.has(actionRef.vendorInvoiceId)) continue;
             const handle = crypto.randomUUID();
             this.semanticActions.set(handle, {
               pageUrl: page.toString(),
               actionId: actionRef.actionId,
+              tabId,
               continuationActions: action,
               documentSelector,
               allowScroll: policy?.allowScroll ?? false,
@@ -351,8 +359,15 @@ export class BrowserDomDriver implements DomDriver {
       };
     } finally {
       await releaseForegroundTab();
-      await pageObserver?.dispose(tabId);
-      if (created) await chrome.tabs.remove(tabId).catch(() => undefined);
+      if (created && usesSemanticActions && semanticActions.size > 0) {
+        // Keep this one enumerated page alive until the engine has filtered
+        // duplicates and resolved only the unseen invoices. Resolution can then
+        // reuse the page instead of reopening the supplier once per document.
+        this.retainedSemanticTabs.set(tabId, { observer: pageObserver });
+      } else {
+        await pageObserver?.dispose(tabId);
+        if (created) await chrome.tabs.remove(tabId).catch(() => undefined);
+      }
     }
   }
 
@@ -369,6 +384,23 @@ export class BrowserDomDriver implements DomDriver {
     const action = this.semanticActions.get(handle);
     if (!action) throw new DomActionFailed("semantic document action is no longer available", this.recipe.id);
     this.semanticActions.delete(handle);
+    if (this.retainedSemanticTabs.has(action.tabId)) {
+      try {
+        const tab = await chrome.tabs.get(action.tabId);
+        if (tab.url && new URL(tab.url).origin === new URL(action.pageUrl).origin) {
+          return this.materializeSemanticResolution(await this.actionController.resolveOnTab(
+            action.tabId,
+            action.actionId,
+            DISCOVERY_DOM_POLICY,
+            signal,
+          ));
+        }
+      } catch (error) {
+        if (error instanceof AuthExpired || error instanceof AuthFailure || error instanceof DocumentPermissionRequired) throw error;
+        // A supplier may replace or navigate its retained page. The existing
+        // bounded relocation path remains the safe fallback for that invoice.
+      }
+    }
     const resolved = await this.actionController.resolve(
       action.pageUrl,
       action.actionId,
@@ -381,6 +413,10 @@ export class BrowserDomDriver implements DomDriver {
         labelPattern: DOM_CONTINUATION_LABEL_PATTERN,
       },
     );
+    return this.materializeSemanticResolution(resolved);
+  }
+
+  private async materializeSemanticResolution(resolved: SemanticResolutionResult): Promise<{ kind: "url"; url: string } | { kind: "bytes"; bytes: ArrayBuffer; contentType: string }> {
     if (resolved.kind === "url") return resolved;
     const materialized = await materializeInlinePdfDataUrl(resolved.dataUrl);
     if (!materialized) throw new DomActionFailed("semantic action returned an invalid document", this.recipe.id);
@@ -390,6 +426,12 @@ export class BrowserDomDriver implements DomDriver {
   async dispose(): Promise<void> {
     this.semanticActions.clear();
     this.inlineDocumentOwners.clear();
+    const retained = [...this.retainedSemanticTabs.entries()];
+    this.retainedSemanticTabs.clear();
+    await Promise.allSettled(retained.map(async ([tabId, value]) => {
+      await value.observer?.dispose(tabId);
+      await chrome.tabs.remove(tabId);
+    }));
   }
 
   private deadline(maximumMs: number): number {
