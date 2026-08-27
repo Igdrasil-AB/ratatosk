@@ -30,14 +30,14 @@ export type Message =
   | { type: "completeDiscovery" }
   | { type: "continueDiscovery" }
   | { type: "cancelDiscovery" }
-  | { type: "beginDiscoveryConnect"; vendorId: string; destinationId: DestinationId; fromMonth?: string }
+  | { type: "beginDiscoveryConnect"; vendorId: string; destinationId: DestinationId }
   | { type: "completeDiscoveryConnect"; vendorId: string }
   | { type: "cancelDiscoveryConnect" }
   | { type: "dismissDiscovery" }
   | { type: "connect"; vendorId: string }
   | { type: "disconnect"; vendorId: string }
   | { type: "forgetVendorHistory"; vendorId: string }
-  | { type: "runNow"; vendorId?: string; fromMonth?: string }
+  | { type: "runNow"; vendorId?: string }
   | { type: "getVendorDiagnostic"; vendorId: string }
   | { type: "getLiveAcceptanceSnapshot"; hostname: string; sessionNonce: string }
   | { type: "getLedger" }

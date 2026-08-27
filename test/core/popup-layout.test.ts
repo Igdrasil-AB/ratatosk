@@ -173,6 +173,7 @@ describe("Collector popup layout regressions", () => {
     expect(serviceWorkerSource).toContain("[collector] ready ${formatCollectorRuntimeIdentity()}");
     expect(serviceWorkerSource).toContain("[collector] discovery start ${formatCollectorRuntimeIdentity()}");
     expect(serviceWorkerSource).toContain('if (currentDiscovery.stage === "scanning") return { ok: true };');
+    expect(serviceWorkerSource).toContain("adoptActiveDiscoveredBillingRoute(message.vendorId)");
   });
 
   it("offers local discovery with a reviewed-recipe fallback", () => {
@@ -202,30 +203,12 @@ describe("Collector popup layout regressions", () => {
     expect(popupSource).toContain('data-action="sync-all">Collect Invoices');
   });
 
-  it("asks for an optional starting month before manual collection", () => {
-    expect(popupStyles).toContain('id="sync-dialog"');
-    expect(popupStyles).toContain('id="sync-from-month" name="fromMonth" type="month" min="1970-01"');
-    expect(popupStyles).toContain('id="sync-all-history"');
-    expect(popupStyles).toContain('id="sync-from-month-choice"');
-    expect(popupStyles).toContain("All available invoices");
-    expect(popupStyles).toContain("Verify and collect every invoice in one run");
-    expect(popupStyles).toContain(".dialog-field[hidden] { display: none; }");
-    expect(popupSource).toContain('confirmSync.textContent = fromMonth ? "Collect Invoices" : "Collect All"');
-    expect(popupSource).toContain('openSyncDialog({ kind: "connected", vendorId: vendorId! })');
-    expect(popupSource).toContain('openSyncDialog({ kind: "connected" })');
-    expect(popupSource).toContain('openSyncDialog({ kind: "discovery", vendorId })');
-    expect(popupSource).toContain("...(fromMonth ? { fromMonth } : {})");
-    expect(serviceWorkerSource).toContain("isSyncMonth(message.fromMonth)");
-    expect(serviceWorkerSource).toContain("beginSupplierDiscoveryConnect(message.vendorId, message.fromMonth, message.destinationId)");
-    expect(serviceWorkerSource).toContain("}, pending.fromMonth)");
-    expect(serviceWorkerSource).toContain("DISCOVERY_FAILURE_MESSAGES.monthRangeEmpty");
-    expect(popupSource).toContain('connection.lastCode === "month_range_fallback_all"');
-    expect(popupSource).toContain("used all history");
-    expect(popupStyles).toContain("Ratatosk will collect all history and tell you when it finishes");
-    // The fallback stays disclosed on the completion card, in one short clause
-    // rather than a sentence that doubles the card's height.
-    expect(popupSource).toContain("discovery.monthFallbackAll");
-    expect(popupSource).toContain("All history checked, no invoice dates.");
+  it("collects all available history without a date-filtering step", () => {
+    expect(popupStyles).not.toContain('id="sync-dialog"');
+    expect(popupStyles).not.toContain('name="fromMonth"');
+    expect(popupSource).not.toContain("fromMonth");
+    expect(popupSource).toContain('case "sync": void run({ type: "runNow", vendorId: vendorId! }, vendorId);');
+    expect(popupSource).toContain('case "sync-all": void run({ type: "runNow" });');
   });
 
   it("closes the date menu with Escape or an outside click and clears stale toast text", () => {

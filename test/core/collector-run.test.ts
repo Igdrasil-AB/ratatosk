@@ -138,42 +138,6 @@ describe("Collector per-vendor run coordinator", () => {
     expect(mocks.buildSink).toHaveBeenCalledWith(config);
   });
 
-  it("passes a month-only boundary into the run and records an all-history date fallback", async () => {
-    const syncWindow = {
-      range: { granularity: "month" as const, fromMonth: "2026-03", throughMonth: "2026-07" },
-      mode: "all_history_fallback" as const,
-      matched: 2,
-      skippedBefore: 4,
-      skippedAfter: 0,
-      skippedUndated: 1,
-    };
-    mocks.streamVendor.mockResolvedValueOnce({
-      vendorId: "vendor-month-window",
-      documentCount: 0,
-      scopes: scopes(),
-      syncWindow,
-    });
-
-    await expect(runVendorById("vendor-month-window", "2026-03")).resolves.toMatchObject({
-      vendorId: "vendor-month-window",
-      status: "ok",
-      code: "month_range_fallback_all",
-      syncWindow,
-    });
-    expect(mocks.buildRunContext).toHaveBeenCalledWith(
-      "company",
-      expect.objectContaining({ id: "vendor-month-window" }),
-      "2026-03",
-    );
-    expect(mocks.recordRun).toHaveBeenCalledWith(
-      "vendor-month-window",
-      expect.objectContaining({
-        lastStatus: "ok",
-        lastCode: "month_range_fallback_all",
-      }),
-    );
-  });
-
   it("reports and persists the privacy-safe semantic action count", async () => {
     mocks.buildStrategies.mockImplementationOnce((_recipe, instrumentation) => {
       instrumentation!.onSemanticDocumentAction();
@@ -321,10 +285,10 @@ describe("Collector per-vendor run coordinator", () => {
     const recipe = { id: "discovered-vendor", name: "Discovered" } as never;
     await runDiscoveredCandidate(recipe, "local", async () => {
       order.push("admit");
-    }, "2026-03");
+    });
 
     expect(order).toEqual(["sink", "admit"]);
-    expect(mocks.buildRunContext).toHaveBeenCalledWith("company", recipe, "2026-03");
+    expect(mocks.buildRunContext).toHaveBeenCalledWith("company", recipe);
   });
 
   it("durably records an accepted delivery but fails discovery when admission persistence fails", async () => {

@@ -81,13 +81,14 @@ import {
 import {
   assertDiscoveredSupplierCapacity,
   DiscoveredSupplierCapacityError,
+  getDiscoveredSupplier,
   removeDiscoveredSupplier,
   upsertDiscoveredSupplier,
 } from "./discovered-suppliers";
 import { listCollectorSources, resolveCollectorSource } from "./source-catalog";
 import { COLLECTOR_RUNTIME_IDENTITY, formatCollectorRuntimeIdentity } from "./collector-runtime-identity";
 import { operationalOutcomeLabel } from "../../../src/core/errors";
-import { replayPlanKindForRecipe, requiredCandidateOrigins } from "../../../src/core/discovery";
+import { replayPlanKindForRecipe, requiredCandidateOrigins, safeEntryUrl } from "../../../src/core/discovery";
 import { isPublicHostname } from "../../../src/core/origin-policy";
 import { collectFirstWorkingCandidate } from "./discovery-candidates";
 import { withCandidateVerification } from "./discovery-diagnostic";
@@ -95,7 +96,6 @@ import { canContinueSupplierDiscovery } from "./discovery-continuation";
 import { CollectionRunCoordinator } from "../../../src/core/concurrency";
 import { isIgdrasilApiBase } from "../../../src/ingest/igdrasil-sink";
 import { disconnectIgdrasil } from "./igdrasil-disconnect";
-import { isSyncMonth } from "../../../src/core/sync-window";
 import { removeStaleNativeDownloadGuards } from "./document-action-controller";
 import { parseLiveAcceptanceSnapshot } from "../../../src/core/live-acceptance";
 
@@ -447,10 +447,8 @@ async function handle(message: Message): Promise<Response> {
       });
 
     case "runNow": {
-      if (message.fromMonth && !isSyncMonth(message.fromMonth)) {
-        return { ok: false, error: "Choose a valid starting month that is not in the future." };
-      }
       if (message.vendorId) {
+        await adoptActiveDiscoveredBillingRoute(message.vendorId);
         // Background contexts cannot open permission prompts. If a recipe gains
         // hosts, send the user back through Connect rather than silently failing.
         const recipe = (await resolveCollectorSource(message.vendorId))?.recipe;
@@ -458,10 +456,10 @@ async function handle(message: Message): Promise<Response> {
         if (recipe && !(await hasHostPermissions(vendorPermissionOrigins(recipe, connection)))) {
           return { ok: false, error: "vendor access changed; reconnect this vendor" };
         }
-        const summary = await collectionRuns.runInteractive(() => runVendorById(message.vendorId!, message.fromMonth));
+        const summary = await collectionRuns.runInteractive(() => runVendorById(message.vendorId!));
         return { ok: true, summaries: [summary] };
       }
-      return { ok: true, summaries: await collectionRuns.runInteractive(() => runAllConnected(message.fromMonth)) };
+      return { ok: true, summaries: await collectionRuns.runInteractive(() => runAllConnected()) };
     }
 
     case "getVendorDiagnostic": {
@@ -588,13 +586,10 @@ async function handle(message: Message): Promise<Response> {
       return { ok: true };
 
     case "beginDiscoveryConnect": {
-      if (message.fromMonth && !isSyncMonth(message.fromMonth)) {
-        return { ok: false, error: "Choose a valid starting month that is not in the future." };
-      }
       if (!(await getDestination(message.destinationId))) {
         return { ok: false, error: "Choose a destination before collecting." };
       }
-      const pending = await beginSupplierDiscoveryConnect(message.vendorId, message.fromMonth, message.destinationId);
+      const pending = await beginSupplierDiscoveryConnect(message.vendorId, message.destinationId);
       if (pending && await hasHostPermissions(requiredCandidateOrigins(pending.candidates))) void completeDiscoveredConnect(pending.candidates.id, pending.runId);
       return pending ? { ok: true } : { ok: false, error: "The discovery preview expired. Try the supplier again." };
     }
@@ -617,6 +612,24 @@ async function handle(message: Message): Promise<Response> {
       await setSyncSchedule(message.schedule);
       return { ok: true, schedule: await getScheduleInfo() };
   }
+}
+
+async function adoptActiveDiscoveredBillingRoute(vendorId: string): Promise<void> {
+  const profile = await getDiscoveredSupplier(vendorId);
+  if (!profile || profile.recipe.invoices.strategy !== "dom") return;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.url) return;
+  let observed: URL;
+  try { observed = new URL(tab.url); } catch { return; }
+  if (observed.origin !== profile.primaryOrigin || observed.search || observed.hash) return;
+  if (!/(?:billing|invoice|receipt|statement)/i.test(observed.pathname)) return;
+  let safe: string;
+  try { safe = safeEntryUrl(observed.toString()); } catch { return; }
+  if (safe !== observed.toString() || profile.recipe.invoices.list.open === safe) return;
+  const updated = structuredClone(profile);
+  updated.entryUrl = safe;
+  if (updated.recipe.invoices.strategy === "dom") updated.recipe.invoices.list.open = safe;
+  await upsertDiscoveredSupplier(updated);
 }
 
 function liveAcceptanceEnvelope(
@@ -830,7 +843,7 @@ function completeDiscoveredConnect(vendorId: string, expectedRunId?: string): Pr
           await upsertDiscoveredSupplier(profile);
           await upsertConnection({ vendorId: profile.id, destinationId, connectedAt: Date.now() });
           committed = true;
-        }, pending.fromMonth);
+        });
         const proof = summary.retrievalProof;
         console.info(
           `[collector] discovery candidate ${index + 1}/${candidates.candidates.length} ${profile.adapter.id} -> ${summary.code ?? summary.status} retrieval=${summary.retrieval ?? "unknown"} documents=${summary.count}` +
@@ -864,7 +877,6 @@ function completeDiscoveredConnect(vendorId: string, expectedRunId?: string): Pr
             profile.id,
             profile.displayName,
             summary.count,
-            summary.syncWindow?.mode === "all_history_fallback",
           );
         } catch {
           await clearSupplierDiscovery().catch(() => undefined);
@@ -878,19 +890,6 @@ function completeDiscoveredConnect(vendorId: string, expectedRunId?: string): Pr
         await rollbackDiscoveredSupplier(candidates.id);
         await requireSupplierDiscoveryDocumentOrigins(pending.runId, result.summary.requiredOrigins);
         return { ok: false, error: operationalOutcomeLabel("document_permission_required") };
-      }
-      const monthStats = result.summary?.syncWindow;
-      if (
-        pending.fromMonth &&
-        result.kind === "exhausted" &&
-        monthStats?.mode === "bounded" &&
-        monthStats.matched === 0 &&
-        monthStats.skippedBefore + monthStats.skippedAfter > 0
-      ) {
-        await rollbackDiscoveredSupplier(candidates.id);
-        await restoreSupplierDiscoveryPreview(pending.runId);
-        await revokeUnusedPermissions(requiredOrigins);
-        return { ok: false, error: DISCOVERY_FAILURE_MESSAGES.monthRangeEmpty };
       }
       const failure = result.summary?.code
         ? operationalOutcomeLabel(result.summary.code)

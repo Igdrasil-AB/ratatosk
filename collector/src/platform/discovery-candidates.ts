@@ -87,7 +87,6 @@ function candidateLocalCode(code: OperationalOutcomeCode | undefined): boolean {
     code === "document_invalid" ||
     code === "retrieval_incomplete" ||
     code === "recipe_incompatible" ||
-    code === "month_range_fallback_all" ||
     code === "unstable_action_identity" ||
     code === "document_action_ambiguous" ||
     code === "browser_download_unsupported" ||

@@ -302,23 +302,21 @@ describe("durable supplier discovery handoff", () => {
       vendorId: profile.id,
       requiredOrigins: ["https://vendor.example/*"],
     });
-    await expect(beginSupplierDiscoveryConnect(profile.id, "2026-03")).resolves.toEqual({
+    await expect(beginSupplierDiscoveryConnect(profile.id)).resolves.toEqual({
       runId,
       candidates,
-      fromMonth: "2026-03",
     });
     await expect(getPendingSupplierDiscoveryConnect()).resolves.toEqual({
       runId,
       candidates,
-      fromMonth: "2026-03",
     });
     await expect(getSupplierDiscoveryStatus()).resolves.toEqual({ stage: "connecting", name: "Example Vendor" });
     await restoreSupplierDiscoveryPreview(runId);
     await expect(getSupplierDiscoveryStatus()).resolves.toMatchObject({ stage: "preview", vendorId: profile.id });
     await beginSupplierDiscoveryConnect(profile.id);
-    await completeSupplierDiscovery(runId, profile.id, profile.displayName, 2, true);
+    await completeSupplierDiscovery(runId, profile.id, profile.displayName, 2);
     await expect(getSupplierDiscoveryStatus()).resolves.toEqual({
-      stage: "complete", vendorId: profile.id, name: "Example Vendor", count: 2, monthFallbackAll: true,
+      stage: "complete", vendorId: profile.id, name: "Example Vendor", count: 2,
     });
     await clearSupplierDiscovery();
     await expect(getSupplierDiscoveryStatus()).resolves.toEqual({ stage: "idle" });

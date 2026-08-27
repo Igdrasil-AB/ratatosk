@@ -1,5 +1,5 @@
 import { streamVendor } from "../../../src/core/engine";
-import type { FetchedDocument, RetrievalCompleteness, RetrievalProof, SyncWindowStats, VendorRecipe } from "../../../src/core/types";
+import type { FetchedDocument, RetrievalCompleteness, RetrievalProof, VendorRecipe } from "../../../src/core/types";
 import {
   AuthExpired,
   AuthFailure,
@@ -44,7 +44,6 @@ export interface VendorRunSummary {
   pageOwnedDownloadCount?: number;
   retrieval?: RetrievalCompleteness;
   retrievalProof?: RetrievalProof;
-  syncWindow?: SyncWindowStats;
   code?: OperationalOutcomeCode;
   failedScopes?: number;
   emptyScopes?: number;
@@ -79,7 +78,7 @@ class DiscoveryAdmissionError extends Error {
   }
 }
 
-export function runVendorById(vendorId: string, fromMonth?: string): Promise<VendorRunSummary> {
+export function runVendorById(vendorId: string): Promise<VendorRunSummary> {
   const existing = vendorRuns.get(vendorId);
   if (existing) return existing;
 
@@ -91,7 +90,7 @@ export function runVendorById(vendorId: string, fromMonth?: string): Promise<Ven
       // makes "one supplier, one company" true of every path rather than of
       // the paths someone remembered to check.
       const destinationId = (await getConnections())[vendorId]?.destinationId;
-      return executeRecipeRun(source.recipe, destinationId, undefined, false, fromMonth);
+      return executeRecipeRun(source.recipe, destinationId);
     })
     .finally(() => {
       if (vendorRuns.get(vendorId) === task) vendorRuns.delete(vendorId);
@@ -105,9 +104,8 @@ export function runDiscoveredCandidate(
   recipe: VendorRecipe,
   destinationId: DestinationId,
   afterFirstDelivery: (document: FetchedDocument) => Promise<void>,
-  fromMonth?: string,
 ): Promise<VendorRunSummary> {
-  return executeRecipeRun(recipe, destinationId, afterFirstDelivery, true, fromMonth);
+  return executeRecipeRun(recipe, destinationId, afterFirstDelivery, true);
 }
 
 async function executeRecipeRun(
@@ -115,7 +113,6 @@ async function executeRecipeRun(
   destinationId: DestinationId | undefined,
   afterFirstDelivery?: (document: FetchedDocument) => Promise<void>,
   requireCompleteRetrieval = false,
-  fromMonth?: string,
 ): Promise<VendorRunSummary> {
   const vendorId = recipe.id;
 
@@ -133,7 +130,7 @@ async function executeRecipeRun(
     return destinationNeedsReconnectSummary(vendorId, destination.reason);
   }
 
-  const { ctx, dispose } = buildRunContext(sinkCompanyId(destination), recipe, fromMonth);
+  const { ctx, dispose } = buildRunContext(sinkCompanyId(destination), recipe);
   const acquisitionMetrics = { documentActions: 0, pageOwnedDownloads: 0 };
   const strategies = buildStrategies(recipe, {
     onSemanticDocumentAction: () => {
@@ -237,11 +234,8 @@ async function executeRecipeRun(
     retrievalProof = result.retrievalProof;
     console.info(`[collector] "${vendorId}": ok — ${acceptedCount} document(s)`);
 
-    const monthFallback = result.syncWindow?.mode === "all_history_fallback";
     const partial = scopes.failed > 0;
-    const code = partial
-      ? "partial_scope_failure" as const
-      : monthFallback ? "month_range_fallback_all" as const : undefined;
+    const code = partial ? "partial_scope_failure" as const : undefined;
     await recordRunOutcome({
       lastStatus: partial ? "partial" : "ok",
       lastCount: acceptedCount,
@@ -258,7 +252,6 @@ async function executeRecipeRun(
       verifiedCount,
       ...runMetrics(),
       retrieval,
-      ...(result.syncWindow ? { syncWindow: result.syncWindow } : {}),
       ...(retrievalProof ? { retrievalProof } : {}),
       ...(code ? { code } : {}),
       failedScopes: scopes.failed,
@@ -500,7 +493,7 @@ function destinationNeedsReconnectSummary(
 }
 
 /** Run every connected vendor in sequence (keeps concurrency gentle on the host). */
-export async function runAllConnected(fromMonth?: string): Promise<VendorRunSummary[]> {
+export async function runAllConnected(): Promise<VendorRunSummary[]> {
   const ids = Object.keys(await getConnections());
   const summaries: VendorRunSummary[] = [];
   for (const id of ids) {
@@ -510,7 +503,7 @@ export async function runAllConnected(fromMonth?: string): Promise<VendorRunSumm
       // scheduled sync must not resurrect or execute a path that is no longer
       // present in the current source catalog.
       if (!(await resolveCollectorSource(id))) continue;
-      summaries.push(await runVendorById(id, fromMonth));
+      summaries.push(await runVendorById(id));
     } catch (error) {
       const code = operationalCodeForError(error);
       const message = operationalOutcomeLabel(code);

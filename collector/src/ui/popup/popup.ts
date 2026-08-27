@@ -55,7 +55,6 @@ const historyDialog = document.getElementById("history-dialog") as HTMLDialogEle
 const historyName = document.getElementById("history-name") as HTMLElement;
 const confirmHistory = document.getElementById("confirm-history") as HTMLButtonElement;
 const cancelHistory = document.getElementById("cancel-history") as HTMLButtonElement;
-const syncDialog = document.getElementById("sync-dialog") as HTMLDialogElement;
 const rebindDialog = document.getElementById("rebind-dialog") as HTMLDialogElement;
 const rebindName = document.getElementById("rebind-name") as HTMLElement;
 const rebindTarget = document.getElementById("rebind-target") as HTMLElement;
@@ -66,22 +65,12 @@ const companyName = document.getElementById("company-name") as HTMLElement;
 const companySuppliers = document.getElementById("company-suppliers") as HTMLElement;
 const confirmCompany = document.getElementById("confirm-company") as HTMLButtonElement;
 const cancelCompany = document.getElementById("cancel-company") as HTMLButtonElement;
-const syncAllHistory = document.getElementById("sync-all-history") as HTMLInputElement;
-const syncFromMonthChoice = document.getElementById("sync-from-month-choice") as HTMLInputElement;
-const syncMonthField = document.getElementById("sync-month-field") as HTMLElement;
-const syncFromMonth = document.getElementById("sync-from-month") as HTMLInputElement;
-const confirmSync = document.getElementById("confirm-sync") as HTMLButtonElement;
-const cancelSync = document.getElementById("cancel-sync") as HTMLButtonElement;
 const VENDOR_GUIDANCE_SEEN = "ui.vendorGuidanceSeen.v1";
 
 let screen: PanelScreen = "home";
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let disconnectVendorId: string | null = null;
 let historyVendorId: string | null = null;
-type CollectionTarget =
-  | { kind: "connected"; vendorId?: string }
-  | { kind: "discovery"; vendorId: string };
-let pendingSyncTarget: CollectionTarget | null = null;
 let pendingRebind: { vendorId: string; destinationId: DestinationId } | null = null;
 let pendingCompanyDisconnect: string | null = null;
 let hasLoadedBackgroundState = false;
@@ -507,9 +496,7 @@ function renderVendors(): void {
     } else if (connection) {
       const count = connection.lastCount ?? 0;
       const synced = relTime(connection.lastCompleteSyncAt ?? connection.lastRunAt);
-      sub = connection.lastStatus === "ok" && connection.lastCode === "month_range_fallback_all"
-        ? `${count > 0 ? `${count} collected` : "No new invoices"} · all history checked, no invoice dates`
-        : connection.lastStatus === "partial"
+      sub = connection.lastStatus === "partial"
           ? count > 0 ? `${count} collected · collection incomplete` : "Collection incomplete · invoices may still be missing"
         : connection.lastStatus === "rate_limited"
           ? `Paused by vendor · resumes ${relTime(connection.nextEligibleRunAt)}`
@@ -594,11 +581,10 @@ function discoveryCard(): string {
     return `<aside class="supplier-request discovery-progress" role="status"><span class="discovery-spinner" aria-hidden="true"></span><span class="supplier-request-copy"><strong>Collecting invoices…</strong><small>Each PDF is verified before it is saved.</small></span></aside>`;
   }
   if (discovery.stage === "complete") {
-    const fallback = discovery.monthFallbackAll ? " All history checked, no invoice dates." : "";
     // No dismissal to perform: the supplier is already in the list above with
     // this same count, so the card retires itself. See `scheduleSuccessDismiss`.
     scheduleSuccessDismiss();
-    return `<aside class="supplier-request discovery-complete" role="status"><span class="supplier-request-mark success" aria-hidden="true">✓</span><span class="supplier-request-copy"><strong>${discovery.count} invoice${discovery.count === 1 ? "" : "s"} collected</strong><small>${esc(discovery.name)} is connected for future collections.${fallback}</small></span></aside>`;
+    return `<aside class="supplier-request discovery-complete" role="status"><span class="supplier-request-mark success" aria-hidden="true">✓</span><span class="supplier-request-copy"><strong>${discovery.count} invoice${discovery.count === 1 ? "" : "s"} collected</strong><small>${esc(discovery.name)} is connected for future collections.</small></span></aside>`;
   }
   if (discovery.stage === "failed") {
     const emptyResult = discovery.reason === "not_found" || discovery.reason === "limit_reached";
@@ -885,7 +871,7 @@ app.addEventListener("click", (event) => {
     return;
   }
   if (action === "connect-discovery" && vendorId) {
-    openSyncDialog({ kind: "discovery", vendorId });
+    void connectDiscoveryFromUserGesture(vendorId);
     return;
   }
   if (action === "set-schedule-weekday" || action === "set-schedule-monthday") {
@@ -1050,7 +1036,6 @@ async function discoverFromUserGesture(): Promise<void> {
 
 async function connectDiscoveryFromUserGesture(
   vendorId: string,
-  fromMonth?: string,
   chosen?: DestinationId,
 ): Promise<void> {
   const discovery = state.discovery;
@@ -1068,7 +1053,6 @@ async function connectDiscoveryFromUserGesture(
     type: "beginDiscoveryConnect",
     vendorId,
     destinationId,
-    ...(fromMonth ? { fromMonth } : {}),
   });
   const permission = requestHostPermissions(discovery.requiredOrigins);
   state.discovery = { stage: "connecting", name: discovery.name };
@@ -1109,8 +1093,8 @@ async function handle(action: string, vendorId?: string): Promise<void> {
     case "show-all-vendors": state.attentionOnly = false; renderVendors(); return;
     case "home": screen = "home"; state.attentionOnly = false; state.inlineError = null; persistPanelUiState(); await load(); return;
     case "retry-load": await load(); return;
-    case "sync": openSyncDialog({ kind: "connected", vendorId: vendorId! }); return;
-    case "sync-all": openSyncDialog({ kind: "connected" }); return;
+    case "sync": void run({ type: "runNow", vendorId: vendorId! }, vendorId); return;
+    case "sync-all": void run({ type: "runNow" }); return;
     case "disconnect": openDisconnectDialog(vendorId!); return;
     case "forget-history": openHistoryDialog(vendorId!); return;
     case "disable-tab-awareness": await disableTabAwareness(); return;
@@ -1176,14 +1160,10 @@ function showRunCompletion(summaries: readonly VendorRunSummary[]): void {
   const expired = summaries.find((summary) => summary.status === "auth_expired");
   const failed = summaries.find((summary) => summary.status === "error");
   const partial = summaries.find((summary) => summary.status === "partial");
-  const fallbackCount = summaries.filter((summary) => summary.code === "month_range_fallback_all").length;
-  const bounded = summaries.find((summary) => summary.syncWindow?.mode === "bounded");
   const attention = summaries.filter((summary) =>
     summary.status !== "ok" && summary.status !== "partial").length;
 
-  if (collected && fallbackCount) {
-    toast(`Collected ${collected} Invoice${collected === 1 ? "" : "s"} · used all history for ${fallbackCount} supplier${fallbackCount === 1 ? "" : "s"} because invoice dates were unavailable`);
-  } else if (collected) {
+  if (collected) {
     toast(`Collected ${collected} Invoice${collected === 1 ? "" : "s"}${partial ? " · collection incomplete" : attention ? ` · ${attention} need attention` : ""}`);
   } else if (waiting) {
     toast(`Supplier asked Ratatosk to wait until ${relTime(waiting.nextEligibleRunAt)}`);
@@ -1193,65 +1173,9 @@ function showRunCompletion(summaries: readonly VendorRunSummary[]): void {
     toast(failed.error);
   } else if (partial) {
     toast("Collection incomplete — some invoices may still be missing");
-  } else if (fallbackCount) {
-    toast(`Checked all available history for ${fallbackCount} supplier${fallbackCount === 1 ? "" : "s"} because invoice dates were unavailable · no new invoices`);
-  } else if (bounded?.syncWindow) {
-    toast(`No new invoices from ${monthLabel(bounded.syncWindow.range.fromMonth)}`);
   } else {
     toast("No New Invoices");
   }
-}
-
-function openSyncDialog(target: CollectionTarget): void {
-  pendingSyncTarget = target;
-  const now = new Date();
-  syncFromMonth.value = "";
-  syncFromMonth.max = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-  syncAllHistory.checked = true;
-  updateSyncScope();
-  syncDialog.showModal();
-  requestAnimationFrame(() => syncAllHistory.focus());
-}
-
-function updateSyncScope(focusMonth = false): void {
-  const fromMonth = syncFromMonthChoice.checked;
-  syncMonthField.hidden = !fromMonth;
-  syncFromMonth.disabled = !fromMonth;
-  syncFromMonth.required = fromMonth;
-  confirmSync.textContent = fromMonth ? "Collect Invoices" : "Collect All";
-  if (!fromMonth) syncFromMonth.value = "";
-  if (focusMonth && fromMonth) requestAnimationFrame(() => syncFromMonth.focus());
-}
-
-syncAllHistory.addEventListener("change", () => updateSyncScope());
-syncFromMonthChoice.addEventListener("change", () => updateSyncScope(true));
-
-confirmSync.addEventListener("click", () => {
-  if (!pendingSyncTarget || !syncFromMonth.reportValidity()) return;
-  const target = pendingSyncTarget;
-  const fromMonth = syncFromMonth.value || undefined;
-  syncDialog.close();
-  pendingSyncTarget = null;
-  if (target.kind === "discovery") {
-    void connectDiscoveryFromUserGesture(target.vendorId, fromMonth);
-    return;
-  }
-  const message: Extract<Parameters<typeof send>[0], { type: "runNow" }> = {
-    type: "runNow",
-    ...(target.vendorId ? { vendorId: target.vendorId } : {}),
-    ...(fromMonth ? { fromMonth } : {}),
-  };
-  void run(message, target.vendorId);
-});
-
-cancelSync.addEventListener("click", () => syncDialog.close());
-syncDialog.addEventListener("close", () => { pendingSyncTarget = null; });
-
-function monthLabel(value: string): string {
-  const match = /^(\d{4})-(\d{2})$/.exec(value);
-  if (!match) return value;
-  return new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric", timeZone: "UTC" })
-    .format(new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1)));
 }
 
 async function retryDiscovery(): Promise<void> {

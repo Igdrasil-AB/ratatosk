@@ -405,6 +405,18 @@ describe("discovered supplier profiles", () => {
   it("keeps a tenant identifier only with an explicit container and billing intent", () => {
     const tenantEntry = `${origin}/accounts/a473171df3249291b4be6fca57bb8444/billing/subscriptions`;
     expect(safeEntryUrl(tenantEntry)).toBe(tenantEntry);
+    const numericWorkspaceBilling = `${origin}/90121800034/settings/billing-details`;
+    expect(safeEntryUrl(numericWorkspaceBilling)).toBe(numericWorkspaceBilling);
+    const numericWorkspaceRecipe = domRecipe();
+    numericWorkspaceRecipe.auth.check.request.url = `${origin}/`;
+    if (numericWorkspaceRecipe.invoices.strategy === "dom") {
+      numericWorkspaceRecipe.invoices.list.open = numericWorkspaceBilling;
+    }
+    expect(() => assertDiscoveredRecipePolicy(
+      numericWorkspaceRecipe,
+      origin,
+      numericWorkspaceBilling,
+    )).not.toThrow();
 
     const tenantRecipe = domRecipe();
     tenantRecipe.auth.check.request.url = tenantEntry;

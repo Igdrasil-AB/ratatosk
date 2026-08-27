@@ -23,6 +23,8 @@ const SECRET_QUERY_KEY = /(?:^|_)(?:access_?token|api_?key|auth|authorization|co
 const SECRET_SCOPE_NAME = /(?:^|_)(?:token|secret|password|passwd|passcode|credential|private_?key|auth(?:orization)?|session|cookie|csrf|xsrf)(?:_|$)/i;
 const DISCOVERED_SCOPE_ID = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const BILLING_ROUTE_SEGMENT = /^(?:billing|billings|invoice|invoices|receipt|receipts|payment|payments|subscription|subscriptions|statement|statements|transaction|transactions)$/i;
+const BILLING_ROUTE_INTENT_SEGMENT = /(?:billing|invoice|receipt|statement)/i;
+const ROOT_TENANT_CONTEXT_SEGMENT = /^(?:settings|account|accounts|admin|workspace|workspaces|team|teams)$/i;
 const BILLING_SPA_FRAGMENT = /(?:^|\/)(?:billing|billings|invoice|invoices|receipt|receipts|payment|payments|subscription|subscriptions|statement|statements|transaction|transactions)(?:\/|$)/i;
 const UNSAFE_SPA_FRAGMENT = /(?:^|\/)(?:logout|log-out|signout|sign-out|delete|remove|cancel|checkout|purchase|upgrade|downgrade|authorize|oauth|callback|invite|payment[-_]?method)(?:\/|$)/i;
 const SAFE_SPA_FRAGMENT_SEGMENT = /^[A-Za-z0-9._~-]{1,64}$/;
@@ -962,10 +964,15 @@ function isBoundedBillingTenantIdentifier(segments: string[], credentialIndexes:
   if (credentialIndexes.length !== 1) return false;
   const value = segments[index];
   if (!isBoundedTenantIdentifierSegment(value)) return false;
-  // A root-level opaque segment has no structural tenant context and is
-  // indistinguishable from a capability token. Generic discovery must not
-  // bless it merely because a later route says "billing".
-  if (index === 0 || !TENANT_PATH_CONTAINER.test(segments[index - 1])) return false;
+  // A root-level numeric workspace id is replayable only when the rest of the
+  // observed route independently says both settings/account context and invoice
+  // intent. Hex strings, UUIDs, JWTs, and arbitrary opaque paths stay excluded.
+  if (index === 0) {
+    return /^\d{7,20}$/.test(value) &&
+      segments.slice(1).some((segment) => ROOT_TENANT_CONTEXT_SEGMENT.test(segment)) &&
+      segments.slice(1).some((segment) => BILLING_ROUTE_INTENT_SEGMENT.test(segment));
+  }
+  if (!TENANT_PATH_CONTAINER.test(segments[index - 1])) return false;
   return segments.slice(index + 1).some((segment) => BILLING_ROUTE_SEGMENT.test(segment));
 }
 
