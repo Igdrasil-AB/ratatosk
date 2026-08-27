@@ -24,11 +24,13 @@ describe("discovery search-limit UI", () => {
     expect(popup).toContain("Open Billing Page &amp; Search Again");
   });
 
-  it("retires a failed search when the person switches vendors", () => {
+  it("retires any origin-owned search when the person switches vendors", () => {
     expect(state).toContain('...(state.origin ? { origin: state.origin } : {})');
     expect(popup).toContain('data-action="dismiss-discovery"');
-    expect(popup).toContain("state.discovery.origin !== page.origin");
-    expect(popup).toContain('send({ type: "dismissDiscovery" })');
+    expect(popup).toContain("function discoveryOrigin(discovery: DiscoveryStatusView)");
+    expect(popup).toContain("activeSupplierTab.origin !== discoveryOrigin(state.discovery)");
+    expect(popup).toContain("discoveryOrigin(state.discovery) !== page.origin");
+    expect(popup).toContain('void send({ type: "cancelDiscovery" })');
     expect(popup).toContain('data-action="dismiss-discovery">Dismiss');
     expect(popup).not.toContain("Check This Vendor Instead");
   });

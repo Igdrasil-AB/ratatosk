@@ -172,7 +172,8 @@ describe("Collector popup layout regressions", () => {
   it("identifies the exact collector and discovery engine on load and every search", () => {
     expect(serviceWorkerSource).toContain("[collector] ready ${formatCollectorRuntimeIdentity()}");
     expect(serviceWorkerSource).toContain("[collector] discovery start ${formatCollectorRuntimeIdentity()}");
-    expect(serviceWorkerSource).toContain('if (currentDiscovery.stage === "scanning") return { ok: true };');
+    expect(serviceWorkerSource).toContain('currentDiscovery.origin === message.origin');
+    expect(serviceWorkerSource).toContain('if (currentDiscovery.stage === "scanning") await cancelCurrentDiscovery();');
     expect(serviceWorkerSource).toContain("refreshActiveDiscoveredSupplierRoute(message.vendorId)");
     expect(serviceWorkerSource).toContain("discoverSupplierInTab(tab.id, profile.primaryOrigin, { mode: \"fast\" })");
   });

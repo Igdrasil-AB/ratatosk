@@ -281,9 +281,9 @@ async function load(): Promise<void> {
     state.schedule = background.schedule;
     state.discovery = background.discovery;
     state.activeSupplierTab = activeSupplierTab;
-    if (state.discovery.stage === "failed" && state.discovery.origin && activeSupplierTab && activeSupplierTab.origin !== state.discovery.origin) {
+    if (activeSupplierTab && discoveryOrigin(state.discovery) && activeSupplierTab.origin !== discoveryOrigin(state.discovery)) {
       state.discovery = { stage: "idle" };
-      await send({ type: "dismissDiscovery" });
+      await send({ type: "cancelDiscovery" });
     }
     state.tabAwarenessEnabled = tabAwarenessEnabled;
     // A settings counter, so a stale one is not worth failing the whole load for.
@@ -418,6 +418,12 @@ function discoverableTab(): ActiveSupplierTab | null {
   const page = state.activeSupplierTab;
   if (!hasAnyDestination() || !page) return null;
   return state.sources.some((source) => source.primaryOrigin === page.origin) ? null : page;
+}
+
+function discoveryOrigin(discovery: DiscoveryStatusView): string | undefined {
+  return discovery.stage === "scanning" || discovery.stage === "preview" || discovery.stage === "failed"
+    ? discovery.origin
+    : undefined;
 }
 
 /** Offered only while that tab is open, so it never competes for the primary
@@ -1699,12 +1705,12 @@ async function boot(): Promise<void> {
       if (hadPage && screen === "vendors") renderVendors();
     },
     (page) => {
-      const staleFailure = state.discovery.stage === "failed" &&
-        state.discovery.origin && page && state.discovery.origin !== page.origin;
+      const staleDiscovery = page && discoveryOrigin(state.discovery) &&
+        discoveryOrigin(state.discovery) !== page.origin;
       state.activeSupplierTab = page;
-      if (staleFailure) {
+      if (staleDiscovery) {
         state.discovery = { stage: "idle" };
-        void send({ type: "dismissDiscovery" });
+        void send({ type: "cancelDiscovery" });
       }
       if (screen === "vendors") renderVendors();
     },

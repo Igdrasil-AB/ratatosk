@@ -546,7 +546,8 @@ async function handle(message: Message): Promise<Response> {
     case "beginDiscovery": {
       return collectionRuns.runInteractive(async () => {
         const currentDiscovery = await getSupplierDiscoveryStatus();
-        if (currentDiscovery.stage === "scanning") return { ok: true };
+        if (currentDiscovery.stage === "scanning" && currentDiscovery.origin === message.origin) return { ok: true };
+        if (currentDiscovery.stage === "scanning") await cancelCurrentDiscovery();
         if (!(await hasAnyDestination())) return { ok: false, error: "Choose a destination before trying this supplier." };
         if ((await listCollectorSources()).some((source) => source.primaryOrigin === message.origin)) {
           await failSupplierDiscovery(undefined, DISCOVERY_FAILURE_MESSAGES.alreadySupported, [`${message.origin}/*`]);
