@@ -17,6 +17,7 @@ import {
 } from "../../collector/src/platform/document-action-controller";
 import { DISCOVERY_DOM_POLICY } from "../../collector/src/platform/discovery-dom-policy";
 import { collectPageEvidenceInPage } from "../../collector/src/platform/discovery";
+import { safeBillingRouteFragment } from "../../collector/src/platform/discovery-page-observer";
 import { EXPLORATION_ROUTE_POLICY } from "../../collector/src/platform/discovery-explorer";
 import { AuthExpired, DocumentPermissionRequired } from "../../src/core/errors";
 
@@ -73,6 +74,12 @@ describe("browser DOM boundary", () => {
     expect(observerSource).toContain("wrappedPushState");
     expect(observerSource).toContain("history.pushState = originalPushState");
     expect(observerSource).not.toContain("Cookie");
+  });
+
+  it("retains only bounded billing fragments in the early page observer", () => {
+    expect(safeBillingRouteFragment("#settings/billing")).toBe("#settings/billing");
+    expect(safeBillingRouteFragment("#access_token=secret")).toBe("");
+    expect(safeBillingRouteFragment("#settings/billing/cancel")).toBe("");
   });
 
   it("proves a speculative menu branch by finding Settings inside the revealed menu", () => {

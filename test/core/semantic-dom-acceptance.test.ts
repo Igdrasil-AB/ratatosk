@@ -9,10 +9,10 @@ describe("live acquisition release acceptance", () => {
 
   it("accepts only the exact runtime, artifact, three-family, destination-readback matrix", () => {
     vi.setSystemTime(new Date("2026-08-26T10:00:00.000Z"));
-    expect(parseSemanticDomAcceptanceReceipt(receipt(), "0.8.76", 61, 14, artifactSha256)).toMatchObject({
-      collectorVersion: "0.8.76",
-      discoveryRevision: 61,
-      acquisitionRevision: 14,
+    expect(parseSemanticDomAcceptanceReceipt(receipt(), "0.8.77", 62, 15, artifactSha256)).toMatchObject({
+      collectorVersion: "0.8.77",
+      discoveryRevision: 62,
+      acquisitionRevision: 15,
       artifactSha256,
       runtimeIdentityMatched: true,
       clickupAccepted: true,
@@ -28,39 +28,39 @@ describe("live acquisition release acceptance", () => {
   it("rejects stale identities, incomplete breadth, duplicate effects, and private fields", () => {
     vi.setSystemTime(new Date("2026-08-26T10:00:00.000Z"));
     expect(() => parseSemanticDomAcceptanceReceipt(receipt(), "0.8.73", 59, 13, artifactSha256)).toThrow(/0\.8\.73/);
-    expect(() => parseSemanticDomAcceptanceReceipt(receipt(), "0.8.76", 62, 14, artifactSha256)).toThrow(/discovery revision 62/);
+    expect(() => parseSemanticDomAcceptanceReceipt(receipt(), "0.8.77", 63, 15, artifactSha256)).toThrow(/discovery revision 63/);
 
     const anotherBuild = receipt();
     anotherBuild.artifactSha256 = "b".repeat(64);
-    expect(() => parseSemanticDomAcceptanceReceipt(anotherBuild, "0.8.76", 61, 14, artifactSha256)).toThrow(/artifact SHA-256/);
+    expect(() => parseSemanticDomAcceptanceReceipt(anotherBuild, "0.8.77", 62, 15, artifactSha256)).toThrow(/artifact SHA-256/);
 
     const missingFamily = receipt();
     missingFamily.cases[1].family = "opaque_semantic_spa" as never;
-    expect(() => parseSemanticDomAcceptanceReceipt(missingFamily, "0.8.76", 61, 14, artifactSha256)).toThrow(/server_rendered_documents/);
+    expect(() => parseSemanticDomAcceptanceReceipt(missingFamily, "0.8.77", 62, 15, artifactSha256)).toThrow(/server_rendered_documents/);
 
     const noIgdrasil = receipt();
     noIgdrasil.cases.forEach((entry) => { entry.destinationKind = "filesystem"; });
-    expect(() => parseSemanticDomAcceptanceReceipt(noIgdrasil, "0.8.76", 61, 14, artifactSha256)).toThrow(/Igdrasil/);
+    expect(() => parseSemanticDomAcceptanceReceipt(noIgdrasil, "0.8.77", 62, 15, artifactSha256)).toThrow(/Igdrasil/);
 
     const noClickUp = receipt();
     noClickUp.clickupAccepted = false as never;
-    expect(() => parseSemanticDomAcceptanceReceipt(noClickUp, "0.8.76", 61, 14, artifactSha256)).toThrow(/ClickUp/);
+    expect(() => parseSemanticDomAcceptanceReceipt(noClickUp, "0.8.77", 62, 15, artifactSha256)).toThrow(/ClickUp/);
 
     const repeated = receipt();
     repeated.cases[0].cadenceRunActionCount = 1 as never;
-    expect(() => parseSemanticDomAcceptanceReceipt(repeated, "0.8.76", 61, 14, artifactSha256)).toThrow(/idempotent/);
+    expect(() => parseSemanticDomAcceptanceReceipt(repeated, "0.8.77", 62, 15, artifactSha256)).toThrow(/idempotent/);
 
     const pageDownload = receipt();
     pageDownload.cases[0].pageOwnedDownloadDelta = 1 as never;
-    expect(() => parseSemanticDomAcceptanceReceipt(pageDownload, "0.8.76", 61, 14, artifactSha256)).toThrow(/idempotent/);
+    expect(() => parseSemanticDomAcceptanceReceipt(pageDownload, "0.8.77", 62, 15, artifactSha256)).toThrow(/idempotent/);
 
     const wrongReadback = receipt();
     wrongReadback.cases[0].destinationReadbackCount = 0;
-    expect(() => parseSemanticDomAcceptanceReceipt(wrongReadback, "0.8.76", 61, 14, artifactSha256)).toThrow(/idempotent/);
+    expect(() => parseSemanticDomAcceptanceReceipt(wrongReadback, "0.8.77", 62, 15, artifactSha256)).toThrow(/idempotent/);
 
     const sensitive = receipt() as ReturnType<typeof receipt> & { cases: Array<Record<string, unknown>> };
     sensitive.cases[0].hostname = "supplier.example";
-    expect(() => parseSemanticDomAcceptanceReceipt(sensitive, "0.8.76", 61, 14, artifactSha256)).toThrow(/unapproved/);
+    expect(() => parseSemanticDomAcceptanceReceipt(sensitive, "0.8.77", 62, 15, artifactSha256)).toThrow(/unapproved/);
     vi.useRealTimers();
   });
 });
@@ -83,9 +83,9 @@ function receipt() {
   };
   return {
     schema: SEMANTIC_DOM_ACCEPTANCE_SCHEMA,
-    collectorVersion: "0.8.76",
-    discoveryRevision: 61,
-    acquisitionRevision: 14,
+    collectorVersion: "0.8.77",
+    discoveryRevision: 62,
+    acquisitionRevision: 15,
     artifactSha256: "a".repeat(64),
     runtimeIdentityMatched: true as const,
     clickupAccepted: true as const,

@@ -99,6 +99,31 @@ describe("supplier discovery across portal shapes", () => {
     }
   });
 
+  it("persists the safe billing fragment revealed from a generic shell route", async () => {
+    const portal: Portal = {
+      name: "shell revealing hash-routed billing",
+      origin: "https://app.hash-reveal.example",
+      entryPath: "/home",
+      routes: [
+        { path: "/home", hydrateMs: 100, html: "<html><body>Home</body></html>" },
+        {
+          path: "/settings/billing",
+          title: "Billing | Example",
+          hydrateMs: 100,
+          navigations: [{ href: "/new#settings/billing", label: "Billing" }],
+          html: '<html><body><h1>Invoices</h1><a href="https://invoice.stripe.com/i/acct_example/live_example">View</a><a href="/downloads">Get apps</a></body></html>',
+        },
+      ],
+    };
+
+    const { result } = await discover(portal);
+    const recipe = result.candidates.candidates[0].recipe;
+    expect(recipe.invoices.strategy).toBe("dom");
+    if (recipe.invoices.strategy === "dom") {
+      expect(recipe.invoices.list.open).toBe(`${portal.origin}/new#settings/billing`);
+    }
+  });
+
   it("closes an exhausted correctness-first search within its bounded minute", async () => {
     const barren: Portal = {
       name: "portal with no billing surface",

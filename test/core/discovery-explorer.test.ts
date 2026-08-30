@@ -14,6 +14,7 @@ import {
   explorationTargetKey,
   parseExplorationCheckpoint,
   safeExplorationUrl,
+  safeReplayUrl,
 } from "../../collector/src/platform/discovery-explorer";
 
 const explorerSource = readFileSync("collector/src/platform/discovery-explorer.ts", "utf8");
@@ -231,6 +232,13 @@ describe("bounded same-origin discovery exploration", () => {
     ]) {
       expect(safeExplorationUrl(`${origin}${encodedAction}`, origin)).toBeUndefined();
     }
+  });
+
+  it("preserves only safe billing fragments on replayable SPA shells", () => {
+    const origin = "https://vendor.example";
+    expect(safeReplayUrl(`${origin}/new#settings/billing`, origin)).toBe(`${origin}/new#settings/billing`);
+    expect(safeReplayUrl(`${origin}/new#access_token=secret`, origin)).toBe(`${origin}/new`);
+    expect(safeReplayUrl(`${origin}/delete#settings/billing`, origin)).toBeUndefined();
   });
 
   it("uses a semantic invoice label to admit an otherwise opaque exact-origin route", () => {

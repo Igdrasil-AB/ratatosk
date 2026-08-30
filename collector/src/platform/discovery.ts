@@ -108,8 +108,7 @@ const DOM_LINK_SELECTOR = [
   'a[href$=".pdf" i]',
   'a[href*=".pdf?" i]',
   'a[href*=".pdf#" i]',
-  'a[href*="/download" i]',
-  'a[href*="/pdf" i]',
+  'a:is([href*="invoice" i],[href*="receipt" i],[href*="statement" i]):is([href*="download" i],[href*="/pdf" i])',
   ...PROVIDER_DOCUMENT_LINK_SELECTORS,
   'a[aria-label*="download" i][href]',
   'a[title*="download" i][href]',
@@ -2045,7 +2044,12 @@ export async function collectPageEvidenceInPage(
         }
       }
       url.searchParams.sort();
-      url.hash = "";
+      const fragment = url.hash.slice(1);
+      url.hash = fragment && fragment.length <= 240 && !/[?=&%\\]/.test(fragment) &&
+        billingPath.test(fragment) && !unsafePath.test(fragment) && !unsafeSegment.test(fragment) &&
+        fragment.replace(/^\//, "").split("/").every((segment) => /^[A-Za-z0-9][A-Za-z0-9._~-]{0,63}$/.test(segment))
+        ? `#${fragment}`
+        : "";
       return url.toString();
     } catch {
       return undefined;

@@ -11,7 +11,7 @@ import { isBoundedTenantIdentifierSegment, safeEntryUrl } from "../../../src/cor
 export const MAX_EXPLORATION_PAGES = 40;
 export const MAX_EXPLORATION_DEPTH = 4;
 export const EXPLORATION_DEADLINE_MS = 60_000;
-export const DISCOVERY_ENGINE_REVISION = 61;
+export const DISCOVERY_ENGINE_REVISION = 62;
 
 /**
  * A scan starts in the inexpensive fast lane, but its policy is deliberately
@@ -369,7 +369,7 @@ export const EXPLORATION_ROUTE_POLICY = {
   intent: "invoice|receipt|billing|payment|subscription|statement|transaction",
   bridgeIntent: "settings|preferences|account settings|workspace settings|organization settings|team settings",
   unsafe: "logout|log-out|signout|sign-out|delete|remove|cancel|checkout|purchase|upgrade|downgrade|authorize|oauth|callback|invite|payment[-_/]?method",
-  unsafeSegment: "(?:^|[-_/])(?:confirm|create|new)[a-z0-9]*|(?:^|[-_/])pay(?:$|[-_/])",
+  unsafeSegment: "(?:^|[-_/])(?:confirm|create)[a-z0-9]*|(?:^|[-_/])pay(?:$|[-_/])",
   directDocument: "\\.pdf$|(?:^|/)(?:download|pdf)(?:/|$)|(?:^|/)(?:invoice|receipt|statement)s?/[^/]+$",
 } as const;
 
@@ -541,7 +541,8 @@ export function safeReplayUrl(value: string, expectedOrigin: string): string | u
       if (!SAFE_NUMERIC_PAGINATION_QUERY.test(key) || !/^\d{1,6}$/.test(queryValue)) url.searchParams.delete(key);
     }
     url.searchParams.sort();
-    url.hash = "";
+    const entry = new URL(safeEntryUrl(url.toString()));
+    url.hash = entry.hash;
     return url.toString();
   } catch {
     return undefined;

@@ -376,7 +376,7 @@ export function createSimulation(portal: Portal): Simulation {
         semanticControls: hydrated ? route!.semanticControls ?? 0 : 0,
         semanticSections: hydrated ? route!.semanticSections ?? 0 : 0,
         semanticControlsRejected: 0,
-        semanticNavigationSteps: 0,
+        semanticNavigationSteps: Math.min(3, navigations.length),
         semanticNavigationStatus: options.allowSemanticNavigation === false
           ? "disabled" as const
           : (route?.semanticRevealMs ?? 0) > semanticRevealMs
