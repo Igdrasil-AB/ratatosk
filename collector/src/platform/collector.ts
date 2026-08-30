@@ -90,7 +90,7 @@ export function runVendorById(vendorId: string): Promise<VendorRunSummary> {
       // makes "one supplier, one company" true of every path rather than of
       // the paths someone remembered to check.
       const destinationId = (await getConnections())[vendorId]?.destinationId;
-      return executeRecipeRun(source.recipe, destinationId);
+      return executeRecipeRun(source.recipe, destinationId, undefined, false, source.candidateCount);
     })
     .finally(() => {
       if (vendorRuns.get(vendorId) === task) vendorRuns.delete(vendorId);
@@ -113,6 +113,7 @@ async function executeRecipeRun(
   destinationId: DestinationId | undefined,
   afterFirstDelivery?: (document: FetchedDocument) => Promise<void>,
   requireCompleteRetrieval = false,
+  minimumResolvedDocuments = 0,
 ): Promise<VendorRunSummary> {
   const vendorId = recipe.id;
 
@@ -232,6 +233,15 @@ async function executeRecipeRun(
     const { scopes } = result;
     retrieval = result.retrieval;
     retrievalProof = result.retrievalProof;
+    if (retrievalProof && retrievalProof.resolvedItems < minimumResolvedDocuments) {
+      const error = new RetrievalIncomplete(
+        `replay resolved ${retrievalProof.resolvedItems} of ${minimumResolvedDocuments} previously proven document controls`,
+        recipe.id,
+        { ...retrievalProof, completeness: "partial" },
+      );
+      failure = collectionFailureEvidence(error, "invoice_list", error.proof);
+      throw error;
+    }
     console.info(`[collector] "${vendorId}": ok — ${acceptedCount} document(s)`);
 
     const partial = scopes.failed > 0;

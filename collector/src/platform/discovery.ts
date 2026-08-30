@@ -870,7 +870,9 @@ export function compileCandidates(
     candidates.push({
       adapterId: "dom-actions",
       recipe: semanticCandidate,
-      previewCount: Math.min(500, semanticEvidenceCount),
+      // A section proves where documents may appear, not how many exist. Keep
+      // the persisted coverage floor tied to actual document controls.
+      previewCount: Math.min(500, Math.max(1, evidence.stats.semanticControls)),
       admission,
     });
   }

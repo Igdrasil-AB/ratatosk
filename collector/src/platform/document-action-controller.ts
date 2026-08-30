@@ -1222,6 +1222,14 @@ export async function runSemanticDocumentOperationInPage(
     finishReplayPhase("document_enumeration", controls.length ? "complete" : Date.now() >= deadline ? "time_cap" : "not_present", startedAt);
     return controls;
   };
+  const rowInvoiceToken = (row: Element): string | undefined => {
+    const tokens = normalize(row.textContent, 500).match(/\b[A-Z][A-Z0-9-]{5,79}\b/gi) ?? [];
+    const stable = [...new Set(tokens.filter((token) =>
+      /[A-Z]/i.test(token) && (token.match(/\d/g)?.length ?? 0) >= 3 &&
+      !/(?:token|secret|signature|bearer|eyJ[A-Za-z0-9_-]{20,})/i.test(token)
+    ))];
+    return stable.length === 1 ? stable[0] : undefined;
+  };
   const metadataForElement = (element: Element): InvoiceMetadataEvidence[] => {
     const row = rowOf(element);
     if (!row) return [];
@@ -1271,6 +1279,7 @@ export async function runSemanticDocumentOperationInPage(
         if (code) claim.currency = code.toUpperCase();
       }
     }
+    claim.invoiceNumber ||= rowInvoiceToken(row);
     return Object.keys(claim).length > 2 ? [claim] : [];
   };
   const stableMaterial = (element: Element, evidence: InvoiceMetadataEvidence[]): string | undefined => {
@@ -1292,10 +1301,12 @@ export async function runSemanticDocumentOperationInPage(
     const invoiceNumber = evidence.find((claim) => claim.invoiceNumber)?.invoiceNumber;
     const datedAmount = evidence.find((claim) =>
       claim.issuedAt && claim.total && claim.currency);
-    // Presentation text, action labels, row position, and column headings can
-    // change between schedules. They may admit a control but cannot identify
-    // its invoice. Use the strongest available identity alone so optional
-    // lower-priority evidence cannot make the digest drift between schedules.
+    // Action labels and row position can change between schedules. They may
+    // admit a control but cannot identify its invoice. A single invoice-shaped
+    // token inside an invoice row is accepted when a virtualized grid separates
+    // its header from its cells; multiple plausible tokens remain ambiguous.
+    // Use the strongest available identity alone so optional lower-priority
+    // evidence cannot make the digest drift between schedules.
     // Collisions are rejected below rather than disambiguated by position.
     if (explicitAttribute) return explicitAttribute;
     if (invoiceNumber) return `invoice=${normalize(invoiceNumber, 160)}`;

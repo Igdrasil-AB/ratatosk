@@ -1212,7 +1212,7 @@ describe("browser DOM boundary", () => {
     expect(actionControllerSource).toContain("operation.maximumActions");
   });
 
-  it("never derives a cross-run action identity from presentation text or row position", () => {
+  it("never derives a cross-run action identity from action labels or row position", () => {
     const start = actionControllerSource.indexOf("const stableMaterial");
     const end = actionControllerSource.indexOf("const digest", start);
     const identityPolicy = actionControllerSource.slice(start, end);
@@ -1221,9 +1221,9 @@ describe("browser DOM boundary", () => {
     expect(identityPolicy).toContain("invoiceNumber");
     expect(identityPolicy).toContain("datedAmount");
     expect(identityPolicy).toContain("stableAttributes");
-    expect(identityPolicy).not.toContain("row.textContent");
     expect(identityPolicy).not.toContain("labelOf(element)");
     expect(identityPolicy).not.toContain("columnContextOf(element)");
+    expect(actionControllerSource).toContain("rowInvoiceToken");
     expect(actionControllerSource).toContain("counts.get(candidate.actionId) === 1");
     expect(driverSource).toContain("if (semanticActions.has(actionRef.vendorInvoiceId)) continue");
   });
@@ -1282,6 +1282,31 @@ describe("browser DOM boundary", () => {
         unresolvedItems: 0,
         actions: [{ evidence: [expect.objectContaining({ invoiceNumber: "DOC-001" })] }],
       });
+    } finally {
+      page.restore();
+    }
+  });
+
+  it("keeps all invoice controls from a mixed-identity virtualized div grid", async () => {
+    const page = stubVirtualizedInvoiceGrid();
+    try {
+      const result = await runSemanticDocumentOperationInPage(
+        { kind: "enumerate", maximumActions: 8 },
+        ["https://vendor.example"],
+        DISCOVERY_DOM_POLICY,
+        Date.now() + 5_000,
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        kind: "enumeration",
+        observedItems: 4,
+        resolvedItems: 4,
+        unresolvedItems: 0,
+      });
+      if (!result.ok || result.kind !== "enumeration") throw new Error("expected enumeration");
+      expect(result.actions).toHaveLength(4);
+      expect(new Set(result.actions.map((action) => action.actionId))).toHaveLength(4);
     } finally {
       page.restore();
     }
@@ -1552,6 +1577,60 @@ function stubDivDocumentPage(
     querySelectorAll: (selector: string) => selector === DISCOVERY_DOM_POLICY.controlSelector || selector === "[data-document-link]"
       ? [control]
       : selector === "h1,h2,h3,caption" ? [node(`${kind}s`)] : [],
+  });
+  vi.stubGlobal("location", { href: "https://vendor.example/settings/billing", pathname: "/settings/billing" });
+  vi.stubGlobal("getComputedStyle", () => ({ display: "block", visibility: "visible", opacity: "1" }));
+  vi.stubGlobal("window", {});
+  for (const name of ["HTMLElement", "HTMLAnchorElement"]) vi.stubGlobal(name, class {});
+  return { restore: () => vi.unstubAllGlobals() };
+}
+
+function stubVirtualizedInvoiceGrid(): { restore: () => void } {
+  const node = (text = "", attributes: Record<string, string> = {}) => ({
+    textContent: text,
+    children: [] as unknown[],
+    getAttribute: (name: string) => attributes[name] ?? null,
+    hasAttribute: (name: string) => name in attributes,
+    querySelector: () => null,
+    querySelectorAll: () => [] as unknown[],
+    closest: () => null,
+    getBoundingClientRect: () => ({ width: 120, height: 32 }),
+  });
+  const values = [
+    ["2026-08-17", "DOC-202608", "$30"],
+    ["2026-07-17", "DOC-202607", "$30"],
+    ["2026-07-05", "DOC-20260705", "$4.33"],
+    ["2026-06-17", "DOC-202606", "$20"],
+  ];
+  const controls: unknown[] = [];
+  for (const [index, value] of values.entries()) {
+    const cells = value.map((text) => node(text));
+    cells.push(node(""));
+    const attributes: Record<string, string> = index < 2 ? { "data-invoice-id": `invoice-${index + 1}` } : {};
+    const row = {
+      ...node(`${value.join(" ")} Download invoice`, attributes),
+      children: cells,
+      parentElement: null,
+      querySelectorAll: () => cells,
+      closest: () => null,
+    };
+    controls.push({
+      ...node("", { title: "Download invoice" }),
+      closest: (selector: string) => {
+        if (selector === "form") return null;
+        if (selector === DISCOVERY_DOM_POLICY.cellSelector) return cells[3];
+        if (selector === DISCOVERY_DOM_POLICY.rowSelector || selector === DISCOVERY_DOM_POLICY.contextSelector) return row;
+        return null;
+      },
+    });
+  }
+  vi.stubGlobal("document", {
+    title: "Billing",
+    getElementById: () => null,
+    querySelector: () => null,
+    querySelectorAll: (selector: string) => selector === DISCOVERY_DOM_POLICY.controlSelector
+      ? controls
+      : selector === "h1,h2,h3,caption" ? [node("Invoices")] : [],
   });
   vi.stubGlobal("location", { href: "https://vendor.example/settings/billing", pathname: "/settings/billing" });
   vi.stubGlobal("getComputedStyle", () => ({ display: "block", visibility: "visible", opacity: "1" }));

@@ -362,6 +362,45 @@ describe("Collector per-vendor run coordinator", () => {
     });
   });
 
+  it("refuses complete replay below a discovered source's proven document floor", async () => {
+    mocks.resolveCollectorSource.mockResolvedValueOnce({
+      kind: "discovered",
+      recipe: { id: "discovered-regressed", name: "Discovered" },
+      primaryOrigin: "https://example.test",
+      candidateCount: 4,
+    });
+    mocks.streamVendor.mockResolvedValueOnce({
+      vendorId: "discovered-regressed",
+      documentCount: 2,
+      scopes: scopes(),
+      retrieval: "complete",
+      retrievalProof: {
+        completeness: "complete",
+        termination: "explicit_end",
+        pagesVisited: 1,
+        observedItems: 2,
+        resolvedItems: 2,
+        unresolvedItems: 0,
+      },
+    });
+
+    await expect(runVendorById("discovered-regressed")).resolves.toMatchObject({
+      status: "error",
+      count: 0,
+      code: "retrieval_incomplete",
+      retrieval: "partial",
+      failure: {
+        stage: "invoice_list",
+        cause: "retrieval_incomplete",
+        retrieval: { resolvedItems: 2, completeness: "partial" },
+      },
+    });
+    expect(mocks.recordRun).toHaveBeenCalledWith("discovered-regressed", expect.objectContaining({
+      lastStatus: "error",
+      lastCode: "retrieval_incomplete",
+    }));
+  });
+
   it("records partial scope truth and stable rate-limit eligibility", async () => {
     mocks.streamVendor.mockImplementationOnce(async (_recipe, _ctx, _strategies, emit) => {
       await emit(document("vendor-c"));
