@@ -31,7 +31,7 @@
     "ci": "npm run gen:icons && npm run typecheck && npm run check:boundaries && npm run validate && npm run test"
   },
   "dependencies": {
-    "zod": "^3.23.8"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.0.0-beta.28",
