@@ -9,8 +9,9 @@
  *   - notifications.onClicked → open the vendor login on a "reconnect" nudge
  */
 import { isLifecycleRunnable } from "../../../src/vendors/lifecycle";
-import { runAllConnected, runDiscoveredCandidate, runVendorById } from "./collector";
-import { ensureSyncAlarm, getScheduleInfo, isSyncAlarm, isSyncCatchUpDue, rearmSyncAlarm, setSyncSchedule } from "./scheduler";
+import { runDiscoveredCandidate } from "./collector";
+import { getScheduleInfo, isSyncAlarm, setSyncSchedule } from "./scheduler";
+import { requestSync } from "./sync-coordinator";
 import { hasHostPermissions, missingHostPermissions, revokeHostPermissions, vendorPermissionOrigins } from "./permissions";
 import { notifyReconnect, openLoginFor } from "./notifications";
 import {
@@ -123,7 +124,7 @@ void migrateLegacyDestination()
 const collectionRuns = new CollectionRunCoordinator();
 
 chrome.runtime.onInstalled.addListener(() => {
-  void ensureSyncAlarm().catch((error) => {
+  void resumeScheduledSync().catch((error) => {
     console.error("[collector] schedule initialization failed", error instanceof Error ? error.name : "unknown");
   });
   void removeStaleDiscoveryObserverRegistration();
@@ -138,27 +139,18 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (isSyncAlarm(alarm.name)) {
-    // The alarm is one-shot, so the following occurrence is armed first: a run
-    // that throws must not end the series.
-    void rearmSyncAlarm().catch((error) => {
-      console.error("[collector] sync alarm could not be re-armed", error instanceof Error ? error.name : "unknown");
-    });
-    void collectionRuns.runScheduled(() => runAllConnected()).then((summaries) => {
-      if (summaries === undefined) console.info("[collector] scheduled sync already queued");
-    }).catch((error) => {
-      console.error("[collector] scheduled sync failed", error instanceof Error ? error.name : "unknown");
-    });
-  }
+  if (isSyncAlarm(alarm.name)) void resumeScheduledSync().catch((error) => {
+    console.error("[collector] scheduled sync failed", error instanceof Error ? error.name : "unknown");
+  });
 });
 
 async function resumeScheduledSync(): Promise<void> {
-  await ensureSyncAlarm();
-  const [schedule, connections] = await Promise.all([getScheduleInfo(), getConnections()]);
-  if (isSyncCatchUpDue(connections, schedule.schedule)) {
-    await collectionRuns.runScheduled(() => runAllConnected());
-  }
+  await collectionRuns.runScheduled(() => requestSync({ trigger: "startup" }));
 }
+
+void resumeScheduledSync().catch((error) => {
+  console.error("[collector] worker sync recovery failed", error instanceof Error ? error.name : "unknown");
+});
 
 chrome.notifications.onClicked.addListener((id) => {
   if (id.startsWith("reconnect:")) {
@@ -460,7 +452,7 @@ async function handle(message: Message): Promise<Response> {
         const summary = await collectionRuns.runInteractive(() => runConnectedVendor(message.vendorId!));
         return { ok: true, summaries: [summary] };
       }
-      return { ok: true, summaries: await collectionRuns.runInteractive(() => runAllConnected()) };
+      return { ok: true, summaries: await collectionRuns.runInteractive(() => requestSync({ trigger: "manual" })) };
     }
 
     case "getVendorDiagnostic": {
@@ -659,10 +651,10 @@ async function refreshActiveDiscoveredSupplierRoute(vendorId: string): Promise<b
 
 async function runConnectedVendor(vendorId: string) {
   await adoptActiveDiscoveredBillingRoute(vendorId);
-  const summary = await runVendorById(vendorId);
+  const summary = (await requestSync({ trigger: "manual", vendorId }))[0]!;
   if (summary.failure?.stage !== "invoice_list") return summary;
   return await refreshActiveDiscoveredSupplierRoute(vendorId)
-    ? runVendorById(vendorId)
+    ? requestSync({ trigger: "manual", vendorId }).then((summaries) => summaries[0]!)
     : summary;
 }
 
@@ -733,7 +725,8 @@ function completeVendorConnect(vendorId: string, destinationId?: DestinationId):
       connectedAt: existingConnection?.connectedAt ?? Date.now(),
     });
 
-    const summary = await runVendorById(recipe.id);
+    const [summary] = await requestSync({ trigger: "connect", vendorId: recipe.id });
+    if (!summary) return { ok: false, error: "Vendor collection did not start." };
     if (summary.status === "auth_expired") notifyReconnect(recipe);
     return { ok: true, summaries: [summary] };
   }).finally(() => connectionInFlight.delete(vendorId));

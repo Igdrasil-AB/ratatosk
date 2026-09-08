@@ -509,6 +509,7 @@ function renderVendors(): void {
           : connection.lastStatus === "error"
         ? connection.lastError ? `Collection failed — ${connection.lastError}` : "Collection failed"
         : count > 0 ? `${count} collected · ${synced}` : `Connected · ${synced}`;
+      if (connection.lastStatus === "error" && connection.nextEligibleRunAt) sub += ` · retry ${relTime(connection.nextEligibleRunAt)}`;
       const actionLabel = connection.lastStatus === "partial" ? "Retry" : "Collect";
       action = `<button type="button" class="btn outline sm" data-action="sync" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}">${actionLabel}</button>`;
       if (!bound) {

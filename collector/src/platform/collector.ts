@@ -27,6 +27,7 @@ import {
   type DestinationId,
   type DestinationUnavailableReason,
 } from "./storage";
+import { isTransientRetryCode, nextTransientRetryAt } from "./retry-policy";
 import { IngestUnauthorized } from "../../../src/ingest/http-sink";
 import { notifyReconnect, notifyDestinationReconnect } from "./notifications";
 
@@ -78,7 +79,9 @@ class DiscoveryAdmissionError extends Error {
   }
 }
 
-export function runVendorById(vendorId: string): Promise<VendorRunSummary> {
+export type SyncTrigger = "scheduled" | "manual" | "connect";
+
+export function runVendorById(vendorId: string, trigger: SyncTrigger = "manual"): Promise<VendorRunSummary> {
   const existing = vendorRuns.get(vendorId);
   if (existing) return existing;
 
@@ -90,7 +93,7 @@ export function runVendorById(vendorId: string): Promise<VendorRunSummary> {
       // makes "one supplier, one company" true of every path rather than of
       // the paths someone remembered to check.
       const destinationId = (await getConnections())[vendorId]?.destinationId;
-      return executeRecipeRun(source.recipe, destinationId, undefined, false, source.candidateCount);
+      return executeRecipeRun(source.recipe, destinationId, undefined, false, source.candidateCount, trigger);
     })
     .finally(() => {
       if (vendorRuns.get(vendorId) === task) vendorRuns.delete(vendorId);
@@ -114,12 +117,17 @@ async function executeRecipeRun(
   afterFirstDelivery?: (document: FetchedDocument) => Promise<void>,
   requireCompleteRetrieval = false,
   minimumResolvedDocuments = 0,
+  trigger: SyncTrigger = "connect",
 ): Promise<VendorRunSummary> {
   const vendorId = recipe.id;
 
+  const previous = (await getConnections())[vendorId];
+  if (trigger === "scheduled" && previous?.lastCode === "auth_expired") {
+    return { vendorId, status: "auth_expired", count: 0, code: "auth_expired" };
+  }
   const nextEligibleRunAt = await getNextEligibleRunAt(vendorId);
-  if (nextEligibleRunAt) {
-    return { vendorId, status: "skipped", count: 0, code: "rate_limited", nextEligibleRunAt };
+  if (nextEligibleRunAt && (trigger === "scheduled" || !isTransientRetryCode(previous?.lastCode))) {
+    return { vendorId, status: "skipped", count: 0, code: previous?.lastCode ?? "rate_limited", nextEligibleRunAt };
   }
 
   // A supplier left unbound by a company disconnect is paused, not redirected.
@@ -450,9 +458,10 @@ async function executeRecipeRun(
       ? (err.cause instanceof DestinationNeedsReconnect ? "destination_connection_expired" : "destination_unavailable")
       : operationalCodeForError(err);
     const message = operationalOutcomeLabel(code);
+    const nextEligibleRunAt = nextTransientRetryAt(code, (previous?.consecutiveFailures ?? 0) + 1);
     console.error(`[collector] "${vendorId}": ${message}`);
     if (acceptedCount > 0) {
-      await recordRunOutcome({ lastStatus: "partial", lastCount: acceptedCount, lastCode: code, lastError: message, nextEligibleRunAt: undefined });
+      await recordRunOutcome({ lastStatus: "partial", lastCount: acceptedCount, lastCode: code, lastError: message, nextEligibleRunAt });
       return {
         vendorId,
         status: "partial",
@@ -462,10 +471,11 @@ async function executeRecipeRun(
         ...(failure ? { failure } : {}),
         code,
         error: message,
+        nextEligibleRunAt,
         ...runMetrics(),
       };
     }
-    await recordRunOutcome({ lastStatus: "error", lastCode: code, lastError: message, nextEligibleRunAt: undefined });
+    await recordRunOutcome({ lastStatus: "error", lastCode: code, lastError: message, nextEligibleRunAt });
     return {
       vendorId,
       status: "error",
@@ -475,6 +485,7 @@ async function executeRecipeRun(
       ...(failure ? { failure } : {}),
       code,
       error: message,
+      nextEligibleRunAt,
       ...runMetrics(),
     };
   } finally {
@@ -503,7 +514,7 @@ function destinationNeedsReconnectSummary(
 }
 
 /** Run every connected vendor in sequence (keeps concurrency gentle on the host). */
-export async function runAllConnected(): Promise<VendorRunSummary[]> {
+export async function runAllConnected(trigger: SyncTrigger = "manual"): Promise<VendorRunSummary[]> {
   const ids = Object.keys(await getConnections());
   const summaries: VendorRunSummary[] = [];
   for (const id of ids) {
@@ -513,7 +524,7 @@ export async function runAllConnected(): Promise<VendorRunSummary[]> {
       // scheduled sync must not resurrect or execute a path that is no longer
       // present in the current source catalog.
       if (!(await resolveCollectorSource(id))) continue;
-      summaries.push(await runVendorById(id));
+      summaries.push(await runVendorById(id, trigger));
     } catch (error) {
       const code = operationalCodeForError(error);
       const message = operationalOutcomeLabel(code);

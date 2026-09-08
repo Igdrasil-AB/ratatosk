@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  claimScheduledWake,
+  completeScheduledWake,
   ensureSyncAlarm,
   getScheduleInfo,
   isSyncCatchUpDue,
@@ -211,4 +213,36 @@ describe("collector schedule persistence", () => {
     )).toBe(false);
     expect(isSyncCatchUpDue({ stale: { connectedAt: 1 } }, { mode: "off" }, now)).toBe(false);
   });
+  it("recovers an interrupted monthly sweep without losing its calendar or accepting stale completion", async () => {
+    const now = Date.parse("2026-09-08T08:00:00Z");
+    values.syncScheduleV1 = { mode: "monthly", day: 1 };
+    alarm = { name: "collector-sync", scheduledTime: now - 1 };
+    const first = await claimScheduledWake({ retryDue: false, nextRetryAt: null, now });
+    expect(first?.fullSyncDue).toBe(true);
+    expect(await claimScheduledWake({ retryDue: false, nextRetryAt: null, now: now + 1 })).toBeNull();
+    const recovered = await claimScheduledWake({ retryDue: false, nextRetryAt: null, now: now + 600_001 });
+    expect(recovered?.fullSyncDue).toBe(true);
+    expect(recovered?.runId).not.toBe(first?.runId);
+    await completeScheduledWake(first!, null, now + 600_002);
+    expect(values.scheduleRuntimeV1).toMatchObject({ activeRun: { runId: recovered!.runId } });
+    await completeScheduledWake(recovered!, null, now + 600_003);
+    expect(values.scheduleRuntimeV1).not.toHaveProperty("activeRun");
+    expect((await getScheduleInfo()).schedule).toEqual({ mode: "monthly", day: 1 });
+  });
+
+  it("runs retries without moving the next calendar occurrence and respects off", async () => {
+    const now = Date.parse("2026-09-08T08:00:00Z");
+    await setSyncSchedule({ mode: "monthly", day: 1 }, now);
+    const calendar = (await getScheduleInfo()).nextRunAt;
+    await ensureSyncAlarm(now + 300_000, now);
+    expect((await getScheduleInfo()).nextRunAt).toBe(now + 300_000);
+    const retry = await claimScheduledWake({ retryDue: true, nextRetryAt: null, now: now + 300_000 });
+    expect(retry?.fullSyncDue).toBe(false);
+    await completeScheduledWake(retry!, null, now + 300_001);
+    expect((await getScheduleInfo()).nextRunAt).toBe(calendar);
+    await setSyncSchedule({ mode: "off" }, now + 300_002);
+    expect(await claimScheduledWake({ retryDue: true, nextRetryAt: null, now: now + 300_003 })).toBeNull();
+    expect(alarm).toBeUndefined();
+  });
+
 });

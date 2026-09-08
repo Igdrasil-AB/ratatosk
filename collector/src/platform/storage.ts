@@ -75,6 +75,7 @@ export interface Connection {
   destinationId?: DestinationId;
   /** Legacy alias retained for diagnostics and older extension builds. */
   lastRunAt?: number;
+  consecutiveFailures?: number;
   /** Most recent attempt, including failed and rate-limited runs. */
   lastAttemptAt?: number;
   /** Most recent run that completely traversed every available scope. */
@@ -326,6 +327,7 @@ export async function removeConnection(vendorId: string): Promise<void> {
 export async function recordRun(
   vendorId: string,
   patch: Partial<Omit<Connection, "vendorId" | "connectedAt">>,
+  now = Date.now(),
 ): Promise<void> {
   await mutate<Record<string, Connection>>(KEY.connections, {}, (all) => {
     const existing = all[vendorId];
@@ -333,7 +335,7 @@ export async function recordRun(
     // collection completion may report telemetry only while its original
     // connection still exists; it must never resurrect a disconnected vendor.
     if (!existing) return all;
-    const attemptedAt = Date.now();
+    const attemptedAt = now;
     const next: Connection = {
       vendorId,
       connectedAt: existing.connectedAt,
@@ -344,6 +346,7 @@ export async function recordRun(
       documentOrigins: existing.documentOrigins,
       lastRunAt: attemptedAt,
       lastAttemptAt: attemptedAt,
+      consecutiveFailures: patch.lastStatus === "ok" ? 0 : (existing.consecutiveFailures ?? 0) + 1,
       lastCompleteSyncAt: patch.lastStatus === "ok" ? attemptedAt : existing.lastCompleteSyncAt,
       lastNewInvoiceAt: typeof patch.lastCount === "number" && patch.lastCount > 0
         ? attemptedAt

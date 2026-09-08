@@ -364,3 +364,10 @@ has been removed. Supplier support now comes from generic discovery only.
   scrolling after the first invoice structure has already been verified. Any
   click-capable or continuation run is isolated in a disposable tab.
 - The **popup** is framework-free by design — a thin view over the message bus.
+
+## Scheduled retry recovery
+
+Calendar schedules retain their daily, weekly, and monthly occurrence. A persisted
+ten-minute run lease recovers interrupted sweeps, while bounded transient retries
+share the one-shot alarm. The existing collection coordinator serializes scheduled
+and interactive acquisition. Authentication failures wait for a manual reconnect.

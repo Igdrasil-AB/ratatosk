@@ -1,3 +1,5 @@
+import { getConnections } from "./storage";
+
 import {
   DEFAULT_SYNC_SCHEDULE,
   maxSyncGapMs,
@@ -8,29 +10,120 @@ import {
 } from "../../../src/core/sync-schedule";
 
 /**
- * Scheduling via `chrome.alarms`.
+ * Durable local scheduling for the ephemeral MV3 service worker.
  *
- * The MV3 service worker is ephemeral — it sleeps between events. An alarm wakes
- * it to run the sync. This is the mechanism behind "near-unattended while the
- * browser is running": no tab, no window, just a scheduled wake.
- *
- * The alarm is one-shot rather than periodic. `periodInMinutes` can only express
- * a fixed interval, which cannot land on "every Monday" or "the 1st" — so each
- * run arms only the next occurrence, and re-arms once it fires. That also means
- * a missed occurrence is recovered on startup by `ensureSyncAlarm` instead of
- * silently sliding the whole series forward.
+ * Chrome alarms are wake-up hints, not the source of truth. The user's cadence
+ * and a small versioned runtime record live in extension-local storage so a
+ * missing alarm, browser restart, extension update, or interrupted run can be
+ * reconciled without a queue or external scheduler.
  */
 const SYNC_ALARM = "collector-sync";
 const SCHEDULE_KEY = "syncScheduleV1";
-/** The interval schedule this replaced. Read once, to migrate. */
 const LEGACY_PERIOD_KEY = "schedulePeriodMinutes";
-let scheduleMutation: Promise<void> = Promise.resolve();
+const RUNTIME_KEY = "scheduleRuntimeV1";
+const MIN_WAKE_DELAY_MS = 60_000;
+const RUN_LEASE_MS = 10 * 60_000;
+const MAX_RUNTIME_FUTURE_MS = 32 * 24 * 60 * 60_000;
+const CLOCK_SKEW_TOLERANCE_MS = 5 * 60_000;
+const ALARM_TOLERANCE_MS = 1_000;
 
-/** Restore the persisted schedule and make sure an alarm exists for it. */
-export function ensureSyncAlarm(): Promise<void> {
-  return mutateSchedule(async () => {
+interface ActiveScheduleRun {
+  runId: string;
+  startedAt: number;
+  leaseUntil: number;
+  fullSyncDue: boolean;
+}
+
+interface ScheduleRuntimeV1 {
+  version: 1;
+  nextFullSyncAt: number | null;
+  activeRun?: ActiveScheduleRun;
+}
+
+export interface ScheduleClaim {
+  runId: string;
+  fullSyncDue: boolean;
+}
+
+export interface ScheduleWakeContext {
+  retryDue: boolean;
+  nextRetryAt: number | null;
+  now?: number;
+}
+
+let schedulerOperations = Promise.resolve();
+
+/** Reconcile persisted schedule state with the browser alarm. */
+export function ensureSyncAlarm(nextRetryAt?: number | null, now = Date.now()): Promise<void> {
+  return serialized(async () => {
+    const existing = await chrome.alarms.get(SYNC_ALARM);
     const schedule = await readSchedule();
-    await armAlarm(schedule);
+    const runtime = await readRuntime(schedule, now, existing);
+    if (recoverExpiredRun(runtime, now)) await persistRuntime(runtime);
+    await reconcileAlarm(schedule, runtime, nextRetryAt, now, existing);
+  });
+}
+
+/**
+ * Atomically claim due scheduled work in this service-worker instance. A short
+ * persisted lease prevents a newly restarted worker from duplicating an active
+ * run; an expired lease makes an interrupted full sweep due again.
+ */
+export function claimScheduledWake(context: ScheduleWakeContext): Promise<ScheduleClaim | null> {
+  return serialized(async () => {
+    const now = context.now ?? Date.now();
+    const existing = await chrome.alarms.get(SYNC_ALARM);
+    const schedule = await readSchedule();
+    const runtime = await readRuntime(schedule, now, existing);
+    const recovered = recoverExpiredRun(runtime, now);
+
+    if (schedule.mode === "off") {
+      if (runtime.nextFullSyncAt !== null || runtime.activeRun) {
+        runtime.nextFullSyncAt = null;
+        delete runtime.activeRun;
+        await persistRuntime(runtime);
+      } else if (recovered) await persistRuntime(runtime);
+      await clearAlarm(existing);
+      return null;
+    }
+
+    if (runtime.activeRun) {
+      if (recovered) await persistRuntime(runtime);
+      await reconcileAlarm(schedule, runtime, context.nextRetryAt, now, existing);
+      return null;
+    }
+
+    const fullSyncDue = runtime.nextFullSyncAt === null || runtime.nextFullSyncAt <= now;
+    if (!fullSyncDue && !context.retryDue) {
+      if (recovered) await persistRuntime(runtime);
+      await reconcileAlarm(schedule, runtime, context.nextRetryAt, now, existing);
+      return null;
+    }
+
+    const runId = crypto.randomUUID();
+    runtime.activeRun = { runId, startedAt: now, leaseUntil: now + RUN_LEASE_MS, fullSyncDue };
+    if (fullSyncDue) runtime.nextFullSyncAt = nextSyncTime(schedule, new Date(now));
+    await persistRuntime(runtime);
+    await reconcileAlarm(schedule, runtime, context.nextRetryAt, now, existing);
+    return { runId, fullSyncDue };
+  });
+}
+
+/** Finish only the claim that is still active; stale completions are harmless. */
+export function completeScheduledWake(
+  claim: ScheduleClaim,
+  nextRetryAt: number | null,
+  now = Date.now(),
+): Promise<void> {
+  return serialized(async () => {
+    const existing = await chrome.alarms.get(SYNC_ALARM);
+    const schedule = await readSchedule();
+    const runtime = await readRuntime(schedule, now, existing);
+    if (runtime.activeRun?.runId === claim.runId) {
+      delete runtime.activeRun;
+      await persistRuntime(runtime);
+    }
+    await reconcileAlarm(schedule, runtime, nextRetryAt, now, existing);
   });
 }
 
@@ -38,27 +131,32 @@ export function isSyncAlarm(name: string): boolean {
   return name === SYNC_ALARM;
 }
 
-/**
- * Arm the following occurrence. Called after the alarm fires, because a
- * one-shot alarm is spent once delivered.
- */
-export function rearmSyncAlarm(): Promise<void> {
-  return mutateSchedule(async () => {
-    await armAlarm(await readSchedule(), { force: true });
+/** Current calendar schedule and next wake, including retries. */
+export async function getScheduleInfo(): Promise<{ schedule: SyncSchedule; nextRunAt: number | null }> {
+  const schedule = await readSchedule();
+  return { schedule, nextRunAt: (await chrome.alarms.get(SYNC_ALARM))?.scheduledTime ?? null };
+}
+
+export function setSyncSchedule(schedule: SyncSchedule, now = Date.now()): Promise<void> {
+  const parsed = parseSyncSchedule(schedule);
+  if (!parsed) return Promise.reject(new Error("unsupported sync schedule"));
+  return serialized(async () => {
+    await chrome.storage.local.set({ [SCHEDULE_KEY]: parsed });
+    const runtime: ScheduleRuntimeV1 = { version: 1, nextFullSyncAt: nextSyncTime(parsed, new Date(now)) };
+    await persistRuntime(runtime);
+    await reconcileAlarm(parsed, runtime, null, now, await chrome.alarms.get(SYNC_ALARM));
   });
 }
 
-/** Current schedule + when the next background run fires (for the panel). */
-export async function getScheduleInfo(): Promise<{ schedule: SyncSchedule; nextRunAt: number | null }> {
-  const [schedule, alarm] = await Promise.all([readSchedule(), chrome.alarms.get(SYNC_ALARM)]);
-  return { schedule, nextRunAt: alarm?.scheduledTime ?? null };
+export function rearmSyncAlarm(): Promise<void> {
+  return serialized(async () => {
+    const schedule = await readSchedule();
+    const runtime: ScheduleRuntimeV1 = { version: 1, nextFullSyncAt: nextSyncTime(schedule) };
+    await persistRuntime(runtime);
+    await reconcileAlarm(schedule, runtime, null, Date.now(), await chrome.alarms.get(SYNC_ALARM));
+  });
 }
 
-/**
- * Whether browser downtime or a busy worker caused at least one connected
- * supplier to miss its schedule. Connection time is the safe baseline before
- * the first attempt.
- */
 export function isSyncCatchUpDue(
   connections: Readonly<Record<string, { connectedAt: number; lastAttemptAt?: number; lastRunAt?: number }>>,
   schedule: SyncSchedule,
@@ -71,14 +169,10 @@ export function isSyncCatchUpDue(
   );
 }
 
-/** Change the schedule and re-arm at the new occurrence. */
-export async function setSyncSchedule(schedule: SyncSchedule): Promise<void> {
-  const parsed = parseSyncSchedule(schedule);
-  if (!parsed) throw new Error("unsupported sync schedule");
-  await mutateSchedule(async () => {
-    await chrome.storage.local.set({ [SCHEDULE_KEY]: parsed });
-    await armAlarm(parsed, { force: true });
-  });
+function serialized<T>(operation: () => Promise<T>): Promise<T> {
+  const result = schedulerOperations.then(operation, operation);
+  schedulerOperations = result.then(() => undefined, () => undefined);
+  return result;
 }
 
 async function readSchedule(): Promise<SyncSchedule> {
@@ -93,35 +187,114 @@ async function readSchedule(): Promise<SyncSchedule> {
   return migrated;
 }
 
-/**
- * Point the alarm at the next occurrence.
- *
- * Without `force`, an alarm already scheduled for a future instant is left
- * alone: a browser restart must not push the next run out, which is how an
- * alarm recreated on every startup could starve indefinitely.
- *
- * A *periodic* alarm is the exception. It is the interval schedule this
- * replaced, and it is always in the future by construction — so the guard above
- * would preserve the very thing the upgrade exists to remove, leaving someone
- * syncing on their old cadence while the panel reported the new one.
- */
-async function armAlarm(schedule: SyncSchedule, options: { force?: boolean } = {}): Promise<void> {
-  const existing = await chrome.alarms.get(SYNC_ALARM);
-  const when = nextSyncTime(schedule);
-  if (when === null) {
-    if (existing) await chrome.alarms.clear(SYNC_ALARM);
-    return;
-  }
-  const stale = existing?.periodInMinutes !== undefined;
-  if (!options.force && !stale && existing && existing.scheduledTime > Date.now()) return;
-  await chrome.alarms.clear(SYNC_ALARM);
-  // A `when` in the past fires at once; the computed occurrence is always
-  // ahead, and this keeps a clock change from producing an immediate wake.
-  await chrome.alarms.create(SYNC_ALARM, { when: Math.max(when, Date.now() + 1_000) });
+async function readRuntime(
+  schedule: SyncSchedule,
+  now: number,
+  existingAlarm?: chrome.alarms.Alarm,
+): Promise<ScheduleRuntimeV1> {
+  const values = await chrome.storage.local.get(RUNTIME_KEY);
+  const parsed = parseRuntime(values[RUNTIME_KEY], schedule, now);
+  if (parsed) return parsed;
+  const existingWake = existingAlarm?.scheduledTime;
+  const usableExistingWake = typeof existingWake === "number" && Number.isFinite(existingWake)
+    && existingWake > 0 && existingWake <= now + MAX_RUNTIME_FUTURE_MS
+    ? existingWake
+    : undefined;
+  const catchUpDue = isSyncCatchUpDue(await getConnections(), schedule, now);
+  const runtime: ScheduleRuntimeV1 = {
+    version: 1,
+    nextFullSyncAt: schedule.mode !== "off" ? (catchUpDue ? now : usableExistingWake ?? nextSyncTime(schedule, new Date(now))) : null,
+  };
+  await persistRuntime(runtime);
+  return runtime;
 }
 
-function mutateSchedule(mutation: () => Promise<void>): Promise<void> {
-  const result = scheduleMutation.then(mutation, mutation);
-  scheduleMutation = result.catch(() => undefined);
-  return result;
+function parseRuntime(value: unknown, schedule: SyncSchedule, now: number): ScheduleRuntimeV1 | undefined {
+  if (!isRecord(value) || value.version !== 1) return undefined;
+  const allowed = new Set(["version", "nextFullSyncAt", "activeRun"]);
+  if (Object.keys(value).some((key) => !allowed.has(key))) return undefined;
+  if (schedule.mode === "off") {
+    if (value.nextFullSyncAt !== null) return undefined;
+  } else if (!isTimestamp(value.nextFullSyncAt) || value.nextFullSyncAt > now + MAX_RUNTIME_FUTURE_MS) {
+    return undefined;
+  }
+  if (value.activeRun !== undefined && (!parseActiveRun(value.activeRun) || value.activeRun.leaseUntil > now + RUN_LEASE_MS + CLOCK_SKEW_TOLERANCE_MS)) return undefined;
+  return structuredClone(value) as unknown as ScheduleRuntimeV1;
+}
+
+function parseActiveRun(value: unknown): value is ActiveScheduleRun {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === 4
+    && keys.every((key) => ["runId", "startedAt", "leaseUntil", "fullSyncDue"].includes(key))
+    && typeof value.runId === "string"
+    && /^[0-9a-f-]{36}$/i.test(value.runId)
+    && isTimestamp(value.startedAt)
+    && isTimestamp(value.leaseUntil)
+    && value.leaseUntil > value.startedAt
+    && value.leaseUntil - value.startedAt <= RUN_LEASE_MS
+    && typeof value.fullSyncDue === "boolean";
+}
+
+function recoverExpiredRun(runtime: ScheduleRuntimeV1, now: number): boolean {
+  const active = runtime.activeRun;
+  if (!active || active.leaseUntil > now) return false;
+  if (active.fullSyncDue) runtime.nextFullSyncAt = Math.min(runtime.nextFullSyncAt ?? now, now);
+  delete runtime.activeRun;
+  return true;
+}
+
+async function reconcileAlarm(
+  schedule: SyncSchedule,
+  runtime: ScheduleRuntimeV1,
+  nextRetryAt: number | null | undefined,
+  now: number,
+  existing?: chrome.alarms.Alarm,
+): Promise<void> {
+  if (schedule.mode === "off") {
+    await clearAlarm(existing);
+    return;
+  }
+  const target = runtime.activeRun?.leaseUntil ?? earliest(runtime.nextFullSyncAt, validRetryAt(nextRetryAt, now));
+  const when = Math.max(target ?? now + MIN_WAKE_DELAY_MS, now + MIN_WAKE_DELAY_MS);
+  const earlierWakeIsStillUseful = nextRetryAt === undefined
+    && existing?.periodInMinutes === undefined
+    && existing !== undefined
+    && existing.scheduledTime > now
+    && existing.scheduledTime < when;
+  if (earlierWakeIsStillUseful) return;
+  const alreadyCorrect = existing
+    && existing.periodInMinutes === undefined
+    && Math.abs(existing.scheduledTime - when) <= ALARM_TOLERANCE_MS;
+  if (alreadyCorrect) return;
+  await clearAlarm(existing);
+  await chrome.alarms.create(SYNC_ALARM, { when });
+}
+
+async function clearAlarm(existing?: chrome.alarms.Alarm): Promise<void> {
+  if (existing) await chrome.alarms.clear(SYNC_ALARM);
+}
+
+function earliest(left: number | null, right: number | undefined): number | undefined {
+  if (left === null) return right;
+  if (right === undefined) return left;
+  return Math.min(left, right);
+}
+
+function validRetryAt(value: number | null | undefined, now: number): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= now + MAX_RUNTIME_FUTURE_MS
+    ? value
+    : undefined;
+}
+
+function isTimestamp(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+async function persistRuntime(runtime: ScheduleRuntimeV1): Promise<void> {
+  await chrome.storage.local.set({ [RUNTIME_KEY]: runtime });
 }
