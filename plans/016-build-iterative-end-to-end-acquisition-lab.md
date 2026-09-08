@@ -47,9 +47,11 @@
 - **Category**: correctness, testing, diagnostics, performance, release safety
 - **Planned at**: commit `b4a84d3`, 2026-08-25
 - **Implementation status**: IN PROGRESS — Phases 0–4, blind Phase 5, and the
-  Phase 6 CI/release gate implementation are complete in Collector 0.8.53 /
-  discovery 43. The authorized three-family/ClickUp run and its exact-artifact
-  receipt remain; no build has passed that live gate end to end
+  Phase 6 CI/release gate implementation are complete. The first authorized
+  ClickUp trace closed at `invoice_section_select/time_cap` in Collector 0.8.53 /
+  discovery 43 / acquisition 3. Collector 0.8.54 / discovery 44 / acquisition 4
+  contains the generic-overlay replay fix and awaits exact-build live replay;
+  the three-family receipt remains open
 
 ## Goal
 
@@ -710,6 +712,7 @@ data.
 | Iteration | Exact build | First boundary | Hypothesis/prediction | Regression case | Result | Decision | Learning |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | I-000 | 0.8.52 / discovery 42 / acquisition 3 | candidate replay `list_failed` | Replay loses workspace-scoped invoice state; a phase trace will stop before document enumeration | pending Phase 0 case | 1 compiled, 1 previewed, 0 retained; fast time cap | revise | Candidate discovery is not the current first failure; replay must become red and typed before another behavior change |
+| I-001 | 0.8.53 / discovery 43 / acquisition 3 | candidate replay `list_failed@invoice_section_select/time_cap` | H3: a generic overlay hides the causally revealed Settings control from the role-only menu pass; recognizing only the newly visible control will remove the duplicate scan | `browser DOM boundary > uses a newly revealed Settings control from a generic menu overlay` | two uninterrupted fast runs failed at the same phase after about 9.5 seconds; entry replay produced no candidate | revise | The menu exists, but its generic overlay is not a `role=menu`; the fallback repeats semantic navigation after the first pass consumes the remaining invoice-section budget |
 
 ### I-001 hypotheses — record before the next ClickUp run
 
