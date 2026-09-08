@@ -514,8 +514,8 @@ function destinationNeedsReconnectSummary(
 }
 
 /** Run every connected vendor in sequence (keeps concurrency gentle on the host). */
-export async function runAllConnected(trigger: SyncTrigger = "manual"): Promise<VendorRunSummary[]> {
-  const ids = Object.keys(await getConnections());
+export async function runAllConnected(trigger: SyncTrigger = "manual", vendorIds?: readonly string[]): Promise<VendorRunSummary[]> {
+  const ids = vendorIds ?? Object.keys(await getConnections());
   const summaries: VendorRunSummary[] = [];
   for (const id of ids) {
     try {

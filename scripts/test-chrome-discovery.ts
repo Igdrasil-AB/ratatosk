@@ -548,8 +548,13 @@ async function runAcquisition(
   await sendExtensionMessage(extensionPage, { type: "setSchedule", schedule: { mode: "daily" } });
   await extensionPage.evaluate(async (when) => {
     const extensionChrome = (globalThis as typeof globalThis & {
-      chrome: { alarms: { create(name: string, info: { when: number }): Promise<void> } };
+      chrome: {
+        alarms: { create(name: string, info: { when: number }): Promise<void> };
+        storage: { local: { set(values: Record<string, unknown>): Promise<void> } };
+      };
     }).chrome;
+    // Move the durable due time too: the alarm is only a wake-up hint.
+    await extensionChrome.storage.local.set({ scheduleRuntimeV1: { version: 1, nextFullSyncAt: when } });
     await extensionChrome.alarms.create("collector-sync", { when });
   }, Date.now() + 250);
   const cadenceDeadline = Date.now() + 90_000;

@@ -536,6 +536,23 @@ describe("Collector per-vendor run coordinator", () => {
     expect(mocks.streamVendor).not.toHaveBeenCalled();
     expect(mocks.buildSink).not.toHaveBeenCalled();
   });
+  it("pauses scheduled authentication failures but allows explicit manual recovery", async () => {
+    mocks.getConnections.mockResolvedValue({ "vendor-auth": { vendorId: "vendor-auth", connectedAt: 0, destinationId: "local", lastCode: "auth_expired" } });
+    await expect(runVendorById("vendor-auth", "scheduled")).resolves.toMatchObject({ status: "auth_expired" });
+    expect(mocks.streamVendor).not.toHaveBeenCalled();
+    mocks.streamVendor.mockResolvedValueOnce({ vendorId: "vendor-auth", documentCount: 0, scopes: scopes() });
+    await expect(runVendorById("vendor-auth", "manual")).resolves.toMatchObject({ status: "ok" });
+  });
+
+  it("allows manual transient retry while keeping scheduled backoff", async () => {
+    mocks.getConnections.mockResolvedValue({ "vendor-retry": { vendorId: "vendor-retry", connectedAt: 0, destinationId: "local", lastCode: "unknown", consecutiveFailures: 1 } });
+    mocks.getNextEligibleRunAt.mockResolvedValue(2_000_000);
+    await expect(runVendorById("vendor-retry", "scheduled")).resolves.toMatchObject({ status: "skipped", code: "unknown" });
+    expect(mocks.streamVendor).not.toHaveBeenCalled();
+    mocks.streamVendor.mockResolvedValueOnce({ vendorId: "vendor-retry", documentCount: 0, scopes: scopes() });
+    await expect(runVendorById("vendor-retry", "manual")).resolves.toMatchObject({ status: "ok" });
+  });
+
 });
 
 function document(vendorId: string) {

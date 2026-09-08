@@ -1,4 +1,4 @@
-import { runAllConnected, runVendorById, type SyncTrigger, type VendorRunSummary } from "./collector";
+import { runAllConnected, runVendorById, type VendorRunSummary } from "./collector";
 import { claimScheduledWake, completeScheduledWake, ensureSyncAlarm } from "./scheduler";
 import { getConnections, type Connection } from "./storage";
 
@@ -39,9 +39,9 @@ async function executeScheduledSync(): Promise<VendorRunSummary[]> {
 
   try {
     const vendorIds = claim.fullSyncDue
-      ? Object.values(before).filter((connection) => connection.lastStatus !== "auth_expired").map((connection) => connection.vendorId)
+      ? Object.values(before).filter((connection) => connection.lastStatus !== "auth_expired" && connection.lastCode !== "auth_expired").map((connection) => connection.vendorId)
       : retry.dueVendorIds;
-    return await runVendors(vendorIds, "scheduled");
+    return await runAllConnected("scheduled", vendorIds);
   } finally {
     const after = await getConnections();
     await completeScheduledWake(claim, retrySnapshot(after, Date.now()).nextRetryAt ?? null);
@@ -54,12 +54,6 @@ async function requestImmediateSync(trigger: "manual" | "connect", vendorId?: st
     : await runAllConnected(trigger);
   const retry = retrySnapshot(await getConnections(), Date.now());
   await ensureSyncAlarm(retry.nextRetryAt ?? null);
-  return summaries;
-}
-
-async function runVendors(vendorIds: readonly string[], trigger: SyncTrigger): Promise<VendorRunSummary[]> {
-  const summaries: VendorRunSummary[] = [];
-  for (const vendorId of [...new Set(vendorIds)]) summaries.push(await runVendorById(vendorId, trigger));
   return summaries;
 }
 

@@ -31,7 +31,7 @@ describe("Collector sync trigger coordinator", () => {
     vi.spyOn(Date, "now").mockReturnValue(NOW);
     mocks.completeScheduledWake.mockResolvedValue(undefined);
     mocks.ensureSyncAlarm.mockResolvedValue(undefined);
-    mocks.runAllConnected.mockResolvedValue([]);
+    mocks.runAllConnected.mockImplementation(async (_trigger, ids = []) => ids.map((vendorId: string) => ({ vendorId, status: "ok", count: 0 })));
     mocks.runVendorById.mockImplementation(async (vendorId: string) => ({ vendorId, status: "ok", count: 0 }));
   });
 
@@ -64,9 +64,7 @@ describe("Collector sync trigger coordinator", () => {
       { vendorId: "vendor-a", status: "ok", count: 0 },
       { vendorId: "vendor-c", status: "ok", count: 0 },
     ]);
-    expect(mocks.runVendorById).toHaveBeenNthCalledWith(1, "vendor-a", "scheduled");
-    expect(mocks.runVendorById).toHaveBeenNthCalledWith(2, "vendor-c", "scheduled");
-    expect(mocks.runVendorById.mock.invocationCallOrder[0]).toBeLessThan(mocks.runVendorById.mock.invocationCallOrder[1]);
+    expect(mocks.runAllConnected).toHaveBeenCalledWith("scheduled", ["vendor-a", "vendor-c"]);
   });
 
   it("runs only due retry vendors before the normal cadence", async () => {
@@ -81,8 +79,7 @@ describe("Collector sync trigger coordinator", () => {
     await requestSync({ trigger: "alarm" });
 
     expect(mocks.claimScheduledWake).toHaveBeenCalledWith({ retryDue: true, nextRetryAt, now: NOW });
-    expect(mocks.runVendorById).toHaveBeenCalledOnce();
-    expect(mocks.runVendorById).toHaveBeenCalledWith("vendor-due", "scheduled");
+    expect(mocks.runAllConnected).toHaveBeenCalledWith("scheduled", ["vendor-due"]);
   });
 
   it("routes manual work through the same vendor join and reconciles retries", async () => {
@@ -101,7 +98,7 @@ describe("Collector sync trigger coordinator", () => {
   it("releases a persisted claim even if unexpected execution fails", async () => {
     mocks.getConnections.mockResolvedValue({ "vendor-a": { vendorId: "vendor-a", connectedAt: 1 } });
     mocks.claimScheduledWake.mockResolvedValue(CLAIM);
-    mocks.runVendorById.mockRejectedValueOnce(new Error("storage unavailable"));
+    mocks.runAllConnected.mockRejectedValueOnce(new Error("storage unavailable"));
 
     await expect(requestSync({ trigger: "alarm" })).rejects.toThrow("storage unavailable");
     expect(mocks.completeScheduledWake).toHaveBeenCalledWith(CLAIM, null);

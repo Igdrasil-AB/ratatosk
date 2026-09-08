@@ -19,7 +19,7 @@ describe("collector schedule persistence", () => {
     values = {};
     alarm = undefined;
     create = vi.fn((name: string, info: chrome.alarms.AlarmCreateInfo) => {
-      alarm = { name, scheduledTime: info.when ?? Date.now() + 60_000 };
+      alarm = { name, persistAcrossSessions: true, scheduledTime: info.when ?? Date.now() + 60_000 };
     });
     clear = vi.fn(async () => {
       alarm = undefined;
@@ -66,7 +66,7 @@ describe("collector schedule persistence", () => {
     // old periodic alarm is live and, being periodic, is always in the future —
     // so a guard that spares future alarms would spare this one forever.
     values.schedulePeriodMinutes = 360;
-    alarm = { name: "collector-sync", periodInMinutes: 360, scheduledTime: Date.now() + 3 * 3_600_000 };
+    alarm = { name: "collector-sync", persistAcrossSessions: true, periodInMinutes: 360, scheduledTime: Date.now() + 3 * 3_600_000 };
 
     await ensureSyncAlarm();
 
@@ -81,7 +81,7 @@ describe("collector schedule persistence", () => {
     // Someone already migrated, but a periodic alarm survived from an earlier
     // session. Storage looks settled, so only the alarm's shape reveals it.
     values.syncScheduleV1 = { mode: "weekly", weekday: 1 };
-    alarm = { name: "collector-sync", periodInMinutes: 720, scheduledTime: Date.now() + 6 * 3_600_000 };
+    alarm = { name: "collector-sync", persistAcrossSessions: true, periodInMinutes: 720, scheduledTime: Date.now() + 6 * 3_600_000 };
 
     await ensureSyncAlarm();
 
@@ -99,7 +99,7 @@ describe("collector schedule persistence", () => {
 
   it("preserves an off schedule across service-worker restarts", async () => {
     values.syncScheduleV1 = { mode: "off" };
-    alarm = { name: "collector-sync", scheduledTime: Date.now() + 60_000 };
+    alarm = { name: "collector-sync", persistAcrossSessions: true, scheduledTime: Date.now() + 60_000 };
 
     await ensureSyncAlarm();
 
@@ -113,7 +113,7 @@ describe("collector schedule persistence", () => {
     // how a schedule can starve on a machine that is opened and closed often.
     values.syncScheduleV1 = { mode: "weekly", weekday: 1 };
     const scheduledTime = Date.now() + 3 * 24 * 60 * 60_000;
-    alarm = { name: "collector-sync", scheduledTime };
+    alarm = { name: "collector-sync", persistAcrossSessions: true, scheduledTime };
 
     await ensureSyncAlarm();
 
@@ -123,7 +123,7 @@ describe("collector schedule persistence", () => {
 
   it("arms the following occurrence once the alarm has fired", async () => {
     values.syncScheduleV1 = { mode: "daily" };
-    alarm = { name: "collector-sync", scheduledTime: Date.now() - 1_000 };
+    alarm = { name: "collector-sync", persistAcrossSessions: true, scheduledTime: Date.now() - 1_000 };
 
     await rearmSyncAlarm();
 
@@ -133,7 +133,7 @@ describe("collector schedule persistence", () => {
   });
 
   it("persists off before clearing the active alarm", async () => {
-    alarm = { name: "collector-sync", scheduledTime: Date.now() };
+    alarm = { name: "collector-sync", persistAcrossSessions: true, scheduledTime: Date.now() };
 
     await setSyncSchedule({ mode: "off" });
 
@@ -153,7 +153,7 @@ describe("collector schedule persistence", () => {
     const createGate = new Promise<void>((resolve) => { releaseCreate = resolve; });
     create.mockImplementationOnce(async (name: string, info: chrome.alarms.AlarmCreateInfo) => {
       await createGate;
-      alarm = { name, scheduledTime: info.when ?? Date.now() + 60_000 };
+      alarm = { name, persistAcrossSessions: true, scheduledTime: info.when ?? Date.now() + 60_000 };
     });
     let settled = false;
 
@@ -216,7 +216,7 @@ describe("collector schedule persistence", () => {
   it("recovers an interrupted monthly sweep without losing its calendar or accepting stale completion", async () => {
     const now = Date.parse("2026-09-08T08:00:00Z");
     values.syncScheduleV1 = { mode: "monthly", day: 1 };
-    alarm = { name: "collector-sync", scheduledTime: now - 1 };
+    alarm = { name: "collector-sync", persistAcrossSessions: true, scheduledTime: now - 1 };
     const first = await claimScheduledWake({ retryDue: false, nextRetryAt: null, now });
     expect(first?.fullSyncDue).toBe(true);
     expect(await claimScheduledWake({ retryDue: false, nextRetryAt: null, now: now + 1 })).toBeNull();
