@@ -515,6 +515,17 @@ export function createSimulation(portal: Portal): Simulation {
             truncated: false,
             navigationSteps: 0,
             sectionObserved: Boolean(route?.semanticSections),
+            replay: {
+              planKind: "semantic_dom",
+              phases: [{
+                phase: "document_enumeration",
+                result: count > 0 ? "complete" : "not_present",
+                durationMs: 0,
+              }],
+              ...(count > 0 ? {} : {
+                firstFailure: { phase: "document_enumeration", result: "not_present" },
+              }),
+            },
           } }];
         }
         if (args?.length === 1 && typeof first?.url === "string") {

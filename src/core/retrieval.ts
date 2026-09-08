@@ -1,6 +1,7 @@
 import type {
   InvoiceListResult,
   InvoiceRef,
+  ReplayTrace,
   RetrievalProof,
   RetrievalTermination,
 } from "./types";
@@ -55,8 +56,9 @@ export function createRetrievalProof(metrics: RetrievalMetrics): RetrievalProof 
 export function createInvoiceListResult(
   refs: InvoiceRef[],
   metrics: RetrievalMetrics,
+  replay?: ReplayTrace,
 ): InvoiceListResult {
-  return { refs, retrieval: createRetrievalProof(metrics) };
+  return { refs, retrieval: createRetrievalProof(metrics), ...(replay ? { replay } : {}) };
 }
 
 function boundedCount(value: number, minimum: number, maximum: number): number {

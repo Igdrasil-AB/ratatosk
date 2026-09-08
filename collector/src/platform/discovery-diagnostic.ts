@@ -1,5 +1,6 @@
 import type { DiscoveryAdapterId } from "../../../src/core/discovery";
 import type { RetrievalProof } from "../../../src/core/types";
+import type { ReplayPhase, ReplayPhaseResult, ReplayPlanKind, ReplayTrace } from "../../../src/core/types";
 import {
   COLLECTION_FAILURE_CAUSES,
   COLLECTION_FAILURE_STAGES,
@@ -10,13 +11,15 @@ import {
 } from "../../../src/core/errors";
 import type { ExplorationFamily, ExplorationMode, ExplorationPageSource } from "./discovery-explorer";
 
-export const DISCOVERY_DIAGNOSTIC_SCHEMA = "ratatosk.discovery-diagnostic.v10" as const;
+export const DISCOVERY_DIAGNOSTIC_SCHEMA = "ratatosk.discovery-diagnostic.v11" as const;
 const LEGACY_DISCOVERY_DIAGNOSTIC_SCHEMAS = new Set([
   "ratatosk.discovery-diagnostic.v4",
   "ratatosk.discovery-diagnostic.v5",
   "ratatosk.discovery-diagnostic.v6",
   "ratatosk.discovery-diagnostic.v7",
   "ratatosk.discovery-diagnostic.v8",
+  "ratatosk.discovery-diagnostic.v9",
+  "ratatosk.discovery-diagnostic.v10",
 ]);
 
 export const CANDIDATE_ADMISSION_SIGNALS = [
@@ -140,6 +143,7 @@ export interface DiscoveryDiagnosticV6 {
     adapter?: DiscoveryAdapterId;
     result: DiscoveryAttemptResult;
     probeCause?: DiscoveryProbeCause;
+    replay?: ReplayTrace;
     durationMs: number;
     evidence?: DiscoveryAttemptEvidence;
     admission?: CandidateAdmissionSignal[];
@@ -228,6 +232,7 @@ export function parseDiscoveryDiagnostic(value: unknown): DiscoveryDiagnosticV6 
     }
     const evidence = attempt.evidence === undefined ? undefined : parseAttemptEvidence(attempt.evidence);
     const admission = attempt.admission === undefined ? undefined : parseAdmissionSignals(attempt.admission);
+    const replay = attempt.replay === undefined ? undefined : parseReplayTrace(attempt.replay);
     if (currentSchema && attempt.result === "candidate_compiled" && !admission?.length) {
       throw new Error("missing candidate admission evidence");
     }
@@ -239,6 +244,7 @@ export function parseDiscoveryDiagnostic(value: unknown): DiscoveryDiagnosticV6 
       adapter: attempt.adapter,
       result: attempt.result,
       ...(attempt.probeCause ? { probeCause: attempt.probeCause } : {}),
+      ...(replay ? { replay } : {}),
       durationMs: attempt.durationMs,
       ...(evidence ? { evidence } : {}),
       ...(admission?.length ? { admission } : {}),
@@ -443,6 +449,42 @@ function parseAdmissionSignals(value: readonly unknown[]): CandidateAdmissionSig
     CANDIDATE_ADMISSION_SIGNALS.includes(item as CandidateAdmissionSignal)))];
   if (safe.length !== value.length) throw new Error("invalid candidate admission evidence");
   return safe;
+}
+
+const REPLAY_PLAN_KINDS: readonly ReplayPlanKind[] = ["network", "embedded", "exact_dom", "typed_dom", "semantic_dom"];
+const REPLAY_PHASES: readonly ReplayPhase[] = [
+  "shell_create", "supplier_commit", "menu_reveal", "settings_select", "billing_select",
+  "invoice_section_select", "document_enumeration", "identity_validation",
+];
+const REPLAY_PHASE_RESULTS: readonly ReplayPhaseResult[] = [
+  "complete", "not_present", "time_cap", "action_cap", "mutation_blocked", "ambiguous", "page_left_origin",
+];
+
+export function parseReplayTrace(value: ReplayTrace): ReplayTrace {
+  if (!value || !REPLAY_PLAN_KINDS.includes(value.planKind) || !Array.isArray(value.phases) || value.phases.length > REPLAY_PHASES.length) {
+    throw new Error("invalid discovery replay trace");
+  }
+  const seen = new Set<ReplayPhase>();
+  const phases = value.phases.map((item) => {
+    if (
+      !item || !REPLAY_PHASES.includes(item.phase) || seen.has(item.phase) ||
+      !REPLAY_PHASE_RESULTS.includes(item.result) || !boundedInt(item.durationMs, 0, 60_000)
+    ) throw new Error("invalid discovery replay phase");
+    seen.add(item.phase);
+    return { phase: item.phase, result: item.result, durationMs: item.durationMs };
+  });
+  const firstFailure = phases.find((item) => item.result !== "complete");
+  if (
+    (value.firstFailure === undefined) !== (firstFailure === undefined) ||
+    (value.firstFailure && (
+      value.firstFailure.phase !== firstFailure?.phase || value.firstFailure.result !== firstFailure.result
+    ))
+  ) throw new Error("invalid discovery replay first failure");
+  return {
+    planKind: value.planKind,
+    phases,
+    ...(firstFailure ? { firstFailure: { phase: firstFailure.phase, result: firstFailure.result } } : {}),
+  };
 }
 
 function isSafeRouteTemplate(value: unknown): value is string {

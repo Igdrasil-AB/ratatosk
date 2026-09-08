@@ -21,7 +21,15 @@ import { getArray } from "../../../src/core/jsonpath";
 import { inferRecipe } from "../../../src/core/recorder/infer";
 import type { CapturedEntry, DraftRecipe } from "../../../src/core/recorder/types";
 import { validateRecipe } from "../../../src/core/schema";
-import type { InvoiceRef, RequestSpec, VendorRecipe } from "../../../src/core/types";
+import type {
+  InvoiceRef,
+  ReplayPhase,
+  ReplayPhaseResult,
+  ReplayPlanKind,
+  ReplayTrace,
+  RequestSpec,
+  VendorRecipe,
+} from "../../../src/core/types";
 import { DEFAULT_SAFE_CONCURRENCY, mapConcurrentInSettleOrder, mapConcurrentOrdered } from "../../../src/core/concurrency";
 import {
   canonicalDocumentProviderUrl,
@@ -70,7 +78,7 @@ import { getDiscoveredSuppliers } from "./discovered-suppliers";
 import { getRememberedRoute } from "./discovery-route-memory";
 import { DISCOVERY_DOM_POLICY } from "./discovery-dom-policy";
 import { withForegroundTabVisibility } from "./tab-visibility";
-import { DocumentActionController } from "./document-action-controller";
+import { DocumentActionController, ReplayPhaseFailed } from "./document-action-controller";
 
 /**
  * Every provider host that admission can accept as a document link.
@@ -162,7 +170,7 @@ export class SupplierDiscoveryError extends Error {
 }
 
 class CandidatePreviewError extends Error {
-  constructor(readonly code: DiscoveryAttemptResult) {
+  constructor(readonly code: DiscoveryAttemptResult, readonly replay?: ReplayTrace) {
     super(code);
     this.name = "CandidatePreviewError";
   }
@@ -457,17 +465,22 @@ export async function discoverSupplierInTab(
         }, async (candidate) => {
           diagnostic.candidates.previewed += 1;
           const remainingMs = explorationDeadline - Date.now();
-          if (remainingMs <= 0) throw new CandidatePreviewError("limit_reached");
-          const candidateCount = await runWithinExplorationBudget(
-            previewCandidate(candidate.recipe, explorationDeadline),
+          const planKind = candidateReplayPlanKind(candidate);
+          if (remainingMs <= 0) throw new CandidatePreviewError(
+            "limit_reached", replayFailure(planKind, "document_enumeration", "time_cap"),
+          );
+          const preview = await runWithinExplorationBudget(
+            previewCandidate(candidate.recipe, explorationDeadline, planKind),
             remainingMs,
           ).catch((error) => {
             if (discoveryProbeFailureCode(error) === "outer_deadline") {
-              throw new CandidatePreviewError("limit_reached");
+              throw new CandidatePreviewError(
+                "limit_reached", replayFailure(planKind, "document_enumeration", "time_cap"),
+              );
             }
             throw error;
           });
-          return { candidate, candidateCount };
+          return { candidate, candidateCount: preview.count, replay: preview.replay };
         });
         for (const evaluation of evaluations) {
           if (evaluation.status === "cancelled") continue;
@@ -479,10 +492,11 @@ export async function discoverSupplierInTab(
               resolvedRoute: evidence.url,
               evidence: routeEvidence,
               admission: candidate.admission,
+              replay: evaluation.error instanceof CandidatePreviewError ? evaluation.error.replay : undefined,
             });
             continue;
           }
-          const { candidate, candidateCount } = evaluation.value;
+          const { candidate, candidateCount, replay } = evaluation.value;
           try {
             console.info(
               `[collector] discovery page ${page}/${budget.pages} (${target.source}) ${candidate.adapterId} -> previewed`,
@@ -505,6 +519,7 @@ export async function discoverSupplierInTab(
               resolvedRoute: evidence.url,
               evidence: routeEvidence,
               admission: candidate.admission,
+              replay,
             });
           } catch {
             recordAttempt(diagnostic, page, target.source, candidate.adapterId, "policy_rejected", Date.now() - pageStartedAt, {
@@ -512,6 +527,7 @@ export async function discoverSupplierInTab(
               resolvedRoute: evidence.url,
               evidence: routeEvidence,
               admission: candidate.admission,
+              replay,
             });
           }
         }
@@ -612,7 +628,11 @@ export async function disposeDiscoveryResources(
   }
 }
 
-export async function previewCandidate(recipe: VendorRecipe, expiresAt?: number): Promise<number> {
+export async function previewCandidate(
+  recipe: VendorRecipe,
+  expiresAt?: number,
+  planKind: ReplayPlanKind = recipeReplayPlanKind(recipe),
+): Promise<{ count: number; replay?: ReplayTrace }> {
   let run: ReturnType<typeof buildRunContext>;
   try {
     run = buildRunContext("discovery-preview", recipe);
@@ -657,12 +677,18 @@ export async function previewCandidate(recipe: VendorRecipe, expiresAt?: number)
     const previewRecipe = recipeForPreview(recipe);
     const strategy = buildStrategies(previewRecipe, { expiresAt })[previewRecipe.invoices.strategy];
     const refs: InvoiceRef[] = [];
+    let replay: ReplayTrace | undefined;
     try {
       for (const scope of scopes.slice(0, 20)) {
         try {
-          refs.push(...(await strategy.list(previewRecipe, { ...ctx.vars, ...scope }, ctx)).refs);
-        } catch {
-          throw new CandidatePreviewError("list_failed");
+          const listed = await strategy.list(previewRecipe, { ...ctx.vars, ...scope }, ctx);
+          refs.push(...listed.refs);
+          if (listed.replay) replay = withReplayPlanKind(listed.replay, planKind);
+        } catch (error) {
+          if (error instanceof ReplayPhaseFailed) {
+            throw new CandidatePreviewError("list_failed", withReplayPlanKind(error.replay, planKind));
+          }
+          throw new CandidatePreviewError("list_failed", replay);
         }
         if (refs.length > 500) throw new CandidatePreviewError("too_many_documents");
       }
@@ -673,24 +699,37 @@ export async function previewCandidate(recipe: VendorRecipe, expiresAt?: number)
     const ids = new Set<string>();
     for (const ref of refs) {
       if (!ref.vendorInvoiceId || ref.vendorInvoiceId === "undefined" || ref.vendorInvoiceId === "null") {
-        throw new CandidatePreviewError("invalid_identity");
+        throw new CandidatePreviewError("invalid_identity", withReplayFailure(
+          replay ?? emptyReplay(planKind), "identity_validation", "ambiguous",
+        ));
       }
       if (ids.has(ref.vendorInvoiceId)) continue;
       ids.add(ref.vendorInvoiceId);
       if (
         !ref.documentUrl && !recipe.invoices.document.request &&
         ref.resolution?.kind !== "semantic_action"
-      ) throw new CandidatePreviewError("invalid_document_path");
+      ) throw new CandidatePreviewError("invalid_document_path", withReplayFailure(
+        replay ?? emptyReplay(planKind), "identity_validation", "ambiguous",
+      ));
       if (ref.documentUrl) {
         let document: URL;
-        try { document = new URL(ref.documentUrl); } catch { throw new CandidatePreviewError("invalid_document_path"); }
+        try { document = new URL(ref.documentUrl); } catch {
+          throw new CandidatePreviewError("invalid_document_path", withReplayFailure(
+            replay ?? emptyReplay(planKind), "identity_validation", "ambiguous",
+          ));
+        }
         if (document.protocol !== "https:" || document.username || document.password || !allowedOrigins.has(document.origin)) {
-          throw new CandidatePreviewError("unapproved_document_origin");
+          throw new CandidatePreviewError("unapproved_document_origin", withReplayFailure(
+            replay ?? emptyReplay(planKind), "identity_validation", "page_left_origin",
+          ));
         }
       }
     }
-    if (!ids.size) throw new CandidatePreviewError("no_documents");
-    return ids.size;
+    if (!ids.size) throw new CandidatePreviewError("no_documents", replay ?? replayFailure(
+      planKind, "document_enumeration", "not_present",
+    ));
+    replay = withReplayComplete(replay ?? emptyReplay(planKind), "identity_validation");
+    return { count: ids.size, replay };
   } finally {
     await dispose();
   }
@@ -2377,6 +2416,7 @@ function recordAttempt(
     evidence?: DiscoveryAttemptEvidence;
     admission?: CandidateAdmissionSignal[];
     probeCause?: DiscoveryProbeCause;
+    replay?: ReplayTrace;
   },
 ): void {
   if (diagnostic.attempts.length < 80) {
@@ -2390,12 +2430,14 @@ function recordAttempt(
       adapter,
       result,
       ...(details.probeCause ? { probeCause: details.probeCause } : {}),
+      ...(details.replay ? { replay: details.replay } : {}),
       durationMs: Math.min(60_000, Math.max(0, Math.trunc(durationMs))),
       ...(details.evidence ? { evidence: details.evidence } : {}),
       ...(details.admission?.length ? { admission: details.admission } : {}),
     });
   }
-  console.info(`[collector] discovery page ${page}/${diagnostic.limits.pages} (${source} ${toDiagnosticRoute(details.route)})${adapter ? ` ${adapter}` : ""} -> ${result}${details.probeCause ? `/${details.probeCause}` : ""} (${Math.trunc(durationMs)}ms)`);
+  const replayFailure = details.replay?.firstFailure;
+  console.info(`[collector] discovery page ${page}/${diagnostic.limits.pages} (${source} ${toDiagnosticRoute(details.route)})${adapter ? ` ${adapter}` : ""} -> ${result}${details.probeCause ? `/${details.probeCause}` : ""}${replayFailure ? `@${replayFailure.phase}/${replayFailure.result}` : ""} (${Math.trunc(durationMs)}ms)`);
 }
 
 function diagnosticEvidence(evidence: PageEvidence): DiscoveryAttemptEvidence {
@@ -2440,6 +2482,68 @@ function finalizeCoverage(diagnostic: DiscoveryDiagnosticV1, frontierExhausted: 
 
 function previewResult(error: unknown): DiscoveryAttemptResult {
   return error instanceof CandidatePreviewError ? error.code : "policy_rejected";
+}
+
+function candidateReplayPlanKind(candidate: Candidate): ReplayPlanKind {
+  if (candidate.adapterId === "network-json") return "network";
+  if (candidate.adapterId === "embedded-json") return "embedded";
+  return recipeReplayPlanKind(candidate.recipe);
+}
+
+function recipeReplayPlanKind(recipe: VendorRecipe): ReplayPlanKind {
+  if (recipe.invoices.strategy === "network") return "network";
+  if (recipe.invoices.strategy === "html") return "embedded";
+  if (recipe.config?.length) return "typed_dom";
+  return recipe.invoices.list.steps.some((step) => step.action === "extractSemanticDownloads")
+    ? "semantic_dom"
+    : "exact_dom";
+}
+
+function emptyReplay(planKind: ReplayPlanKind): ReplayTrace {
+  return { planKind, phases: [] };
+}
+
+function replayFailure(
+  planKind: ReplayPlanKind,
+  phase: ReplayPhase,
+  result: ReplayPhaseResult,
+): ReplayTrace {
+  return {
+    planKind,
+    phases: [{ phase, result, durationMs: 0 }],
+    firstFailure: { phase, result },
+  };
+}
+
+function withReplayPlanKind(replay: ReplayTrace, planKind: ReplayPlanKind): ReplayTrace {
+  return { ...replay, planKind };
+}
+
+function withReplayFailure(
+  replay: ReplayTrace,
+  phase: ReplayPhase,
+  result: ReplayPhaseResult,
+): ReplayTrace {
+  return replayWithPhase(replay, { phase, result, durationMs: 0 });
+}
+
+function withReplayComplete(replay: ReplayTrace, phase: ReplayPhase): ReplayTrace {
+  return replayWithPhase(replay, { phase, result: "complete", durationMs: 0 });
+}
+
+function replayWithPhase(replay: ReplayTrace, attempt: ReplayTrace["phases"][number]): ReplayTrace {
+  const existing = replay.phases.findIndex((item) => item.phase === attempt.phase);
+  const phases = [...replay.phases];
+  if (existing >= 0) phases[existing] = attempt;
+  else phases.push(attempt);
+  const firstFailure = phases.find((item) => item.result !== "complete");
+  return {
+    ...replay,
+    phases,
+    ...(firstFailure
+      ? { firstFailure: { phase: firstFailure.phase, result: firstFailure.result } }
+      : { firstFailure: undefined }),
+  };
 }
 
 function candidateScore(adapter: DiscoveryAdapterId, count: number, routeScore: number): number {
