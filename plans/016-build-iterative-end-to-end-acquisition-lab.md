@@ -50,9 +50,10 @@
   Phase 6 CI/release gate implementation are complete. The first authorized
   ClickUp traces closed at `invoice_section_select/time_cap` in Collector 0.8.53
   and 0.8.54. Collector 0.8.55 moved the first failure later and exposed a
-  background-mutation classification defect. Collector 0.8.56 / discovery 46 /
-  acquisition 4 contains the scoped mutation fix and awaits exact-build live
-  replay; the three-family receipt remains open
+  background-mutation classification defect. Collector 0.8.56 cleared that
+  boundary and exposed delayed SPA menu hydration. Collector 0.8.57 / discovery
+  47 / acquisition 5 applies one packaged menu-mount contract to discovery and
+  replay and awaits exact-build live replay; the three-family receipt remains open
 
 ## Goal
 
@@ -716,6 +717,7 @@ data.
 | I-001 | 0.8.53 / discovery 43 / acquisition 3 | candidate replay `list_failed@invoice_section_select/time_cap` | H3: a generic overlay hides the causally revealed Settings control from the role-only menu pass; recognizing only the newly visible control will remove the duplicate scan | `browser DOM boundary > uses a newly revealed Settings control from a generic menu overlay` | two uninterrupted fast runs failed at the same phase after about 9.5 seconds; entry replay produced no candidate | revise | The menu exists, but its generic overlay is not a `role=menu`; the fallback repeats semantic navigation after the first pass consumes the remaining invoice-section budget |
 | I-002 | 0.8.54 / discovery 44 / acquisition 4 | candidate replay `list_failed@invoice_section_select/time_cap` | A candidate admitted only by one direct document link on an ordinary workspace page is a weak false positive; limiting its preview lease will preserve the remaining fast budget for observed billing routes | `weak-active-fallback` | the exact live run still failed after about 9.4 seconds; admission was `direct_document_link`, with 1 document link, 0 accepted semantic controls, 249 rejected controls, and no semantic navigation | revise | A weak attachment-like candidate monopolized the full envelope. The generic shape passes 3/3 in 3.3–3.5 seconds when weak preview yields after 2.5 seconds and the observed billing route gets the remaining budget |
 | I-003 | 0.8.55 / discovery 45 / acquisition 4 | cold replay `no_candidate` with `mutation_blocked` | The mutation guard counts blocked background application traffic as if Ratatosk's exact navigation action caused it; scoping failure attribution to the synchronous control activation will retain safety and allow navigation evidence | `background-mutation-menu` | weak preview closed at `document_enumeration/time_cap` after 2.8 seconds; cold replay completed in 3.6 seconds with 8 observed JSON requests, 0 navigation steps, and `mutation_blocked`; four linked probes completed before the cap | promote | The weak-candidate fix moved the failure later. The mutation guard must continue blocking every non-read request, but unrelated background attempts must not erase safe navigation evidence |
+| I-004 | 0.8.56 / discovery 46 / acquisition 4 | cold replay `no_candidate` with zero navigation steps | The workspace menu mounts after the one-time trigger snapshot; polling the packaged trigger surface briefly in both discovery and candidate replay will let the same plan survive delayed SPA hydration | `delayed-menu-navigation` | active entry closed in 1.3 seconds; cold replay observed 11 JSON requests with `complete` navigation status but 0 steps; six linked pages completed before later probes met the cap | promote | Mutation attribution is fixed. The remaining gap is duplicated hydration behavior: discovery and replay must consume one packaged `navigationTriggerMountMs` contract |
 
 ### I-001 hypotheses — record before the next ClickUp run
 

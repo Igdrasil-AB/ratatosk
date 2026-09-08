@@ -1567,7 +1567,13 @@ export async function collectPageEvidenceInPage(
     // evidence, so it may claim at most half of what remains.
     const revealDeadline = Math.min(deadline, Date.now() + Math.max(500, Math.floor((deadline - Date.now()) / 2)));
     let settingsControl: HTMLElement | undefined;
-    const triggers = semanticMenuTriggers();
+    let triggers = semanticMenuTriggers();
+    const triggerDeadline = Math.min(revealDeadline, Date.now() + semanticPolicy.navigationTriggerMountMs);
+    while (!triggers.length && Date.now() < triggerDeadline) {
+      if (billingSurfaceObserved()) return "complete";
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      triggers = semanticMenuTriggers();
+    }
     let inspectedTriggers = 0;
     for (const trigger of triggers) {
       if (Date.now() >= revealDeadline || semanticNavigationSteps >= 4) break;

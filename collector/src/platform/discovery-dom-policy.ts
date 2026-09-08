@@ -80,6 +80,7 @@ export const DISCOVERY_DOM_POLICY = {
   settingsNavigationPattern: `^${SETTINGS_NAVIGATION}$`,
   billingNavigationPattern: `^${BILLING_NAVIGATION}$`,
   semanticNavigationTriggerPattern: "(?:(?:workspace|organization|account|company|team|profile|personal).{0,80}(?:picker|switcher|menu|toggle|avatar)|(?:picker|switcher|menu|toggle|avatar).{0,80}(?:workspace|organization|account|company|team|profile|personal))",
+  navigationTriggerMountMs: 1_200,
   stableMs: 350,
 } as const;
 

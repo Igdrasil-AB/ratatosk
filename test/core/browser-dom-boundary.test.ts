@@ -1110,6 +1110,8 @@ describe("browser DOM boundary", () => {
   it("reveals an invoice section before enumerating its per-row download controls", () => {
     expect(actionControllerSource).toContain("revealInvoiceSection");
     expect(actionControllerSource).toMatch(/await revealInvoiceSection\(\)[\s\S]{0,240}?controls = downloadControls\(\)/);
+    expect(discoverySource).toContain("semanticPolicy.navigationTriggerMountMs");
+    expect(actionControllerSource).toContain("semanticPolicy.navigationTriggerMountMs");
   });
 
   it("waits for real download controls instead of treating an invoice section as ready", () => {
