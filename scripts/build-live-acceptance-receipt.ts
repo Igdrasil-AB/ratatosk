@@ -65,7 +65,7 @@ const receipt = {
   acquisitionRevision,
   artifactSha256,
   runtimeIdentityMatched: true,
-  clickupAccepted: hosts.includes("app.clickup.com"),
+  clickupAccepted: hosts.some((hostname) => hostname === "app.clickup.com"),
   completedAt: new Date().toISOString(),
   cases: rows.map((row) => acceptanceCase(row, snapshots)),
 };
