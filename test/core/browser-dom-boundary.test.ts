@@ -17,12 +17,15 @@ import {
 } from "../../collector/src/platform/document-action-controller";
 import { DISCOVERY_DOM_POLICY } from "../../collector/src/platform/discovery-dom-policy";
 import { collectPageEvidenceInPage } from "../../collector/src/platform/discovery";
+import { safeBillingRouteFragment } from "../../collector/src/platform/discovery-page-observer";
 import { EXPLORATION_ROUTE_POLICY } from "../../collector/src/platform/discovery-explorer";
 import { AuthExpired, DocumentPermissionRequired } from "../../src/core/errors";
 
 const driverSource = readFileSync("collector/src/platform/browser-dom-driver.ts", "utf8");
 const actionControllerSource = readFileSync("collector/src/platform/document-action-controller.ts", "utf8");
 const discoverySource = readFileSync("collector/src/platform/discovery.ts", "utf8");
+const collectorSource = readFileSync("collector/src/platform/collector.ts", "utf8");
+const runtimeSource = readFileSync("collector/src/platform/runtime.ts", "utf8");
 const observerSource = readFileSync("collector/src/platform/discovery-page-observer.ts", "utf8");
 const policySource = readFileSync("collector/src/platform/discovery-dom-policy.ts", "utf8");
 const pageRetrieval = { observedItems: 1, resolvedItems: 1, unresolvedItems: 0 };
@@ -39,10 +42,22 @@ const emptySemanticEnumeration = {
   truncated: false,
   navigationSteps: 0,
   sectionObserved: false,
+  replay: {
+    planKind: "semantic_dom",
+    phases: [{ phase: "document_enumeration", result: "complete", durationMs: 0 }],
+  },
 } as const;
 
 describe("browser DOM boundary", () => {
   const origins = new Set(["https://vendor.example", "https://documents.example"]);
+
+  it("keeps preview and connected collection on one browser replay executor", () => {
+    expect(discoverySource).toContain("buildStrategies(previewRecipe");
+    expect(collectorSource).toContain("buildStrategies(recipe");
+    expect(runtimeSource.match(/new BrowserDomDriver\(/g)).toHaveLength(1);
+    expect(discoverySource).not.toContain("new BrowserDomDriver(");
+    expect(collectorSource).not.toContain("new BrowserDomDriver(");
+  });
 
   it("uses the same bounded accessible-name inputs in discovery and document collection", () => {
     for (const source of [discoverySource, actionControllerSource]) {
@@ -61,6 +76,12 @@ describe("browser DOM boundary", () => {
     expect(observerSource).not.toContain("Cookie");
   });
 
+  it("retains only bounded billing fragments in the early page observer", () => {
+    expect(safeBillingRouteFragment("#settings/billing")).toBe("#settings/billing");
+    expect(safeBillingRouteFragment("#access_token=secret")).toBe("");
+    expect(safeBillingRouteFragment("#settings/billing/cancel")).toBe("");
+  });
+
   it("proves a speculative menu branch by finding Settings inside the revealed menu", () => {
     expect(discoverySource).toContain("settingsControlAfterMenu");
     expect(discoverySource).toContain("'[role=\"menu\"]'");
@@ -72,12 +93,14 @@ describe("browser DOM boundary", () => {
     expect(discoverySource).toContain("target: { tabId, allFrames: true }");
     expect(discoverySource).toContain("topLevelFrame && options.allowSemanticNavigation !== false");
     expect(discoverySource).toContain("mergeFrameNetworkEvidence(main, frames, options.maxResources)");
+    expect(discoverySource).not.toContain("[data-route],[routerlink],[ng-reflect-router-link],iframe[src]");
   });
 
   it.each([
-    ["blocks a mutation", "{}", true],
-    ["allows an explicit read-only GraphQL query", JSON.stringify({ query: "query Billing { invoices { id } }" }), false],
-  ] as const)("%s from a pre-connect navigation control", async (_name, body, blocked) => {
+    ["blocks a mutation", "{}", true, false, false],
+    ["allows an explicit read-only GraphQL query", JSON.stringify({ query: "query Billing { invoices { id } }" }), false, false, true],
+    ["ignores a blocked background mutation", "{}", false, true, false],
+  ] as const)("%s from a pre-connect navigation control", async (_name, body, blocked, background, reachesNetwork) => {
     const originalFetch = vi.fn(async () => new Response("{}", {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -95,18 +118,29 @@ describe("browser DOM boundary", () => {
       querySelectorAll(): unknown[] { return []; }
       getBoundingClientRect() { return { width: 120, height: 32 }; }
       click(): void {
-        void (window.fetch as typeof fetch)("https://vendor.example/api/account", { method: "POST", body }).catch(() => undefined);
+        if (!background) {
+          void (window.fetch as typeof fetch)("https://vendor.example/api/account", { method: "POST", body }).catch(() => undefined);
+        }
       }
       dispatchEvent(): boolean { return true; }
     }
     const trigger = new PageElement();
+    let backgroundQueued = false;
     const documentStub = {
       title: "Vendor",
       activeElement: trigger,
       documentElement: { outerHTML: "<html></html>", scrollHeight: 0 },
       getElementById: () => null,
       querySelector: () => null,
-      querySelectorAll: (selector: string) => selector.includes("aria-haspopup") ? [trigger] : [],
+      querySelectorAll: (selector: string) => {
+        if (selector.includes("aria-haspopup") && background && !backgroundQueued) {
+          backgroundQueued = true;
+          queueMicrotask(() => {
+            void (window.fetch as typeof fetch)("https://vendor.example/api/background", { method: "POST", body }).catch(() => undefined);
+          });
+        }
+        return selector.includes("aria-haspopup") ? [trigger] : [];
+      },
     };
     const windowStub: Record<string, unknown> = {
       fetch: originalFetch,
@@ -136,15 +170,27 @@ describe("browser DOM boundary", () => {
         DISCOVERY_DOM_POLICY,
       );
       if (blocked) {
-        await expect(probe).rejects.toThrow(/mutating/i);
+        await expect(probe).resolves.toMatchObject({
+          origin: "https://vendor.example",
+          stats: { semanticNavigationStatus: "mutation_blocked" },
+        });
         expect(originalFetch).not.toHaveBeenCalled();
       } else {
-        await expect(probe).resolves.toMatchObject({ origin: "https://vendor.example" });
-        expect(originalFetch).toHaveBeenCalledOnce();
+        await expect(probe).resolves.toMatchObject({
+          origin: "https://vendor.example",
+          stats: { semanticNavigationStatus: "complete" },
+        });
+        expect(originalFetch).toHaveBeenCalledTimes(reachesNetwork ? 1 : 0);
       }
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("does not let the route backstop block read-only POST hydration", () => {
+    expect(actionControllerSource).not.toContain('requestMethods: ["post", "put", "patch", "delete"]');
+    expect(actionControllerSource).toContain("let the page guard own method semantics");
+    expect(actionControllerSource).toContain("condition: { tabIds: [tabId], urlFilter }");
   });
 
   it("emits every packaged passive route-evidence lane from the real page probe", async () => {
@@ -194,6 +240,7 @@ describe("browser DOM boundary", () => {
         { ...EXPLORATION_ROUTE_POLICY, documentSelector: "[data-document]" },
         DISCOVERY_DOM_POLICY,
       );
+      if ("__ratatoskProbeError" in evidence) throw new Error("expected page evidence");
       expect(evidence.navigationUrls).toEqual(expect.arrayContaining([
         expect.objectContaining({ url: observedRequest, hintSource: "observed_request" }),
         expect.objectContaining({ url: resourceRoute, hintSource: "resource_timing" }),
@@ -500,7 +547,7 @@ describe("browser DOM boundary", () => {
     expectSemanticOperationCalledOnce(executeScript);
   });
 
-  it("blocks native responses on the exact action tab without touching global downloads", async () => {
+  it("captures native responses on the exact action tab without touching global downloads", async () => {
     const beforeRequest = new TestChromeEvent<Record<string, unknown>>();
     const headersReceived = new TestChromeEvent<Record<string, unknown>>();
     const beforeRedirect = new TestChromeEvent<Record<string, unknown>>();
@@ -574,10 +621,24 @@ describe("browser DOM boundary", () => {
       downloads: { onCreated: downloadCreated, cancel, removeFile, erase },
     });
 
-    const driver = new BrowserDomDriver(domRecipe());
-    await expect(driver.run("https://vendor.example/billing", [
+    const pageOwnedDownloadObservations: boolean[] = [];
+    const driver = new BrowserDomDriver(
+      domRecipe(),
+      undefined,
+      undefined,
+      (attempted) => pageOwnedDownloadObservations.push(attempted),
+    );
+    const result = await driver.run("https://vendor.example/billing", [
       { action: "extractSemanticDownloads", as: "documents", maxActions: 8 },
-    ])).rejects.toMatchObject({ kind: "document_action_side_effect" });
+    ]);
+    expect(result).toMatchObject({
+      collected: { documents: ["https://documents.example/invoices/123.pdf"] },
+      documents: [{
+        url: "https://documents.example/invoices/123.pdf",
+        evidence: [{ source: "content-disposition", confidence: "medium", filename: "invoice.pdf" }],
+      }],
+      retrieval: { completeness: "complete", observedItems: 1, resolvedItems: 1, unresolvedItems: 0 },
+    });
 
     expect(updateSessionRules.mock.calls[0]?.[0]).toMatchObject({
       addRules: [{
@@ -596,6 +657,7 @@ describe("browser DOM boundary", () => {
     expect(cancel).not.toHaveBeenCalled();
     expect(removeFile).not.toHaveBeenCalled();
     expect(erase).not.toHaveBeenCalled();
+    expect(pageOwnedDownloadObservations).toEqual([false]);
     expect(beforeRequest.listenerCount).toBe(0);
     expect(downloadCreated.listenerCount).toBe(0);
   });
@@ -624,11 +686,15 @@ describe("browser DOM boundary", () => {
     expect(updateSessionRules).toHaveBeenCalledWith({ removeRuleIds: [42] });
   });
 
-  it("rejects a stable semantic identity repeated across continuation pages", async () => {
+  it("deduplicates repeated controls across continuation passes and resolves unseen invoices on the retained page", async () => {
     const actionId = "a".repeat(32);
     let enumeration = 0;
-    const executeScript = vi.fn(async (details: { func?: unknown }) => {
+    const create = vi.fn(async () => ({ id: 42, windowId: 7, url: "about:blank", status: "complete" as const }));
+    const executeScript = vi.fn(async (details: { func?: unknown; args?: unknown[] }) => {
       if (details.func === runSemanticDocumentOperationInPage) {
+        if ((details.args?.[0] as { kind?: string })?.kind === "resolve") {
+          return [{ result: { ok: true, kind: "url", url: "https://documents.example/invoices/one.pdf" } }];
+        }
         enumeration += 1;
         return [{ result: {
           ...emptySemanticEnumeration,
@@ -646,7 +712,7 @@ describe("browser DOM boundary", () => {
     vi.stubGlobal("chrome", {
       ...actionBoundaryChromeApis(),
       tabs: {
-        create: vi.fn(async () => ({ id: 42, windowId: 7, url: "about:blank", status: "complete" })),
+        create,
         get: vi.fn(async () => ({
           id: 42,
           windowId: 7,
@@ -666,12 +732,21 @@ describe("browser DOM boundary", () => {
       scripting: semanticScripting(executeScript),
     });
 
-    await expect(new BrowserDomDriver(domRecipe()).run(
+    const driver = new BrowserDomDriver(domRecipe());
+    const result = await driver.run(
       "https://vendor.example/billing",
       [{ action: "extractSemanticDownloads", as: "documents", maxActions: 8 }],
       { mode: "auto", maxActions: 1, maxDocuments: 100, timeoutMs: 30_000, allowScroll: true },
-    )).rejects.toMatchObject({ kind: "document_action_ambiguous" });
+    );
+
+    expect(result.actions).toHaveLength(1);
+    await expect(driver.resolve(result.actions![0].handle)).resolves.toEqual({
+      kind: "url",
+      url: "https://documents.example/invoices/one.pdf",
+    });
     expect(enumeration).toBe(2);
+    expect(create).toHaveBeenCalledOnce();
+    await driver.dispose();
   });
 
   it("fails closed before activation when semantic identities are ambiguous or unstable", async () => {
@@ -701,13 +776,44 @@ describe("browser DOM boundary", () => {
     }
   });
 
+  it("does not report an empty supplier when replay never reached an invoice surface", async () => {
+    vi.stubGlobal("chrome", {
+      ...actionBoundaryChromeApis(),
+      scripting: {
+        executeScript: vi.fn(async () => [{ result: {
+          ...emptySemanticEnumeration,
+          replay: {
+            planKind: "semantic_dom",
+            phases: [{ phase: "billing_select", result: "not_present", durationMs: 0 }],
+            firstFailure: { phase: "billing_select", result: "not_present" },
+          },
+        } }]),
+      },
+    });
+
+    await expect(new DocumentActionController(origins, "vendor").enumerateOnTab(
+      7,
+      8,
+      DISCOVERY_DOM_POLICY,
+      Date.now() + 2_000,
+    )).rejects.toMatchObject({ kind: "document_action_ambiguous" });
+  });
+
   it("preserves semantic authentication outcomes and refuses an unarmed page observer", async () => {
     vi.stubGlobal("chrome", {
       ...actionBoundaryChromeApis(),
       scripting: {
         registerContentScripts: vi.fn(async () => { throw new Error("unavailable"); }),
         unregisterContentScripts: vi.fn(async () => undefined),
-        executeScript: vi.fn(async () => [{ result: { ok: false, code: "auth_expired" } }]),
+        executeScript: vi.fn(async () => [{ result: {
+          ok: false,
+          code: "auth_expired",
+          replay: {
+            planKind: "semantic_dom",
+            phases: [{ phase: "document_enumeration", result: "not_present", durationMs: 0 }],
+            firstFailure: { phase: "document_enumeration", result: "not_present" },
+          },
+        } }]),
       },
     });
     const controller = new DocumentActionController(origins, "vendor");
@@ -1006,7 +1112,8 @@ describe("browser DOM boundary", () => {
     expect(actionControllerSource).toContain("snapshotNativeDownloadAttempted");
     expect(actionControllerSource).toContain("updateSessionRules");
     expect(actionControllerSource).not.toContain("chrome.downloads.cancel");
-    expect(actionControllerSource).not.toContain("snapshotDocuments()");
+    expect(actionControllerSource).toContain("snapshotDocuments()");
+    expect(actionControllerSource).toContain("snapshotDocumentObservations()");
     expect(driverSource).not.toContain("navigator.sendBeacon =");
     expect(driverSource).not.toContain("HTMLFormElement.prototype.submit =");
     expect(driverSource).not.toContain("HTMLAnchorElement.prototype.click =");
@@ -1036,8 +1143,13 @@ describe("browser DOM boundary", () => {
     expect(policySource).toContain("(?:delete|remove|cancel|pay|purchase|checkout|upgrade|downgrade|authorize|logout)");
   });
 
+  it("keeps a patient bounded mount window for cold semantic supplier shells", () => {
+    expect(DISCOVERY_DOM_POLICY.navigationTriggerMountMs).toBe(20_000);
+  });
+
   it("recognizes framework download anchors from bounded structural semantics", () => {
     expect(policySource).toContain('a:not([href])');
+    expect(actionControllerSource).toContain("safeNavigationHref(element)");
     expect(policySource).toContain('data-test');
     expect(policySource).toContain('data-testid');
     for (const source of [discoverySource, actionControllerSource]) {
@@ -1061,6 +1173,8 @@ describe("browser DOM boundary", () => {
   it("reveals an invoice section before enumerating its per-row download controls", () => {
     expect(actionControllerSource).toContain("revealInvoiceSection");
     expect(actionControllerSource).toMatch(/await revealInvoiceSection\(\)[\s\S]{0,240}?controls = downloadControls\(\)/);
+    expect(discoverySource).toContain("semanticPolicy.navigationTriggerMountMs");
+    expect(actionControllerSource).toContain("semanticPolicy.navigationTriggerMountMs");
   });
 
   it("waits for real download controls instead of treating an invoice section as ready", () => {
@@ -1098,7 +1212,7 @@ describe("browser DOM boundary", () => {
     expect(actionControllerSource).toContain("operation.maximumActions");
   });
 
-  it("never derives a cross-run action identity from presentation text or row position", () => {
+  it("never derives a cross-run action identity from action labels or row position", () => {
     const start = actionControllerSource.indexOf("const stableMaterial");
     const end = actionControllerSource.indexOf("const digest", start);
     const identityPolicy = actionControllerSource.slice(start, end);
@@ -1107,10 +1221,11 @@ describe("browser DOM boundary", () => {
     expect(identityPolicy).toContain("invoiceNumber");
     expect(identityPolicy).toContain("datedAmount");
     expect(identityPolicy).toContain("stableAttributes");
-    expect(identityPolicy).not.toContain("row.textContent");
     expect(identityPolicy).not.toContain("labelOf(element)");
     expect(identityPolicy).not.toContain("columnContextOf(element)");
-    expect(driverSource).toContain('throw new DocumentActionFailed("document_action_ambiguous"');
+    expect(actionControllerSource).toContain("rowInvoiceToken");
+    expect(actionControllerSource).toContain("counts.get(candidate.actionId) === 1");
+    expect(driverSource).toContain("if (semanticActions.has(actionRef.vendorInvoiceId)) continue");
   });
 
   it("captures invoice-shaped blob XHRs even without a PDF content type", () => {
@@ -1172,6 +1287,31 @@ describe("browser DOM boundary", () => {
     }
   });
 
+  it("keeps all invoice controls from a mixed-identity virtualized div grid", async () => {
+    const page = stubVirtualizedInvoiceGrid();
+    try {
+      const result = await runSemanticDocumentOperationInPage(
+        { kind: "enumerate", maximumActions: 8 },
+        ["https://vendor.example"],
+        DISCOVERY_DOM_POLICY,
+        Date.now() + 5_000,
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        kind: "enumeration",
+        observedItems: 4,
+        resolvedItems: 4,
+        unresolvedItems: 0,
+      });
+      if (!result.ok || result.kind !== "enumeration") throw new Error("expected enumeration");
+      expect(result.actions).toHaveLength(4);
+      expect(new Set(result.actions.map((action) => action.actionId))).toHaveLength(4);
+    } finally {
+      page.restore();
+    }
+  });
+
   it("extracts metadata from direct links in div-based document rows", async () => {
     const page = stubDivDocumentPage("receipt", "Receipt Number", "https://vendor.example/receipts/DOC-001.pdf");
     try {
@@ -1212,6 +1352,31 @@ describe("browser DOM boundary", () => {
       page.restore();
     }
   }, 20_000);
+
+  it("uses a newly revealed Settings control from a generic menu overlay", async () => {
+    const page = stubSemanticPage({
+      menuTriggerCount: 4,
+      settingsMountDelayMs: 0,
+      mountDelayMs: 900,
+    });
+    try {
+      const result = await runSemanticDocumentOperationInPage(
+        { kind: "enumerate", maximumActions: 8 },
+        ["https://vendor.example"],
+        DISCOVERY_DOM_POLICY,
+        Date.now() + 3_400,
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        kind: "enumeration",
+        directDocuments: [{ url: "https://vendor.example/invoices/one.pdf" }],
+      });
+      expect(page.clicked).toEqual(["Open profile menu", "Settings", "Billing"]);
+    } finally {
+      page.restore();
+    }
+  }, 10_000);
 
   it.each([
     ["Inställningar", "Fakturering"],
@@ -1283,11 +1448,14 @@ function stubSemanticPage(options: {
   settings?: string;
   billing?: string;
   mountDelayMs?: number;
+  settingsMountDelayMs?: number;
+  menuTriggerCount?: number;
 } = {}): { clicked: string[]; restore: () => void } {
   const clicked: string[] = [];
   const navigation: unknown[] = [];
   const downloads: unknown[] = [];
   const mountDelayMs = options.mountDelayMs ?? 300;
+  const settingsMountDelayMs = options.settingsMountDelayMs ?? mountDelayMs;
 
   const control = (
     attributes: Record<string, string>,
@@ -1321,17 +1489,29 @@ function stubSemanticPage(options: {
   const settingsItem = control({ role: "menuitem" }, options.settings ?? "Settings", () => {
     mount(navigation, billingTab);
   });
-  navigation.push(control({ role: "button", "aria-label": "Open profile menu" }, "Open profile menu", () => {
-    mount(navigation, settingsItem);
-  }));
+  const profileTrigger = control({
+    role: "button",
+    "aria-label": "Open profile menu",
+    "aria-haspopup": "menu",
+  }, "Open profile menu", () => {
+    setTimeout(() => navigation.push(settingsItem), settingsMountDelayMs);
+  });
+  navigation.push(profileTrigger);
+  const menuTriggers = options.menuTriggerCount
+    ? [profileTrigger, ...Array.from({ length: options.menuTriggerCount - 1 }, (_, index) =>
+      control({ role: "button", "aria-haspopup": "menu" }, `Menu ${index + 2}`))]
+    : [];
 
-  const navigationSelector = 'button,[role="button"],[role="menuitem"],[role="tab"],a:not([href])';
+  const navigationSelector = 'button,[role="button"],[role="menuitem"],[role="tab"],a';
+  const menuTriggerSelector = 'button,[role="button"],[aria-haspopup="menu"],[aria-haspopup="true"]';
   vi.stubGlobal("document", {
     title: "Vendor",
+    activeElement: { dispatchEvent: () => true },
     getElementById: () => null,
     querySelector: () => null,
     querySelectorAll: (selector: string) => {
       if (selector === navigationSelector) return [...navigation];
+      if (selector === menuTriggerSelector) return [...menuTriggers];
       if (selector === DISCOVERY_DOM_POLICY.controlSelector) return [...navigation, ...downloads];
       return [];
     },
@@ -1349,6 +1529,7 @@ function stubSemanticPage(options: {
   for (const name of ["HTMLElement", "HTMLAnchorElement", "HTMLButtonElement", "HTMLInputElement"]) {
     vi.stubGlobal(name, class {});
   }
+  vi.stubGlobal("KeyboardEvent", class {});
 
   return { clicked, restore: () => vi.unstubAllGlobals() };
 }
@@ -1396,6 +1577,60 @@ function stubDivDocumentPage(
     querySelectorAll: (selector: string) => selector === DISCOVERY_DOM_POLICY.controlSelector || selector === "[data-document-link]"
       ? [control]
       : selector === "h1,h2,h3,caption" ? [node(`${kind}s`)] : [],
+  });
+  vi.stubGlobal("location", { href: "https://vendor.example/settings/billing", pathname: "/settings/billing" });
+  vi.stubGlobal("getComputedStyle", () => ({ display: "block", visibility: "visible", opacity: "1" }));
+  vi.stubGlobal("window", {});
+  for (const name of ["HTMLElement", "HTMLAnchorElement"]) vi.stubGlobal(name, class {});
+  return { restore: () => vi.unstubAllGlobals() };
+}
+
+function stubVirtualizedInvoiceGrid(): { restore: () => void } {
+  const node = (text = "", attributes: Record<string, string> = {}) => ({
+    textContent: text,
+    children: [] as unknown[],
+    getAttribute: (name: string) => attributes[name] ?? null,
+    hasAttribute: (name: string) => name in attributes,
+    querySelector: () => null,
+    querySelectorAll: () => [] as unknown[],
+    closest: () => null,
+    getBoundingClientRect: () => ({ width: 120, height: 32 }),
+  });
+  const values = [
+    ["2026-08-17", "DOC-202608", "$30"],
+    ["2026-07-17", "DOC-202607", "$30"],
+    ["2026-07-05", "DOC-20260705", "$4.33"],
+    ["2026-06-17", "DOC-202606", "$20"],
+  ];
+  const controls: unknown[] = [];
+  for (const [index, value] of values.entries()) {
+    const cells = value.map((text) => node(text));
+    cells.push(node(""));
+    const attributes: Record<string, string> = index < 2 ? { "data-invoice-id": `invoice-${index + 1}` } : {};
+    const row = {
+      ...node(`${value.join(" ")} Download invoice`, attributes),
+      children: cells,
+      parentElement: null,
+      querySelectorAll: () => cells,
+      closest: () => null,
+    };
+    controls.push({
+      ...node("", { title: "Download invoice" }),
+      closest: (selector: string) => {
+        if (selector === "form") return null;
+        if (selector === DISCOVERY_DOM_POLICY.cellSelector) return cells[3];
+        if (selector === DISCOVERY_DOM_POLICY.rowSelector || selector === DISCOVERY_DOM_POLICY.contextSelector) return row;
+        return null;
+      },
+    });
+  }
+  vi.stubGlobal("document", {
+    title: "Billing",
+    getElementById: () => null,
+    querySelector: () => null,
+    querySelectorAll: (selector: string) => selector === DISCOVERY_DOM_POLICY.controlSelector
+      ? controls
+      : selector === "h1,h2,h3,caption" ? [node("Invoices")] : [],
   });
   vi.stubGlobal("location", { href: "https://vendor.example/settings/billing", pathname: "/settings/billing" });
   vi.stubGlobal("getComputedStyle", () => ({ display: "block", visibility: "visible", opacity: "1" }));

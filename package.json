@@ -1,6 +1,6 @@
 {
   "name": "ratatosk",
-  "version": "0.8.50",
+  "version": "0.8.79",
   "description": "Open-source browser extension that collects supplier invoices and receipts from vendor portals using the user's own session \u2014 no credential custody.",
   "license": "MIT",
   "type": "module",
@@ -24,24 +24,32 @@
     "validate": "tsx scripts/validate-vendors.ts",
     "validate:release": "tsx scripts/validate-vendors.ts --release",
     "test:collector-release-regressions": "vitest run test/core/dom-acquisition-transaction.test.ts test/core/semantic-action-observer.test.ts test/core/browser-dom-boundary.test.ts",
-    "validate:collector-release": "npm run validate:release && npm run test:collector-release-regressions && npm run verify:collector-artifact && tsx scripts/validate-semantic-dom-acceptance.ts",
+    "test:chrome-discovery": "npx playwright-core install chromium && npm run build:collector && npm run test:chrome-discovery:built",
+    "test:chrome-discovery:built": "scripts/run-chrome-discovery.sh",
+    "test:chrome-acquisition": "npx playwright-core install chromium && npm run build:collector && scripts/run-chrome-discovery.sh --acquisition",
+    "test:chrome-acquisition:built": "scripts/run-chrome-discovery.sh --acquisition",
+    "test:discovery-iteration": "npx playwright-core install chromium && npm run build:collector && scripts/run-chrome-discovery.sh",
+    "prepare:live-supplier-test": "npm run assert:release-source && npm run ci && npm run audit:security && npm run build:collector && npm run test:chrome-discovery:built && npm run test:chrome-acquisition:built && npm run assert:release-source && npm run package:collector && npm run verify:collector-artifact && tsx scripts/prepare-live-supplier-test.ts",
+    "build:live-acceptance-receipt": "tsx scripts/build-live-acceptance-receipt.ts",
+    "validate:collector-release": "npm run validate:release && npm run test:collector-release-regressions && npm run test:chrome-discovery:built && npm run test:chrome-acquisition:built && npm run verify:collector-artifact && tsx scripts/validate-semantic-dom-acceptance.ts",
     "validate:pilot": "tsx scripts/validate-pilot-manifest.ts",
     "verify:collector-artifact": "tsx scripts/verify-collector-artifact.ts",
     "audit:security": "npm audit --audit-level=high",
     "ci": "npm run gen:icons && npm run typecheck && npm run check:boundaries && npm run validate && npm run test"
   },
   "dependencies": {
-    "zod": "^3.23.8"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.0.0-beta.28",
-    "@types/chrome": "^0.0.268",
-    "@types/node": "^20.19.43",
+    "@types/chrome": "^0.2.6",
+    "@types/node": "^26.2.0",
     "fflate": "^0.8.2",
-    "simple-icons": "^16.26.0",
-    "tsx": "^4.16.2",
-    "typescript": "^5.5.4",
-    "vite": "^8.1.4",
-    "vitest": "^4.1.10"
+    "playwright-core": "^1.62.1",
+    "simple-icons": "^16.28.0",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.3",
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11"
   }
 }

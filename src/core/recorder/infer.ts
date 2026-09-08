@@ -34,7 +34,7 @@ type Obj = Record<string, unknown>;
  *   1. STRUCTURED — a JSON invoice array (a real API, or an embedded-JSON blob
  *      inside an HTML page). Yields id/date/amount/currency/pdf mappings.
  *   2. LINKS — no JSON array anywhere, but the page HTML/DOM links to the
- *      invoices (`<a href="/account/receipt/…">`). Extract those links; the
+ *      invoices (`<a href="/documents/…">`). Extract those links; the
  *      accounting pipeline reads amount/date from each downloaded PDF.
  * Path 2 is what reaches server-rendered vendors like GitHub.
  */
@@ -491,7 +491,7 @@ function sanitizeId(raw: string): string {
 // ---- link-based inference (server-rendered pages) -------------------------
 
 // Path segments that mark a link as an invoice/receipt document.
-const DOC_LINK_TOKENS = ["/receipt", "/invoice", "/invoices", "/billing/receipt", "/download", ".pdf"];
+const DOC_LINK_TOKENS = ["receipt", "invoice", "billing", "download", ".pdf"];
 
 /** Diagnostic: invoice/receipt-ish hrefs anywhere in the captured HTML. Lets the
  * popup show what document links a page exposes even when inference finds none. */
@@ -517,7 +517,7 @@ interface LinkList {
 /**
  * Fallback when no JSON invoice array exists: pull the invoice/receipt LINKS out
  * of a captured HTML page or the DOM snapshot. The strongest signal is a PDF we
- * actually saw during capture — its path prefix (e.g. `/account/receipt/`) is the
+ * actually saw during capture — its observed path prefix is the
  * exact token to look for among the page's anchors, so we find every sibling
  * receipt, not just the one that was clicked.
  */
@@ -609,7 +609,7 @@ function findInvoiceLinks(entries: CapturedEntry[]): LinkList | null {
   return best;
 }
 
-/** The directory prefix of a document URL, e.g. `…/account/receipt/ch_x` → `/account/receipt/`. */
+/** The directory prefix of an observed document URL. */
 function linkToken(url: string): string | undefined {
   try {
     const path = new URL(url).pathname;

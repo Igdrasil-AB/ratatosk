@@ -1,5 +1,5 @@
 import { streamVendor } from "../../../src/core/engine";
-import type { FetchedDocument, RetrievalCompleteness, RetrievalProof, SyncWindowStats, VendorRecipe } from "../../../src/core/types";
+import type { FetchedDocument, RetrievalCompleteness, RetrievalProof, VendorRecipe } from "../../../src/core/types";
 import {
   AuthExpired,
   AuthFailure,
@@ -27,6 +27,7 @@ import {
   type DestinationId,
   type DestinationUnavailableReason,
 } from "./storage";
+import { isTransientRetryCode, nextTransientRetryAt } from "./retry-policy";
 import { IngestUnauthorized } from "../../../src/ingest/http-sink";
 import { notifyReconnect, notifyDestinationReconnect } from "./notifications";
 
@@ -40,9 +41,10 @@ export interface VendorRunSummary {
   verifiedCount?: number;
   /** Privacy-safe count of semantic document controls activated in this run. */
   documentActionCount?: number;
+  /** Page-owned download responses observed and rejected during this run. */
+  pageOwnedDownloadCount?: number;
   retrieval?: RetrievalCompleteness;
   retrievalProof?: RetrievalProof;
-  syncWindow?: SyncWindowStats;
   code?: OperationalOutcomeCode;
   failedScopes?: number;
   emptyScopes?: number;
@@ -77,7 +79,9 @@ class DiscoveryAdmissionError extends Error {
   }
 }
 
-export function runVendorById(vendorId: string, fromMonth?: string): Promise<VendorRunSummary> {
+export type SyncTrigger = "scheduled" | "manual" | "connect";
+
+export function runVendorById(vendorId: string, trigger: SyncTrigger = "manual"): Promise<VendorRunSummary> {
   const existing = vendorRuns.get(vendorId);
   if (existing) return existing;
 
@@ -89,7 +93,7 @@ export function runVendorById(vendorId: string, fromMonth?: string): Promise<Ven
       // makes "one supplier, one company" true of every path rather than of
       // the paths someone remembered to check.
       const destinationId = (await getConnections())[vendorId]?.destinationId;
-      return executeRecipeRun(source.recipe, destinationId, undefined, false, fromMonth);
+      return executeRecipeRun(source.recipe, destinationId, undefined, false, source.candidateCount, trigger);
     })
     .finally(() => {
       if (vendorRuns.get(vendorId) === task) vendorRuns.delete(vendorId);
@@ -103,9 +107,8 @@ export function runDiscoveredCandidate(
   recipe: VendorRecipe,
   destinationId: DestinationId,
   afterFirstDelivery: (document: FetchedDocument) => Promise<void>,
-  fromMonth?: string,
 ): Promise<VendorRunSummary> {
-  return executeRecipeRun(recipe, destinationId, afterFirstDelivery, true, fromMonth);
+  return executeRecipeRun(recipe, destinationId, afterFirstDelivery, true);
 }
 
 async function executeRecipeRun(
@@ -113,13 +116,18 @@ async function executeRecipeRun(
   destinationId: DestinationId | undefined,
   afterFirstDelivery?: (document: FetchedDocument) => Promise<void>,
   requireCompleteRetrieval = false,
-  fromMonth?: string,
+  minimumResolvedDocuments = 0,
+  trigger: SyncTrigger = "connect",
 ): Promise<VendorRunSummary> {
   const vendorId = recipe.id;
 
+  const previous = (await getConnections())[vendorId];
+  if (trigger === "scheduled" && previous?.lastCode === "auth_expired") {
+    return { vendorId, status: "auth_expired", count: 0, code: "auth_expired" };
+  }
   const nextEligibleRunAt = await getNextEligibleRunAt(vendorId);
-  if (nextEligibleRunAt) {
-    return { vendorId, status: "skipped", count: 0, code: "rate_limited", nextEligibleRunAt };
+  if (nextEligibleRunAt && (trigger === "scheduled" || !isTransientRetryCode(previous?.lastCode))) {
+    return { vendorId, status: "skipped", count: 0, code: previous?.lastCode ?? "rate_limited", nextEligibleRunAt };
   }
 
   // A supplier left unbound by a company disconnect is paused, not redirected.
@@ -131,19 +139,26 @@ async function executeRecipeRun(
     return destinationNeedsReconnectSummary(vendorId, destination.reason);
   }
 
-  const { ctx, dispose } = buildRunContext(sinkCompanyId(destination), recipe, fromMonth);
-  const acquisitionMetrics = { documentActions: 0 };
+  const { ctx, dispose } = buildRunContext(sinkCompanyId(destination), recipe);
+  const acquisitionMetrics = { documentActions: 0, pageOwnedDownloads: 0 };
   const strategies = buildStrategies(recipe, {
     onSemanticDocumentAction: () => {
       acquisitionMetrics.documentActions = Math.min(10_000, acquisitionMetrics.documentActions + 1);
     },
+    onPageOwnedDownloadObservation: (attempted) => {
+      if (attempted) acquisitionMetrics.pageOwnedDownloads = Math.min(10_000, acquisitionMetrics.pageOwnedDownloads + 1);
+    },
   });
-  const runMetrics = () => ({ documentActionCount: acquisitionMetrics.documentActions });
+  const runMetrics = () => ({
+    documentActionCount: acquisitionMetrics.documentActions,
+    pageOwnedDownloadCount: acquisitionMetrics.pageOwnedDownloads,
+  });
   const recordRunOutcome = (
     patch: Parameters<typeof recordRun>[1],
   ): Promise<void> => recordRun(vendorId, {
     ...patch,
     lastDocumentActionCount: acquisitionMetrics.documentActions,
+    lastPageOwnedDownloadCount: acquisitionMetrics.pageOwnedDownloads,
   });
 
   console.info(`[collector] running "${vendorId}"…`);
@@ -226,13 +241,19 @@ async function executeRecipeRun(
     const { scopes } = result;
     retrieval = result.retrieval;
     retrievalProof = result.retrievalProof;
+    if (retrievalProof && retrievalProof.resolvedItems < minimumResolvedDocuments) {
+      const error = new RetrievalIncomplete(
+        `replay resolved ${retrievalProof.resolvedItems} of ${minimumResolvedDocuments} previously proven document controls`,
+        recipe.id,
+        { ...retrievalProof, completeness: "partial" },
+      );
+      failure = collectionFailureEvidence(error, "invoice_list", error.proof);
+      throw error;
+    }
     console.info(`[collector] "${vendorId}": ok — ${acceptedCount} document(s)`);
 
-    const monthFallback = result.syncWindow?.mode === "all_history_fallback";
     const partial = scopes.failed > 0;
-    const code = partial
-      ? "partial_scope_failure" as const
-      : monthFallback ? "month_range_fallback_all" as const : undefined;
+    const code = partial ? "partial_scope_failure" as const : undefined;
     await recordRunOutcome({
       lastStatus: partial ? "partial" : "ok",
       lastCount: acceptedCount,
@@ -249,7 +270,6 @@ async function executeRecipeRun(
       verifiedCount,
       ...runMetrics(),
       retrieval,
-      ...(result.syncWindow ? { syncWindow: result.syncWindow } : {}),
       ...(retrievalProof ? { retrievalProof } : {}),
       ...(code ? { code } : {}),
       failedScopes: scopes.failed,
@@ -438,9 +458,10 @@ async function executeRecipeRun(
       ? (err.cause instanceof DestinationNeedsReconnect ? "destination_connection_expired" : "destination_unavailable")
       : operationalCodeForError(err);
     const message = operationalOutcomeLabel(code);
+    const nextEligibleRunAt = nextTransientRetryAt(code, (previous?.consecutiveFailures ?? 0) + 1);
     console.error(`[collector] "${vendorId}": ${message}`);
     if (acceptedCount > 0) {
-      await recordRunOutcome({ lastStatus: "partial", lastCount: acceptedCount, lastCode: code, lastError: message, nextEligibleRunAt: undefined });
+      await recordRunOutcome({ lastStatus: "partial", lastCount: acceptedCount, lastCode: code, lastError: message, nextEligibleRunAt });
       return {
         vendorId,
         status: "partial",
@@ -450,10 +471,11 @@ async function executeRecipeRun(
         ...(failure ? { failure } : {}),
         code,
         error: message,
+        nextEligibleRunAt,
         ...runMetrics(),
       };
     }
-    await recordRunOutcome({ lastStatus: "error", lastCode: code, lastError: message, nextEligibleRunAt: undefined });
+    await recordRunOutcome({ lastStatus: "error", lastCode: code, lastError: message, nextEligibleRunAt });
     return {
       vendorId,
       status: "error",
@@ -463,6 +485,7 @@ async function executeRecipeRun(
       ...(failure ? { failure } : {}),
       code,
       error: message,
+      nextEligibleRunAt,
       ...runMetrics(),
     };
   } finally {
@@ -491,8 +514,8 @@ function destinationNeedsReconnectSummary(
 }
 
 /** Run every connected vendor in sequence (keeps concurrency gentle on the host). */
-export async function runAllConnected(fromMonth?: string): Promise<VendorRunSummary[]> {
-  const ids = Object.keys(await getConnections());
+export async function runAllConnected(trigger: SyncTrigger = "manual", vendorIds?: readonly string[]): Promise<VendorRunSummary[]> {
+  const ids = vendorIds ?? Object.keys(await getConnections());
   const summaries: VendorRunSummary[] = [];
   for (const id of ids) {
     try {
@@ -501,7 +524,7 @@ export async function runAllConnected(fromMonth?: string): Promise<VendorRunSumm
       // scheduled sync must not resurrect or execute a path that is no longer
       // present in the current source catalog.
       if (!(await resolveCollectorSource(id))) continue;
-      summaries.push(await runVendorById(id, fromMonth));
+      summaries.push(await runVendorById(id, trigger));
     } catch (error) {
       const code = operationalCodeForError(error);
       const message = operationalOutcomeLabel(code);

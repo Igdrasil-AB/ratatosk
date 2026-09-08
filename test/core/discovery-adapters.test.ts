@@ -167,7 +167,7 @@ describe("packaged supplier discovery adapters", () => {
     }, base.url, "Example Vendor");
     expect(candidates).toHaveLength(1);
     expect(candidates[0].adapterId).toBe("dom-links");
-    expect("previewCount" in candidates[0]).toBe(false);
+    expect(candidates[0].previewCount).toBe(1);
     expect(candidates[0].recipe.invoices.strategy).toBe("dom");
     if (candidates[0].recipe.invoices.strategy === "dom") {
       expect(candidates[0].recipe.invoices.list.continuation).toMatchObject({ mode: "auto", maxActions: 8 });
@@ -247,7 +247,7 @@ describe("packaged supplier discovery adapters", () => {
     expect(candidates).toEqual([]);
   });
 
-  it("keeps explicit and known direct receipt downloads as document evidence", () => {
+  it("keeps an explicit PDF document as direct evidence without relying on a supplier route", () => {
     const candidates = compileCandidates({
       ...base,
       html: '<html><body><a href="/account/receipt/rcpt_123">Receipt</a><a href="/account/invoices/inv_123.pdf">PDF</a></body></html>',

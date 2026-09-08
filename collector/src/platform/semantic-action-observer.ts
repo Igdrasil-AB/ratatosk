@@ -4,6 +4,7 @@ export interface DocumentObservation {
   contentType?: string;
   filename?: string;
   documentIntent?: boolean;
+  nativeDownload?: boolean;
 }
 
 type BeforeRequestDetails = {
@@ -55,7 +56,8 @@ export function documentCandidateFromObservation(
   const contentType = (observation.contentType ?? "").split(";", 1)[0].trim().toLowerCase();
   const typedDocument = contentType === "application/pdf";
   const documentShaped = DOCUMENT_ROUTE.test(`${url.pathname}${url.search} ${observation.filename ?? ""}`);
-  if (!typedDocument && !observation.documentIntent && (NON_DOCUMENT_TYPE.test(contentType) || !documentShaped)) {
+  if (!typedDocument && !observation.documentIntent && !observation.nativeDownload &&
+    (NON_DOCUMENT_TYPE.test(contentType) || !documentShaped)) {
     return undefined;
   }
   url.hash = "";
@@ -165,7 +167,8 @@ export class SemanticActionObserver {
       header.name?.toLowerCase() === "content-type")?.value;
     const contentDisposition = details.responseHeaders?.find((header) =>
       header.name?.toLowerCase() === "content-disposition")?.value;
-    if (isNativeDownloadResponse(contentType, contentDisposition)) {
+    const nativeDownload = isNativeDownloadResponse(contentType, contentDisposition);
+    if (nativeDownload) {
       this.nativeDownloadAttempted = true;
     }
     const observation = {
@@ -173,6 +176,7 @@ export class SemanticActionObserver {
       method: details.method,
       contentType,
       filename: filenameFromContentDisposition(contentDisposition),
+      nativeDownload,
     };
     this.keep(observation);
   };
@@ -201,6 +205,7 @@ export class SemanticActionObserver {
       url: candidate,
       filename: observation.filename ?? previous?.filename,
       documentIntent: observation.documentIntent ?? previous?.documentIntent,
+      nativeDownload: observation.nativeDownload ?? previous?.nativeDownload,
     });
     return true;
   }

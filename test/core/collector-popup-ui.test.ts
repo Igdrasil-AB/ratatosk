@@ -23,4 +23,24 @@ describe("discovery search-limit UI", () => {
     expect(popup).toContain("Open the supplier's billing or invoice page, then search again.");
     expect(popup).toContain("Open Billing Page &amp; Search Again");
   });
+
+  it("retires any origin-owned search when the person switches vendors", () => {
+    expect(state).toContain('...(state.origin ? { origin: state.origin } : {})');
+    expect(popup).toContain('data-action="dismiss-discovery"');
+    expect(popup).toContain("function discoveryOrigin(discovery: DiscoveryStatusView)");
+    expect(popup).toContain("activeSupplierTab.origin !== discoveryOrigin(state.discovery)");
+    expect(popup).toContain("discoveryOrigin(state.discovery) !== page.origin");
+    expect(popup).toContain('void send({ type: "cancelDiscovery" })');
+    expect(popup).toContain('data-action="dismiss-discovery">Dismiss');
+    expect(popup).not.toContain("Check This Vendor Instead");
+  });
+
+  it("never presents a partial collection as no new invoices", () => {
+    expect(popup).toContain("Collection incomplete — some invoices may still be missing");
+    expect(popup).toContain('connection.lastStatus === "partial" ? "Retry" : "Collect"');
+  });
+
+  it("makes repeated discovery clicks idempotent", () => {
+    expect(popup).toContain('if (state.discovery.stage === "scanning" || state.discovery.stage === "connecting") return;');
+  });
 });

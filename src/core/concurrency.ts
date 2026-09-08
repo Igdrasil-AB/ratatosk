@@ -14,6 +14,7 @@ export interface BoundedConcurrencyOptions {
 
 export interface SafeConcurrencyPolicy {
   readonly routeProbes: number;
+  readonly frameProbes: number;
   readonly candidatePreviews: number;
   readonly documentFetches: number;
   /** This must remain one until prepare and commit are separate transactions. */
@@ -25,6 +26,7 @@ export const DEFAULT_SAFE_CONCURRENCY = Object.freeze({
   // is bounded by politeness to the supplier rather than by safety. Four keeps
   // an interactive scan to a few waves; the page budget still caps the total.
   routeProbes: 4,
+  frameProbes: 2,
   candidatePreviews: 2,
   documentFetches: 3,
   sinkCommits: 1,

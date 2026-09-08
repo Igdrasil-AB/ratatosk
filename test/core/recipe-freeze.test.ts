@@ -135,7 +135,7 @@ describe("recipe freeze — recipes are declarative data, never code", () => {
     for (const expectPredicate of [{ and: [] }, { or: [] }]) {
       const r = base();
       (r.auth as any).check.expect = expectPredicate;
-      expect(() => validateRecipe(r)).toThrow(/at least/i);
+      expect(() => validateRecipe(r)).toThrow(/at least|>=1/i);
     }
   });
 

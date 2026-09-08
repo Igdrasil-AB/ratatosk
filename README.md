@@ -31,20 +31,24 @@ Three things happen, all driven by you.
 
 **1. Find Invoices** — from any page in a supplier app.
 
-Ratatosk passively snapshots the page you're on without clicking, scrolling,
-navigating, reloading, or closing it, then reopens that exact page once in a
-disposable tab so it can watch the app boot and see the JSON calls the billing
-UI makes. In that disposable page it may open up to four native menus and follow
-up to two localized Settings/Billing controls, retaining only routes the app
-actually exposed. From there a bounded planner follows same-origin routes — read-only `GET` requests in
-disposable inactive tabs, at most 15 pages, depth 3, 10 seconds. It never
+During an explicit Find Invoices action, Ratatosk snapshots the warm page and may
+reveal only read-only workspace/account, Settings, and Billing navigation. It
+never activates an invoice control during discovery. It also reopens the entry
+page once in a disposable tab so it can watch the app boot and see the JSON calls
+the billing UI makes. From there a bounded planner follows same-origin routes through
+up to four inactive disposable tabs at a time — read-only `GET` requests, at most
+40 pages, depth 4, 60 seconds. The active page, visible replay, and collection
+remain serialized. It never
 submits a form, and never follows logout, checkout, purchase, cancellation,
 deletion, or authorization links.
 
 The search stops the moment it has proof rather than when the budget runs out,
 so a portal that answers on its first page costs a second or two, not the whole
 envelope. If the interactive pass cannot finish, the person may explicitly
-continue its saved frontier under a longer, still bounded search.
+continue its saved frontier under a longer, still bounded search. The active
+page, exact replay, and remembered route run first; a short reviewed list of
+universal billing paths runs before a noisy application link graph and contains
+no supplier-specific route.
 
 It ranks routes by path intent *and* by what the page actually says, so an
 opaque route labelled `Invoices` is still found, and `/<tenant>/settings/billing`
@@ -59,6 +63,10 @@ action-column context. Ratatosk shows you the exact origins those candidates
 need, requests only that bounded set, and then downloads and validates a real
 PDF before saving anything. A candidate that doesn't hold up falls through to
 the next one.
+
+Attachment-style controls are captured inside the disposable action tab before
+Chrome creates a browser-owned download. The captured URL or PDF blob still has
+to pass origin, size, `%PDF`, destination, and deduplication checks.
 
 Completion is proven by exhausting the list — the API reporting no next page,
 HTML with no continuation, DOM pagination reaching a stable end — never by

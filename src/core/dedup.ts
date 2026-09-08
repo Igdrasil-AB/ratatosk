@@ -44,7 +44,7 @@ const PDF_HEADER = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]); // %PDF-
  * The delivered bytes are never modified. On malformed, non-PDF, or unusually
  * large input this fails closed and returns the exact bytes instead.
  */
-function canonicalPdfIdentityBytes(bytes: ArrayBuffer): BufferSource {
+function canonicalPdfIdentityBytes(bytes: ArrayBuffer): ArrayBuffer | Uint8Array<ArrayBuffer> {
   const view = new Uint8Array(bytes);
   if (
     view.byteLength > MAX_CANONICAL_PDF_BYTES
@@ -150,7 +150,7 @@ async function sha256Hex(input: string): Promise<string> {
   return sha256Bytes(new TextEncoder().encode(input));
 }
 
-async function sha256Bytes(input: BufferSource): Promise<string> {
+async function sha256Bytes(input: ArrayBuffer | Uint8Array<ArrayBuffer>): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", input);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }

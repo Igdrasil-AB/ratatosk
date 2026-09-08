@@ -1,5 +1,6 @@
 import type { DiscoveryAdapterId } from "../../../src/core/discovery";
 import type { RetrievalProof } from "../../../src/core/types";
+import type { ReplayPhase, ReplayPhaseResult, ReplayPlanKind, ReplayTrace } from "../../../src/core/types";
 import {
   COLLECTION_FAILURE_CAUSES,
   COLLECTION_FAILURE_STAGES,
@@ -10,13 +11,15 @@ import {
 } from "../../../src/core/errors";
 import type { ExplorationFamily, ExplorationMode, ExplorationPageSource } from "./discovery-explorer";
 
-export const DISCOVERY_DIAGNOSTIC_SCHEMA = "ratatosk.discovery-diagnostic.v10" as const;
+export const DISCOVERY_DIAGNOSTIC_SCHEMA = "ratatosk.discovery-diagnostic.v11" as const;
 const LEGACY_DISCOVERY_DIAGNOSTIC_SCHEMAS = new Set([
   "ratatosk.discovery-diagnostic.v4",
   "ratatosk.discovery-diagnostic.v5",
   "ratatosk.discovery-diagnostic.v6",
   "ratatosk.discovery-diagnostic.v7",
   "ratatosk.discovery-diagnostic.v8",
+  "ratatosk.discovery-diagnostic.v9",
+  "ratatosk.discovery-diagnostic.v10",
 ]);
 
 export const CANDIDATE_ADMISSION_SIGNALS = [
@@ -47,6 +50,20 @@ export type DiscoveryAttemptResult =
   | "policy_rejected"
   | "route_not_replayable"
   | "limit_reached";
+
+export const DISCOVERY_PROBE_CAUSES = [
+  "outer_deadline",
+  "navigation_deadline",
+  "mutation_guard",
+  "action_scope",
+  "main_result_missing",
+  "page_exception",
+  "evidence_invalid",
+  "tab_changed",
+  "cancelled",
+  "other",
+] as const;
+export type DiscoveryProbeCause = typeof DISCOVERY_PROBE_CAUSES[number];
 
 export type DiscoveryTermination = "page_cap" | "time_cap" | "queue_exhausted" | "coverage_incomplete" | "candidate_primary_found" | "candidate_set_complete";
 export type CandidateVerificationResult = OperationalOutcomeCode | "no_documents" | "collected";
@@ -90,6 +107,8 @@ export interface DiscoveryAttemptEvidence {
   semanticControls: number;
   semanticControlsRejected?: number;
   semanticNavigationSteps?: number;
+  semanticNavigationStatus?: "disabled" | "complete" | "time_cap" | "action_cap" | "mutation_blocked";
+  evidenceDropped?: number;
 }
 
 export interface DiscoveryDiagnosticV6 {
@@ -123,6 +142,8 @@ export interface DiscoveryDiagnosticV6 {
     resolvedRoute?: string;
     adapter?: DiscoveryAdapterId;
     result: DiscoveryAttemptResult;
+    probeCause?: DiscoveryProbeCause;
+    replay?: ReplayTrace;
     durationMs: number;
     evidence?: DiscoveryAttemptEvidence;
     admission?: CandidateAdmissionSignal[];
@@ -197,6 +218,9 @@ export function parseDiscoveryDiagnostic(value: unknown): DiscoveryDiagnosticV6 
   ) throw new Error("inconsistent discovery termination");
   const currentSchema = raw.schema === DISCOVERY_DIAGNOSTIC_SCHEMA;
   const attempts = raw.attempts.map((attempt) => {
+    if (attempt?.probeCause !== undefined && !isProbeCause(attempt.probeCause)) {
+      throw new Error("invalid discovery diagnostic probe cause");
+    }
     if (
       !attempt || !boundedInt(attempt.page, 1, raw.limits!.pages) || !isPageSource(attempt.source) || !isAttemptResult(attempt.result) ||
       !isSafeRouteTemplate(attempt.route) ||
@@ -208,6 +232,7 @@ export function parseDiscoveryDiagnostic(value: unknown): DiscoveryDiagnosticV6 
     }
     const evidence = attempt.evidence === undefined ? undefined : parseAttemptEvidence(attempt.evidence);
     const admission = attempt.admission === undefined ? undefined : parseAdmissionSignals(attempt.admission);
+    const replay = attempt.replay === undefined ? undefined : parseReplayTrace(attempt.replay);
     if (currentSchema && attempt.result === "candidate_compiled" && !admission?.length) {
       throw new Error("missing candidate admission evidence");
     }
@@ -218,6 +243,8 @@ export function parseDiscoveryDiagnostic(value: unknown): DiscoveryDiagnosticV6 
       resolvedRoute: attempt.resolvedRoute,
       adapter: attempt.adapter,
       result: attempt.result,
+      ...(attempt.probeCause ? { probeCause: attempt.probeCause } : {}),
+      ...(replay ? { replay } : {}),
       durationMs: attempt.durationMs,
       ...(evidence ? { evidence } : {}),
       ...(admission?.length ? { admission } : {}),
@@ -389,7 +416,9 @@ function parseAttemptEvidence(value: DiscoveryAttemptEvidence): DiscoveryAttempt
     !boundedOptionalInt(value.observedRequests, 0, 1_000) || !boundedOptionalInt(value.replayedRequests, 0, 1_000) ||
     !boundedInt(value.structuredData, 0, 1_000) || !boundedInt(value.semanticControls, 0, 1_000) ||
     !boundedOptionalInt(value.semanticControlsRejected, 0, 1_000) ||
-    !boundedOptionalInt(value.semanticNavigationSteps, 0, 3)
+    !boundedOptionalInt(value.semanticNavigationSteps, 0, 3) ||
+    !isOptionalSemanticNavigationStatus(value.semanticNavigationStatus) ||
+    !boundedOptionalInt(value.evidenceDropped, 0, 1_000)
   ) throw new Error("invalid discovery diagnostic attempt evidence");
   return {
     jsonResources: value.jsonResources,
@@ -400,7 +429,16 @@ function parseAttemptEvidence(value: DiscoveryAttemptEvidence): DiscoveryAttempt
     semanticControls: value.semanticControls,
     semanticControlsRejected: value.semanticControlsRejected ?? 0,
     semanticNavigationSteps: value.semanticNavigationSteps ?? 0,
+    ...(value.semanticNavigationStatus ? { semanticNavigationStatus: value.semanticNavigationStatus } : {}),
+    evidenceDropped: value.evidenceDropped ?? 0,
   };
+}
+
+function isOptionalSemanticNavigationStatus(
+  value: unknown,
+): value is DiscoveryAttemptEvidence["semanticNavigationStatus"] {
+  return value === undefined || value === "disabled" || value === "complete" || value === "time_cap" ||
+    value === "action_cap" || value === "mutation_blocked";
 }
 
 function parseAdmissionSignals(value: readonly unknown[]): CandidateAdmissionSignal[] {
@@ -411,6 +449,42 @@ function parseAdmissionSignals(value: readonly unknown[]): CandidateAdmissionSig
     CANDIDATE_ADMISSION_SIGNALS.includes(item as CandidateAdmissionSignal)))];
   if (safe.length !== value.length) throw new Error("invalid candidate admission evidence");
   return safe;
+}
+
+const REPLAY_PLAN_KINDS: readonly ReplayPlanKind[] = ["network", "embedded", "exact_dom", "typed_dom", "semantic_dom"];
+const REPLAY_PHASES: readonly ReplayPhase[] = [
+  "shell_create", "supplier_commit", "menu_reveal", "settings_select", "billing_select",
+  "invoice_section_select", "document_enumeration", "identity_validation",
+];
+const REPLAY_PHASE_RESULTS: readonly ReplayPhaseResult[] = [
+  "complete", "not_present", "time_cap", "action_cap", "mutation_blocked", "ambiguous", "page_left_origin",
+];
+
+export function parseReplayTrace(value: ReplayTrace): ReplayTrace {
+  if (!value || !REPLAY_PLAN_KINDS.includes(value.planKind) || !Array.isArray(value.phases) || value.phases.length > REPLAY_PHASES.length) {
+    throw new Error("invalid discovery replay trace");
+  }
+  const seen = new Set<ReplayPhase>();
+  const phases = value.phases.map((item) => {
+    if (
+      !item || !REPLAY_PHASES.includes(item.phase) || seen.has(item.phase) ||
+      !REPLAY_PHASE_RESULTS.includes(item.result) || !boundedInt(item.durationMs, 0, 60_000)
+    ) throw new Error("invalid discovery replay phase");
+    seen.add(item.phase);
+    return { phase: item.phase, result: item.result, durationMs: item.durationMs };
+  });
+  const firstFailure = phases.find((item) => item.result !== "complete");
+  if (
+    (value.firstFailure === undefined) !== (firstFailure === undefined) ||
+    (value.firstFailure && (
+      value.firstFailure.phase !== firstFailure?.phase || value.firstFailure.result !== firstFailure.result
+    ))
+  ) throw new Error("invalid discovery replay first failure");
+  return {
+    planKind: value.planKind,
+    phases,
+    ...(firstFailure ? { firstFailure: { phase: firstFailure.phase, result: firstFailure.result } } : {}),
+  };
 }
 
 function isSafeRouteTemplate(value: unknown): value is string {
@@ -458,4 +532,8 @@ function isAttemptResult(value: unknown): value is DiscoveryAttemptResult {
     "scope_failed", "list_failed", "too_many_documents", "invalid_identity", "invalid_document_path",
     "unapproved_document_origin", "no_documents", "policy_rejected", "route_not_replayable", "limit_reached",
   ].includes(String(value));
+}
+
+function isProbeCause(value: unknown): value is DiscoveryProbeCause {
+  return DISCOVERY_PROBE_CAUSES.includes(value as DiscoveryProbeCause);
 }

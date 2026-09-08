@@ -55,7 +55,6 @@ const historyDialog = document.getElementById("history-dialog") as HTMLDialogEle
 const historyName = document.getElementById("history-name") as HTMLElement;
 const confirmHistory = document.getElementById("confirm-history") as HTMLButtonElement;
 const cancelHistory = document.getElementById("cancel-history") as HTMLButtonElement;
-const syncDialog = document.getElementById("sync-dialog") as HTMLDialogElement;
 const rebindDialog = document.getElementById("rebind-dialog") as HTMLDialogElement;
 const rebindName = document.getElementById("rebind-name") as HTMLElement;
 const rebindTarget = document.getElementById("rebind-target") as HTMLElement;
@@ -66,22 +65,12 @@ const companyName = document.getElementById("company-name") as HTMLElement;
 const companySuppliers = document.getElementById("company-suppliers") as HTMLElement;
 const confirmCompany = document.getElementById("confirm-company") as HTMLButtonElement;
 const cancelCompany = document.getElementById("cancel-company") as HTMLButtonElement;
-const syncAllHistory = document.getElementById("sync-all-history") as HTMLInputElement;
-const syncFromMonthChoice = document.getElementById("sync-from-month-choice") as HTMLInputElement;
-const syncMonthField = document.getElementById("sync-month-field") as HTMLElement;
-const syncFromMonth = document.getElementById("sync-from-month") as HTMLInputElement;
-const confirmSync = document.getElementById("confirm-sync") as HTMLButtonElement;
-const cancelSync = document.getElementById("cancel-sync") as HTMLButtonElement;
 const VENDOR_GUIDANCE_SEEN = "ui.vendorGuidanceSeen.v1";
 
 let screen: PanelScreen = "home";
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let disconnectVendorId: string | null = null;
 let historyVendorId: string | null = null;
-type CollectionTarget =
-  | { kind: "connected"; vendorId?: string }
-  | { kind: "discovery"; vendorId: string };
-let pendingSyncTarget: CollectionTarget | null = null;
 let pendingRebind: { vendorId: string; destinationId: DestinationId } | null = null;
 let pendingCompanyDisconnect: string | null = null;
 let hasLoadedBackgroundState = false;
@@ -292,6 +281,10 @@ async function load(): Promise<void> {
     state.schedule = background.schedule;
     state.discovery = background.discovery;
     state.activeSupplierTab = activeSupplierTab;
+    if (activeSupplierTab && discoveryOrigin(state.discovery) && activeSupplierTab.origin !== discoveryOrigin(state.discovery)) {
+      state.discovery = { stage: "idle" };
+      await send({ type: "cancelDiscovery" });
+    }
     state.tabAwarenessEnabled = tabAwarenessEnabled;
     // A settings counter, so a stale one is not worth failing the whole load for.
     state.rememberedRouteCount = routeResponse.ok && "rememberedRoutes" in routeResponse
@@ -427,6 +420,12 @@ function discoverableTab(): ActiveSupplierTab | null {
   return state.sources.some((source) => source.primaryOrigin === page.origin) ? null : page;
 }
 
+function discoveryOrigin(discovery: DiscoveryStatusView): string | undefined {
+  return discovery.stage === "scanning" || discovery.stage === "preview" || discovery.stage === "failed"
+    ? discovery.origin
+    : undefined;
+}
+
 /** Offered only while that tab is open, so it never competes for the primary
  * slot a screen's own action occupies. */
 function discoveryBanner(): string {
@@ -503,16 +502,16 @@ function renderVendors(): void {
     } else if (connection) {
       const count = connection.lastCount ?? 0;
       const synced = relTime(connection.lastCompleteSyncAt ?? connection.lastRunAt);
-      sub = connection.lastStatus === "ok" && connection.lastCode === "month_range_fallback_all"
-        ? `${count > 0 ? `${count} collected` : "No new invoices"} · all history checked, no invoice dates`
-        : connection.lastStatus === "partial"
-          ? `${count > 0 ? `${count} collected` : "No new invoices"} · ${connection.lastFailedScopes ?? 0} account scope${connection.lastFailedScopes === 1 ? "" : "s"} skipped`
+      sub = connection.lastStatus === "partial"
+          ? count > 0 ? `${count} collected · collection incomplete` : "Collection incomplete · invoices may still be missing"
         : connection.lastStatus === "rate_limited"
           ? `Paused by vendor · resumes ${relTime(connection.nextEligibleRunAt)}`
           : connection.lastStatus === "error"
         ? connection.lastError ? `Collection failed — ${connection.lastError}` : "Collection failed"
         : count > 0 ? `${count} collected · ${synced}` : `Connected · ${synced}`;
-      action = `<button type="button" class="btn outline sm" data-action="sync" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}">Collect</button>`;
+      if (connection.lastStatus === "error" && connection.nextEligibleRunAt) sub += ` · retry ${relTime(connection.nextEligibleRunAt)}`;
+      const actionLabel = connection.lastStatus === "partial" ? "Retry" : "Collect";
+      action = `<button type="button" class="btn outline sm" data-action="sync" data-id="${esc(source.id)}" aria-describedby="vendor-status-${esc(source.id)}">${actionLabel}</button>`;
       if (!bound) {
         // Left behind by a company disconnect. Paused, never redirected: the
         // one thing worse than not collecting is collecting somewhere else.
@@ -583,17 +582,16 @@ function discoveryCard(): string {
     const sessionToken = discovery.usesSessionToken
       ? `<small class="discovery-consent">Uses the sign-in token ${esc(discovery.name)} issues to itself. Re-read each time, never stored.</small>`
       : "";
-    return `<aside class="supplier-request discovery-found" aria-labelledby="supplier-request-title"><span class="supplier-request-mark letter" aria-hidden="true">${esc(discovery.name.charAt(0).toUpperCase())}</span><span class="supplier-request-copy"><strong id="supplier-request-title">Possible invoice source</strong><small>${esc(discovery.name)} · ${clues} possible invoice control${clues === 1 ? "" : "s"} · ${sites} site${sites === 1 ? "" : "s"}</small><small class="discovery-hosts">Access: ${esc(hostnames)}</small>${sessionToken}</span><span class="discovery-actions"><button type="button" class="supplier-request-link" data-action="connect-discovery" data-id="${esc(discovery.vendorId)}">Verify &amp; Collect</button><button type="button" class="quiet-link compact" data-action="cancel-discovery">Cancel</button></span></aside>`;
+    return `<aside class="supplier-request discovery-found" aria-labelledby="supplier-request-title"><span class="supplier-request-mark letter" aria-hidden="true">${esc(discovery.name.charAt(0).toUpperCase())}</span><span class="supplier-request-copy"><strong id="supplier-request-title">Invoice downloads found</strong><small>${esc(discovery.name)} · ${clues} possible invoice control${clues === 1 ? "" : "s"} · ${sites} site${sites === 1 ? "" : "s"}</small><small class="discovery-hosts">Access: ${esc(hostnames)}</small>${sessionToken}</span><span class="discovery-actions"><button type="button" class="supplier-request-link" data-action="connect-discovery" data-id="${esc(discovery.vendorId)}">Collect Invoices</button><button type="button" class="quiet-link compact" data-action="cancel-discovery">Cancel</button></span></aside>`;
   }
   if (discovery.stage === "connecting") {
-    return `<aside class="supplier-request discovery-progress" role="status"><span class="discovery-spinner" aria-hidden="true"></span><span class="supplier-request-copy"><strong>Verifying a real PDF…</strong><small>${esc(discovery.name)} is saved only if one arrives.</small></span></aside>`;
+    return `<aside class="supplier-request discovery-progress" role="status"><span class="discovery-spinner" aria-hidden="true"></span><span class="supplier-request-copy"><strong>Collecting invoices…</strong><small>Each PDF is verified before it is saved.</small></span></aside>`;
   }
   if (discovery.stage === "complete") {
-    const fallback = discovery.monthFallbackAll ? " All history checked, no invoice dates." : "";
     // No dismissal to perform: the supplier is already in the list above with
     // this same count, so the card retires itself. See `scheduleSuccessDismiss`.
     scheduleSuccessDismiss();
-    return `<aside class="supplier-request discovery-complete" role="status"><span class="supplier-request-mark success" aria-hidden="true">✓</span><span class="supplier-request-copy"><strong>${esc(discovery.name)} connected</strong><small>${discovery.count} invoice${discovery.count === 1 ? "" : "s"} collected.${fallback}</small></span></aside>`;
+    return `<aside class="supplier-request discovery-complete" role="status"><span class="supplier-request-mark success" aria-hidden="true">✓</span><span class="supplier-request-copy"><strong>${discovery.count} invoice${discovery.count === 1 ? "" : "s"} collected</strong><small>${esc(discovery.name)} is connected for future collections.</small></span></aside>`;
   }
   if (discovery.stage === "failed") {
     const emptyResult = discovery.reason === "not_found" || discovery.reason === "limit_reached";
@@ -608,15 +606,15 @@ function discoveryCard(): string {
       : discovery.reason === "not_found"
       ? "Open the supplier's billing or invoice page, then search again."
       : emptyResult
-      ? "This account may not include billing access."
+      ? "No safe unfinished route remains. Open the supplier's billing or invoice page, then search again."
       : discovery.message;
     // One step instead of three. "Copy details" left a person holding a blob of
     // JSON and no idea where it was meant to go.
     const diagnostic = discovery.diagnosticAvailable
       ? `<button type="button" class="quiet-link compact" data-action="report-discovery">Report Issue</button>`
       : "";
-    const retry = discovery.reason === "not_found" ? "Open Billing Page &amp; Search Again" : emptyResult ? "Search Again" : "Try Again";
-    return `<aside class="supplier-request discovery-failed" role="${emptyResult ? "status" : "alert"}"><span class="supplier-request-mark" aria-hidden="true">${emptyResult ? "–" : "!"}</span><span class="supplier-request-copy"><strong>${title}</strong><small>${esc(detail)}</small></span><span class="discovery-actions">${deep}<button type="button" class="supplier-request-link" data-action="retry-discovery">${retry}</button>${diagnostic}</span></aside>`;
+    const retry = emptyResult && !discovery.canSearchDeeper ? "Open Billing Page &amp; Search Again" : emptyResult ? "Search Again" : "Try Again";
+    return `<aside class="supplier-request discovery-failed" role="${emptyResult ? "status" : "alert"}"><span class="supplier-request-mark" aria-hidden="true">${emptyResult ? "–" : "!"}</span><span class="supplier-request-copy"><strong>${title}</strong><small>${esc(detail)}</small></span><span class="discovery-actions">${deep}<button type="button" class="supplier-request-link" data-action="retry-discovery">${retry}</button><button type="button" class="quiet-link compact" data-action="dismiss-discovery">Dismiss</button>${diagnostic}</span></aside>`;
   }
   if (hasAnyDestination() && !page && !state.tabAwarenessEnabled) {
     return `<aside class="supplier-request tab-awareness" aria-labelledby="tab-awareness-title"><span class="supplier-request-mark" aria-hidden="true">${branchIcon()}</span><span class="supplier-request-copy"><strong id="tab-awareness-title">Find invoices on this site</strong><small>Chrome will ask once to recognize your active tab.</small></span><span class="discovery-actions"><button type="button" class="supplier-request-link" data-action="enable-tab-awareness" ${state.tabAwarenessRequestPending ? "disabled" : ""}>${state.tabAwarenessRequestPending ? "Preparing…" : "Find Invoices"}</button></span></aside>`;
@@ -880,7 +878,7 @@ app.addEventListener("click", (event) => {
     return;
   }
   if (action === "connect-discovery" && vendorId) {
-    openSyncDialog({ kind: "discovery", vendorId });
+    void connectDiscoveryFromUserGesture(vendorId);
     return;
   }
   if (action === "set-schedule-weekday" || action === "set-schedule-monthday") {
@@ -999,6 +997,7 @@ async function connectFromUserGesture(vendorId: string, chosen?: DestinationId):
 }
 
 async function discoverFromUserGesture(): Promise<void> {
+  if (state.discovery.stage === "scanning" || state.discovery.stage === "connecting") return;
   const page = state.activeSupplierTab;
   if (!hasAnyDestination()) {
     screen = "settings";
@@ -1024,7 +1023,7 @@ async function discoverFromUserGesture(): Promise<void> {
     }
     if (!granted) {
       await send({ type: "cancelDiscovery" });
-      toast("Access wasn’t granted. Ratatosk did not inspect the site.");
+      toast("Chrome access is required — open Extensions and select Ratatosk for this site.");
       await load();
       return;
     }
@@ -1044,7 +1043,6 @@ async function discoverFromUserGesture(): Promise<void> {
 
 async function connectDiscoveryFromUserGesture(
   vendorId: string,
-  fromMonth?: string,
   chosen?: DestinationId,
 ): Promise<void> {
   const discovery = state.discovery;
@@ -1062,7 +1060,6 @@ async function connectDiscoveryFromUserGesture(
     type: "beginDiscoveryConnect",
     vendorId,
     destinationId,
-    ...(fromMonth ? { fromMonth } : {}),
   });
   const permission = requestHostPermissions(discovery.requiredOrigins);
   state.discovery = { stage: "connecting", name: discovery.name };
@@ -1103,8 +1100,8 @@ async function handle(action: string, vendorId?: string): Promise<void> {
     case "show-all-vendors": state.attentionOnly = false; renderVendors(); return;
     case "home": screen = "home"; state.attentionOnly = false; state.inlineError = null; persistPanelUiState(); await load(); return;
     case "retry-load": await load(); return;
-    case "sync": openSyncDialog({ kind: "connected", vendorId: vendorId! }); return;
-    case "sync-all": openSyncDialog({ kind: "connected" }); return;
+    case "sync": void run({ type: "runNow", vendorId: vendorId! }, vendorId); return;
+    case "sync-all": void run({ type: "runNow" }); return;
     case "disconnect": openDisconnectDialog(vendorId!); return;
     case "forget-history": openHistoryDialog(vendorId!); return;
     case "disable-tab-awareness": await disableTabAwareness(); return;
@@ -1117,6 +1114,10 @@ async function handle(action: string, vendorId?: string): Promise<void> {
     case "manage-igdrasil": await chrome.tabs.create({ url: "https://accounting.igdrasil.se/integrations/invoice-collector" }); return;
     case "cancel-discovery":
       await send({ type: "cancelDiscovery" });
+      await load();
+      return;
+    case "dismiss-discovery":
+      await send({ type: "dismissDiscovery" });
       await load();
       return;
     case "dismiss-vendor-guidance":
@@ -1165,79 +1166,23 @@ function showRunCompletion(summaries: readonly VendorRunSummary[]): void {
   const waiting = summaries.find((summary) => summary.status === "rate_limited" || summary.status === "skipped");
   const expired = summaries.find((summary) => summary.status === "auth_expired");
   const failed = summaries.find((summary) => summary.status === "error");
-  const fallbackCount = summaries.filter((summary) => summary.code === "month_range_fallback_all").length;
-  const bounded = summaries.find((summary) => summary.syncWindow?.mode === "bounded");
+  const partial = summaries.find((summary) => summary.status === "partial");
   const attention = summaries.filter((summary) =>
     summary.status !== "ok" && summary.status !== "partial").length;
 
-  if (collected && fallbackCount) {
-    toast(`Collected ${collected} Invoice${collected === 1 ? "" : "s"} · used all history for ${fallbackCount} supplier${fallbackCount === 1 ? "" : "s"} because invoice dates were unavailable`);
-  } else if (collected) {
-    toast(`Collected ${collected} Invoice${collected === 1 ? "" : "s"}${attention ? ` · ${attention} need attention` : ""}`);
+  if (collected) {
+    toast(`Collected ${collected} Invoice${collected === 1 ? "" : "s"}${partial ? " · collection incomplete" : attention ? ` · ${attention} need attention` : ""}`);
   } else if (waiting) {
     toast(`Supplier asked Ratatosk to wait until ${relTime(waiting.nextEligibleRunAt)}`);
   } else if (expired) {
     toast("Session expired — sign in to the supplier and reconnect");
   } else if (failed?.error) {
     toast(failed.error);
-  } else if (fallbackCount) {
-    toast(`Checked all available history for ${fallbackCount} supplier${fallbackCount === 1 ? "" : "s"} because invoice dates were unavailable · no new invoices`);
-  } else if (bounded?.syncWindow) {
-    toast(`No new invoices from ${monthLabel(bounded.syncWindow.range.fromMonth)}`);
+  } else if (partial) {
+    toast("Collection incomplete — some invoices may still be missing");
   } else {
     toast("No New Invoices");
   }
-}
-
-function openSyncDialog(target: CollectionTarget): void {
-  pendingSyncTarget = target;
-  const now = new Date();
-  syncFromMonth.value = "";
-  syncFromMonth.max = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-  syncAllHistory.checked = true;
-  updateSyncScope();
-  syncDialog.showModal();
-  requestAnimationFrame(() => syncAllHistory.focus());
-}
-
-function updateSyncScope(focusMonth = false): void {
-  const fromMonth = syncFromMonthChoice.checked;
-  syncMonthField.hidden = !fromMonth;
-  syncFromMonth.disabled = !fromMonth;
-  syncFromMonth.required = fromMonth;
-  if (!fromMonth) syncFromMonth.value = "";
-  if (focusMonth && fromMonth) requestAnimationFrame(() => syncFromMonth.focus());
-}
-
-syncAllHistory.addEventListener("change", () => updateSyncScope());
-syncFromMonthChoice.addEventListener("change", () => updateSyncScope(true));
-
-confirmSync.addEventListener("click", () => {
-  if (!pendingSyncTarget || !syncFromMonth.reportValidity()) return;
-  const target = pendingSyncTarget;
-  const fromMonth = syncFromMonth.value || undefined;
-  syncDialog.close();
-  pendingSyncTarget = null;
-  if (target.kind === "discovery") {
-    void connectDiscoveryFromUserGesture(target.vendorId, fromMonth);
-    return;
-  }
-  const message: Extract<Parameters<typeof send>[0], { type: "runNow" }> = {
-    type: "runNow",
-    ...(target.vendorId ? { vendorId: target.vendorId } : {}),
-    ...(fromMonth ? { fromMonth } : {}),
-  };
-  void run(message, target.vendorId);
-});
-
-cancelSync.addEventListener("click", () => syncDialog.close());
-syncDialog.addEventListener("close", () => { pendingSyncTarget = null; });
-
-function monthLabel(value: string): string {
-  const match = /^(\d{4})-(\d{2})$/.exec(value);
-  if (!match) return value;
-  return new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric", timeZone: "UTC" })
-    .format(new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1)));
 }
 
 async function retryDiscovery(): Promise<void> {
@@ -1589,13 +1534,13 @@ cancelRebind.addEventListener("click", () => rebindDialog.close());
 rebindDialog.addEventListener("close", () => { pendingRebind = null; });
 
 async function rebindSupplier(vendorId: string, destinationId: DestinationId): Promise<void> {
+  toast("Moving & Collecting…");
   const response = await send({ type: "bindSupplier", vendorId, destinationId });
   if (!response.ok) {
     sourceError(vendorId, `${response.error} Try again.`);
     return;
   }
-  const target = findDestination(destinationId);
-  toast(target ? `Now sending to ${destinationName(target)}` : "Destination updated");
+  if ("summaries" in response) showRunCompletion(response.summaries);
   await load();
 }
 
@@ -1761,7 +1706,13 @@ async function boot(): Promise<void> {
       if (hadPage && screen === "vendors") renderVendors();
     },
     (page) => {
+      const staleDiscovery = page && discoveryOrigin(state.discovery) &&
+        discoveryOrigin(state.discovery) !== page.origin;
       state.activeSupplierTab = page;
+      if (staleDiscovery) {
+        state.discovery = { stage: "idle" };
+        void send({ type: "cancelDiscovery" });
+      }
       if (screen === "vendors") renderVendors();
     },
   );

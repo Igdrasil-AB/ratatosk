@@ -17,6 +17,7 @@ import type {
   InvoiceMetadataEvidence,
   InvoiceRef,
   RetrievalProof,
+  ReplayTrace,
   VendorRecipe,
 } from "../types";
 import type { RawDocument, Strategy } from "../engine";
@@ -46,6 +47,7 @@ export interface DomDriverRunResult {
   documents?: DomDocumentObservation[];
   actions?: DomDocumentAction[];
   retrieval: RetrievalProof;
+  replay?: ReplayTrace;
 }
 
 export type DomResolvedDocument =
@@ -71,7 +73,7 @@ export function makeDomStrategy(driver: DomDriver): Strategy {
       const spec = (recipe.invoices as DomInvoices).list;
       const open = render(spec.open, vars);
       assertSafeRenderedDiscoveredDomOpen(recipe, spec.open, open);
-      const { collected, documents = [], actions = [], retrieval } = await driver.run(open, spec.steps, spec.continuation);
+      const { collected, documents = [], actions = [], retrieval, replay } = await driver.run(open, spec.steps, spec.continuation);
       const hrefs = collected[spec.hrefsFrom];
       if (!hrefs) throw new SelectorMiss(`DOM step never collected "${spec.hrefsFrom}"`, recipe.id);
       const evidenceByUrl = new Map<string, InvoiceMetadataEvidence[]>();
@@ -138,7 +140,7 @@ export function makeDomStrategy(driver: DomDriver): Strategy {
         observedItems: unique.length + retrieval.unresolvedItems,
         resolvedItems: unique.length,
         unresolvedItems: retrieval.unresolvedItems,
-      });
+      }, replay);
     },
 
     async fetchDocument(recipe, ref, _vars, _ctx, signal): Promise<RawDocument> {

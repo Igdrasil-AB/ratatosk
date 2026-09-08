@@ -11,7 +11,10 @@ const mocks = vi.hoisted(() => ({
   buildRunContext: vi.fn(),
   buildStrategies: vi.fn((
     _recipe?: unknown,
-    _instrumentation?: { onSemanticDocumentAction(): void },
+    _instrumentation?: {
+      onSemanticDocumentAction(): void;
+      onPageOwnedDownloadObservation(attempted: boolean): void;
+    },
   ) => ({})),
   buildSink: vi.fn(),
   recordCollected: vi.fn(async () => undefined),
@@ -135,46 +138,11 @@ describe("Collector per-vendor run coordinator", () => {
     expect(mocks.buildSink).toHaveBeenCalledWith(config);
   });
 
-  it("passes a month-only boundary into the run and records an all-history date fallback", async () => {
-    const syncWindow = {
-      range: { granularity: "month" as const, fromMonth: "2026-03", throughMonth: "2026-07" },
-      mode: "all_history_fallback" as const,
-      matched: 2,
-      skippedBefore: 4,
-      skippedAfter: 0,
-      skippedUndated: 1,
-    };
-    mocks.streamVendor.mockResolvedValueOnce({
-      vendorId: "vendor-month-window",
-      documentCount: 0,
-      scopes: scopes(),
-      syncWindow,
-    });
-
-    await expect(runVendorById("vendor-month-window", "2026-03")).resolves.toMatchObject({
-      vendorId: "vendor-month-window",
-      status: "ok",
-      code: "month_range_fallback_all",
-      syncWindow,
-    });
-    expect(mocks.buildRunContext).toHaveBeenCalledWith(
-      "company",
-      expect.objectContaining({ id: "vendor-month-window" }),
-      "2026-03",
-    );
-    expect(mocks.recordRun).toHaveBeenCalledWith(
-      "vendor-month-window",
-      expect.objectContaining({
-        lastStatus: "ok",
-        lastCode: "month_range_fallback_all",
-      }),
-    );
-  });
-
   it("reports and persists the privacy-safe semantic action count", async () => {
     mocks.buildStrategies.mockImplementationOnce((_recipe, instrumentation) => {
       instrumentation!.onSemanticDocumentAction();
       instrumentation!.onSemanticDocumentAction();
+      instrumentation!.onPageOwnedDownloadObservation(false);
       return {};
     });
     mocks.streamVendor.mockResolvedValueOnce({
@@ -187,10 +155,11 @@ describe("Collector per-vendor run coordinator", () => {
       status: "ok",
       count: 0,
       documentActionCount: 2,
+      pageOwnedDownloadCount: 0,
     });
     expect(mocks.recordRun).toHaveBeenCalledWith(
       "vendor-action-count",
-      expect.objectContaining({ lastDocumentActionCount: 2 }),
+      expect.objectContaining({ lastDocumentActionCount: 2, lastPageOwnedDownloadCount: 0 }),
     );
   });
 
@@ -316,10 +285,10 @@ describe("Collector per-vendor run coordinator", () => {
     const recipe = { id: "discovered-vendor", name: "Discovered" } as never;
     await runDiscoveredCandidate(recipe, "local", async () => {
       order.push("admit");
-    }, "2026-03");
+    });
 
     expect(order).toEqual(["sink", "admit"]);
-    expect(mocks.buildRunContext).toHaveBeenCalledWith("company", recipe, "2026-03");
+    expect(mocks.buildRunContext).toHaveBeenCalledWith("company", recipe);
   });
 
   it("durably records an accepted delivery but fails discovery when admission persistence fails", async () => {
@@ -393,6 +362,45 @@ describe("Collector per-vendor run coordinator", () => {
     });
   });
 
+  it("refuses complete replay below a discovered source's proven document floor", async () => {
+    mocks.resolveCollectorSource.mockResolvedValueOnce({
+      kind: "discovered",
+      recipe: { id: "discovered-regressed", name: "Discovered" },
+      primaryOrigin: "https://example.test",
+      candidateCount: 4,
+    });
+    mocks.streamVendor.mockResolvedValueOnce({
+      vendorId: "discovered-regressed",
+      documentCount: 2,
+      scopes: scopes(),
+      retrieval: "complete",
+      retrievalProof: {
+        completeness: "complete",
+        termination: "explicit_end",
+        pagesVisited: 1,
+        observedItems: 2,
+        resolvedItems: 2,
+        unresolvedItems: 0,
+      },
+    });
+
+    await expect(runVendorById("discovered-regressed")).resolves.toMatchObject({
+      status: "error",
+      count: 0,
+      code: "retrieval_incomplete",
+      retrieval: "partial",
+      failure: {
+        stage: "invoice_list",
+        cause: "retrieval_incomplete",
+        retrieval: { resolvedItems: 2, completeness: "partial" },
+      },
+    });
+    expect(mocks.recordRun).toHaveBeenCalledWith("discovered-regressed", expect.objectContaining({
+      lastStatus: "error",
+      lastCode: "retrieval_incomplete",
+    }));
+  });
+
   it("records partial scope truth and stable rate-limit eligibility", async () => {
     mocks.streamVendor.mockImplementationOnce(async (_recipe, _ctx, _strategies, emit) => {
       await emit(document("vendor-c"));
@@ -417,6 +425,7 @@ describe("Collector per-vendor run coordinator", () => {
       code: "rate_limited",
       nextEligibleRunAt: 1_800_000,
       documentActionCount: 0,
+      pageOwnedDownloadCount: 0,
       failure: {
         stage: "authentication",
         cause: "rate_limited",
@@ -527,6 +536,23 @@ describe("Collector per-vendor run coordinator", () => {
     expect(mocks.streamVendor).not.toHaveBeenCalled();
     expect(mocks.buildSink).not.toHaveBeenCalled();
   });
+  it("pauses scheduled authentication failures but allows explicit manual recovery", async () => {
+    mocks.getConnections.mockResolvedValue({ "vendor-auth": { vendorId: "vendor-auth", connectedAt: 0, destinationId: "local", lastCode: "auth_expired" } });
+    await expect(runVendorById("vendor-auth", "scheduled")).resolves.toMatchObject({ status: "auth_expired" });
+    expect(mocks.streamVendor).not.toHaveBeenCalled();
+    mocks.streamVendor.mockResolvedValueOnce({ vendorId: "vendor-auth", documentCount: 0, scopes: scopes() });
+    await expect(runVendorById("vendor-auth", "manual")).resolves.toMatchObject({ status: "ok" });
+  });
+
+  it("allows manual transient retry while keeping scheduled backoff", async () => {
+    mocks.getConnections.mockResolvedValue({ "vendor-retry": { vendorId: "vendor-retry", connectedAt: 0, destinationId: "local", lastCode: "unknown", consecutiveFailures: 1 } });
+    mocks.getNextEligibleRunAt.mockResolvedValue(2_000_000);
+    await expect(runVendorById("vendor-retry", "scheduled")).resolves.toMatchObject({ status: "skipped", code: "unknown" });
+    expect(mocks.streamVendor).not.toHaveBeenCalled();
+    mocks.streamVendor.mockResolvedValueOnce({ vendorId: "vendor-retry", documentCount: 0, scopes: scopes() });
+    await expect(runVendorById("vendor-retry", "manual")).resolves.toMatchObject({ status: "ok" });
+  });
+
 });
 
 function document(vendorId: string) {

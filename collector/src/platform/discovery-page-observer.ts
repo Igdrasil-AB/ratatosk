@@ -14,6 +14,9 @@ const MAX_INLINE_PDF_BYTES = 8 * 1024 * 1024;
 const MAX_INLINE_PDF_TOTAL_BYTES = 24 * 1024 * 1024;
 const DOCUMENT_HINT = /(?:invoice|receipt|statement|document|download|pdf)/i;
 const DOCUMENT_JSON_FIELD = /(?:^|[._-])(?:(?:invoice|receipt|statement|document)[_-]?(?:pdf|url)|pdf[_-]?url|download[_-]?url)$/i;
+const BILLING_ROUTE_FRAGMENT = /invoice|receipt|billing|payment|subscription|statement|transaction/i;
+const UNSAFE_ROUTE_FRAGMENT = /logout|signout|delete|remove|cancel|checkout|purchase|upgrade|downgrade|authorize|oauth|callback|invite|payment[-_/]?method/i;
+const SAFE_ROUTE_FRAGMENT_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,63}$/;
 
 interface DiscoveryPageObserver {
   snapshot(): Promise<CapturedEntry[]>;
@@ -29,6 +32,18 @@ declare global {
   interface Window {
     __ratatoskDiscoveryObserverV1?: DiscoveryPageObserver;
   }
+}
+
+export function safeBillingRouteFragment(value: string): string {
+  const raw = value.slice(1);
+  if (
+    !raw || raw.length > 240 || /[?=&%\\]/.test(raw) ||
+    !BILLING_ROUTE_FRAGMENT.test(raw) || UNSAFE_ROUTE_FRAGMENT.test(raw)
+  ) return "";
+  const segments = raw.replace(/^\//, "").split("/");
+  return segments.length && segments.every((segment) => SAFE_ROUTE_FRAGMENT_SEGMENT.test(segment))
+    ? `#${raw}`
+    : "";
 }
 
 // A dynamic document_start MAIN-world script installs this before the supplier
@@ -132,13 +147,14 @@ function installObserver(): void {
     let url: URL;
     try { url = new URL(raw, location.href); } catch { return; }
     if (url.protocol !== "https:" || url.origin !== location.origin || url.username || url.password) return;
+    const fragment = url.search ? "" : safeBillingRouteFragment(url.hash);
     for (const [key, value] of [...url.searchParams.entries()]) {
       if (!/^(?:page|p|offset|start|per_page|limit)$/i.test(key) || !/^\d{1,6}$/.test(value)) {
         url.searchParams.delete(key);
       }
     }
     url.searchParams.sort();
-    url.hash = "";
+    url.hash = fragment;
     const value = url.toString();
     if (routeKeys.has(value)) return;
     routeKeys.add(value);

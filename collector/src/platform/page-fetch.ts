@@ -364,7 +364,7 @@ function waitForTabComplete(tabId: number, timeoutMs = 20000): Promise<void> {
       err ? reject(err) : resolve();
     };
     const timer = setTimeout(() => done(new Error(`tab ${tabId} load timed out`)), timeoutMs);
-    const onUpdated = (id: number, info: chrome.tabs.TabChangeInfo) => {
+    const onUpdated = (id: number, info: chrome.tabs.OnUpdatedInfo) => {
       if (id === tabId && info.status === "complete") done();
     };
     chrome.tabs.onUpdated.addListener(onUpdated);

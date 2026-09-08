@@ -19,9 +19,11 @@ unzip -l artifacts/ratatosk-collector-*.zip
 
 - [ ] CI, typecheck, validation, and tests pass.
 - [ ] A fresh `store/semantic-dom-acceptance.json` matches the exact Collector
-      version, acquisition revision, and packaged ZIP SHA-256; its Supabase, additional-supplier,
-      observed-SPA-discovery, native-download, filesystem, Igdrasil, immediate-second-run, and
-      configured-cadence cases pass with zero page-owned download delta.
+      version, discovery/acquisition revisions, and packaged ZIP SHA-256; its
+      opaque semantic SPA, server-rendered documents, structured API, Igdrasil
+      readback, explicit ClickUp completion, extension-generated plan/run
+      snapshots, immediate-second-run, and configured-cadence cases pass with
+      zero repeated actions, ledger additions, or page-owned downloads.
 - [ ] Collector and its checksum are produced under `artifacts/`.
 - [ ] `manifest.json` is at the ZIP root.
 - [ ] The archive contains no `.map`, private key, environment file, or
@@ -61,7 +63,7 @@ Use the current stable Chrome release and a fresh profile.
 - [ ] Sign out of the vendor; confirm the reconnect state and notification.
 - [ ] Disconnect the vendor; confirm its optional host permission is revoked.
 - [ ] From an unsupported synthetic supplier home page, select **Search This
-      App**; verify the exact-origin prompt, maximum fifteen-page/depth-three search,
+      App**; verify the exact-origin prompt, maximum forty-page/depth-four search with four inactive route tabs,
       temporary-tab cleanup, domain/candidate preview, redacted failure diagnostic,
       paginated-collection completeness, second exact-host confirmation if needed,
       valid-PDF gate, provisional source row, explicit Forget History cleanup, and

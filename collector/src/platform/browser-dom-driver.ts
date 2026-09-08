@@ -2,6 +2,8 @@ import type {
   DomContinuationSpec,
   DomStep,
   InvoiceMetadataEvidence,
+  ReplayPhaseAttempt,
+  ReplayTrace,
   VendorRecipe,
 } from "../../../src/core/types";
 import type {
@@ -20,6 +22,7 @@ import {
   UnexpectedResponse,
 } from "../../../src/core/errors";
 import { readDocumentBytes } from "../../../src/core/document-size";
+import { replayTraceWithPrefix as withReplayPrefix } from "../../../src/core/replay-trace";
 import { exactPublicHttpsOriginPattern } from "../../../src/core/origin-policy";
 import { PageFetcher } from "./page-fetch";
 import { createRetrievalProof } from "../../../src/core/retrieval";
@@ -35,7 +38,9 @@ import {
 import { acquireForegroundTabVisibility, type ReleaseForegroundTab } from "./tab-visibility";
 import {
   DocumentActionController,
+  ReplayPhaseFailed,
   type SemanticDocumentActionReference,
+  type SemanticResolutionResult,
 } from "./document-action-controller";
 export { parseDomAdvanceResult } from "./document-action-controller";
 
@@ -48,6 +53,7 @@ type PageDomRunResult =
       documents?: DomDocumentObservation[];
       actions?: SemanticDocumentActionReference[];
       retrieval: DomPageRetrievalEvidence;
+      replay?: ReplayTrace;
       timedOut?: boolean;
       actionCapReached?: boolean;
     }
@@ -73,24 +79,32 @@ export class BrowserDomDriver implements DomDriver {
   private readonly semanticActions = new Map<string, {
     pageUrl: string;
     actionId: string;
+    tabId: number;
     continuationActions: number;
     documentSelector: string;
     allowScroll: boolean;
   }>();
+  private readonly retainedSemanticTabs = new Map<number, {
+    observer?: { dispose(tabId?: number): Promise<void> };
+  }>();
   /** Run-namespaced owners keep earlier scope results available until each URL
    * is consumed, without sharing one run's byte/document budget with another. */
   private readonly inlineDocumentOwners = new Map<string, InlineDocumentStore>();
+  private semanticResolutionChain = Promise.resolve();
 
   constructor(
     private readonly recipe: VendorRecipe,
     private readonly createInlineDocumentStore: () => InlineDocumentStore = () => new InlineDocumentStore(),
     onSemanticDocumentAction: () => void = () => undefined,
+    onPageOwnedDownloadObservation: (attempted: boolean) => void = () => undefined,
+    private readonly expiresAt?: number,
   ) {
     this.allowedOrigins = new Set(recipe.hosts.map((host) => new URL(host.slice(0, -2)).origin));
     this.actionController = new DocumentActionController(
       this.allowedOrigins,
       recipe.id,
       onSemanticDocumentAction,
+      onPageOwnedDownloadObservation,
     );
   }
 
@@ -104,6 +118,7 @@ export class BrowserDomDriver implements DomDriver {
       : undefined;
     let exactTab: { tabId: number; created: boolean } | undefined;
     let releaseForegroundTab: ReleaseForegroundTab = async () => undefined;
+    const replayPrefix: ReplayPhaseAttempt[] = [];
     try {
       if (usesSemanticActions) {
         // Some browser applications defer or omit their billing UI when the
@@ -111,18 +126,21 @@ export class BrowserDomDriver implements DomDriver {
         // shell first, foreground it, and only then navigate to the supplier.
         // The document-start observer is already registered for that later
         // navigation.
-        const shellDeadline = Date.now() + 20_000;
+        const shellStartedAt = Date.now();
+        const shellDeadline = this.deadline(20_000);
         const shell = await withinRunDeadline(
           chrome.tabs.create({ url: "about:blank", active: false }),
           shellDeadline,
         );
         if (shell.id == null) throw new Error("could not open the supplier billing page");
+        replayPrefix.push({ phase: "shell_create", result: "complete", durationMs: Date.now() - shellStartedAt });
         exactTab = { tabId: shell.id, created: true };
         releaseForegroundTab = await acquireForegroundTabVisibility(shell.id);
 
         // Navigation and action execution are independently bounded. Slow SPA
         // startup must not consume the semantic-control budget.
-        const navigationDeadline = Date.now() + Math.max(20_000, policy?.timeoutMs ?? 0);
+        const commitStartedAt = Date.now();
+        const navigationDeadline = this.deadline(Math.max(20_000, policy?.timeoutMs ?? 0));
         await withinRunDeadline(
           chrome.tabs.update(shell.id, { url: page.toString(), active: true }),
           navigationDeadline,
@@ -135,8 +153,9 @@ export class BrowserDomDriver implements DomDriver {
           page.toString(),
           remainingRunMs(navigationDeadline),
         );
+        replayPrefix.push({ phase: "supplier_commit", result: "complete", durationMs: Date.now() - commitStartedAt });
       } else {
-        const navigationDeadline = Date.now() + Math.max(20_000, policy?.timeoutMs ?? 0);
+        const navigationDeadline = this.deadline(Math.max(20_000, policy?.timeoutMs ?? 0));
         exactTab = await ensureExactTab(
           page,
           requiresDisposableDomTab(steps, continuation),
@@ -171,9 +190,10 @@ export class BrowserDomDriver implements DomDriver {
     let termination: "explicit_end" | "continuation_failed" | "repeated_state" | "action_cap" | "document_cap" | "time_cap" = "explicit_end";
     let startedAt = Date.now();
     let runDeadline: number | null = null;
+    let replay: ReplayTrace | undefined;
     try {
       startedAt = Date.now();
-      runDeadline = policy ? startedAt + policy.timeoutMs : null;
+      runDeadline = policy ? this.deadline(policy.timeoutMs) : this.expiresAt ?? null;
       for (let action = 0; ; action += 1) {
         if (runDeadline !== null && Date.now() >= runDeadline) {
           termination = "time_cap";
@@ -207,6 +227,7 @@ export class BrowserDomDriver implements DomDriver {
                 resolvedItems: semantic.resolvedItems,
                 unresolvedItems: semantic.unresolvedItems,
               },
+              replay: withReplayPrefix(semantic.replay, replayPrefix),
               ...(semantic.truncated ? { actionCapReached: true } : {}),
             };
           } else {
@@ -219,6 +240,9 @@ export class BrowserDomDriver implements DomDriver {
             result = parseDomRunResult(injection?.result, this.allowedOrigins);
           }
         } catch (error) {
+          if (error instanceof ReplayPhaseFailed) {
+            throw new ReplayPhaseFailed(error.kind, withReplayPrefix(error.replay, replayPrefix));
+          }
           if (error instanceof DomRunDeadlineExceeded) {
             termination = "time_cap";
             break;
@@ -227,6 +251,7 @@ export class BrowserDomDriver implements DomDriver {
           throw error;
         }
         if (!result.ok) throwDomRunError(result.code, this.recipe.id);
+        if (result.replay) replay = result.replay;
         observedItems += result.retrieval.observedItems;
         resolvedItems += result.retrieval.resolvedItems;
         unresolvedItems += result.retrieval.unresolvedItems;
@@ -243,13 +268,16 @@ export class BrowserDomDriver implements DomDriver {
             throw new DomActionFailed("semantic action page left the approved origin", this.recipe.id);
           }
           for (const actionRef of result.actions) {
-            if (semanticActions.has(actionRef.vendorInvoiceId)) {
-              throw new DocumentActionFailed("document_action_ambiguous", this.recipe.id);
-            }
+            // Load-more passes include the controls already seen above them.
+            // The enumeration itself has already rejected identity collisions,
+            // so the same stable action on a later pass is a duplicate, not an
+            // ambiguity that should discard the remaining invoices.
+            if (semanticActions.has(actionRef.vendorInvoiceId)) continue;
             const handle = crypto.randomUUID();
             this.semanticActions.set(handle, {
               pageUrl: page.toString(),
               actionId: actionRef.actionId,
+              tabId,
               continuationActions: action,
               documentSelector,
               allowScroll: policy?.allowScroll ?? false,
@@ -306,7 +334,7 @@ export class BrowserDomDriver implements DomDriver {
             }
             visited.add(next);
             const updated = await withinRunDeadline(chrome.tabs.update(tabId, { url: next, active: true }), runDeadline);
-            if (updated.status !== "complete") {
+            if (updated?.status !== "complete") {
               await waitForTabComplete(tabId, Math.min(8_000, remainingRunMs(runDeadline)));
             }
           }
@@ -327,18 +355,52 @@ export class BrowserDomDriver implements DomDriver {
           resolvedItems,
           unresolvedItems,
         }),
+        ...(replay ? { replay } : {}),
       };
     } finally {
       await releaseForegroundTab();
-      await pageObserver?.dispose(tabId);
-      if (created) await chrome.tabs.remove(tabId).catch(() => undefined);
+      if (created && usesSemanticActions && semanticActions.size > 0) {
+        // Keep this one enumerated page alive until the engine has filtered
+        // duplicates and resolved only the unseen invoices. Resolution can then
+        // reuse the page instead of reopening the supplier once per document.
+        this.retainedSemanticTabs.set(tabId, { observer: pageObserver });
+      } else {
+        await pageObserver?.dispose(tabId);
+        if (created) await chrome.tabs.remove(tabId).catch(() => undefined);
+      }
     }
   }
 
   async resolve(handle: string, signal?: AbortSignal): Promise<{ kind: "url"; url: string } | { kind: "bytes"; bytes: ArrayBuffer; contentType: string }> {
+    const task = this.semanticResolutionChain.then(
+      () => this.resolveSemanticAction(handle, signal),
+      () => this.resolveSemanticAction(handle, signal),
+    );
+    this.semanticResolutionChain = task.then(() => undefined, () => undefined);
+    return task;
+  }
+
+  private async resolveSemanticAction(handle: string, signal?: AbortSignal): Promise<{ kind: "url"; url: string } | { kind: "bytes"; bytes: ArrayBuffer; contentType: string }> {
     const action = this.semanticActions.get(handle);
     if (!action) throw new DomActionFailed("semantic document action is no longer available", this.recipe.id);
     this.semanticActions.delete(handle);
+    if (this.retainedSemanticTabs.has(action.tabId)) {
+      try {
+        const tab = await chrome.tabs.get(action.tabId);
+        if (tab.url && new URL(tab.url).origin === new URL(action.pageUrl).origin) {
+          return this.materializeSemanticResolution(await this.actionController.resolveOnTab(
+            action.tabId,
+            action.actionId,
+            DISCOVERY_DOM_POLICY,
+            signal,
+          ));
+        }
+      } catch (error) {
+        if (error instanceof AuthExpired || error instanceof AuthFailure || error instanceof DocumentPermissionRequired) throw error;
+        // A supplier may replace or navigate its retained page. The existing
+        // bounded relocation path remains the safe fallback for that invoice.
+      }
+    }
     const resolved = await this.actionController.resolve(
       action.pageUrl,
       action.actionId,
@@ -351,6 +413,10 @@ export class BrowserDomDriver implements DomDriver {
         labelPattern: DOM_CONTINUATION_LABEL_PATTERN,
       },
     );
+    return this.materializeSemanticResolution(resolved);
+  }
+
+  private async materializeSemanticResolution(resolved: SemanticResolutionResult): Promise<{ kind: "url"; url: string } | { kind: "bytes"; bytes: ArrayBuffer; contentType: string }> {
     if (resolved.kind === "url") return resolved;
     const materialized = await materializeInlinePdfDataUrl(resolved.dataUrl);
     if (!materialized) throw new DomActionFailed("semantic action returned an invalid document", this.recipe.id);
@@ -360,6 +426,16 @@ export class BrowserDomDriver implements DomDriver {
   async dispose(): Promise<void> {
     this.semanticActions.clear();
     this.inlineDocumentOwners.clear();
+    const retained = [...this.retainedSemanticTabs.entries()];
+    this.retainedSemanticTabs.clear();
+    await Promise.allSettled(retained.map(async ([tabId, value]) => {
+      await value.observer?.dispose(tabId);
+      await chrome.tabs.remove(tabId);
+    }));
+  }
+
+  private deadline(maximumMs: number): number {
+    return Math.min(Date.now() + maximumMs, this.expiresAt ?? Number.POSITIVE_INFINITY);
   }
 
   async download(url: string): Promise<{ bytes: ArrayBuffer; contentType: string }> {
@@ -949,7 +1025,7 @@ function waitForTabComplete(tabId: number, timeoutMs = 20_000): Promise<void> {
       error ? reject(error) : resolve();
     };
     const timer = setTimeout(() => done(new DomRunDeadlineExceeded("supplier page load timed out")), Math.max(0, timeoutMs));
-    const onUpdated = (updatedId: number, info: chrome.tabs.TabChangeInfo) => {
+    const onUpdated = (updatedId: number, info: chrome.tabs.OnUpdatedInfo) => {
       if (updatedId === tabId && info.status === "complete") done();
     };
     chrome.tabs.onUpdated.addListener(onUpdated);

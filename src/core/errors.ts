@@ -286,7 +286,6 @@ export const OPERATIONAL_OUTCOME_CODES = [
   "document_action_side_effect",
   "document_action_timeout",
   "retrieval_incomplete",
-  "month_range_fallback_all",
   "destination_unavailable",
   "destination_connection_expired",
   "destination_unbound",
@@ -332,7 +331,6 @@ export function operationalOutcomeLabel(code: OperationalOutcomeCode): string {
     case "document_action_side_effect": return "Supplier action created an unexpected download";
     case "document_action_timeout": return "Supplier invoice action timed out";
     case "retrieval_incomplete": return "Invoice retrieval was incomplete";
-    case "month_range_fallback_all": return "Invoice dates were unavailable, so all history was checked";
     case "destination_unavailable": return "Invoice destination unavailable";
     // Distinct from the generic destination failure on purpose: an expired or
     // revoked company credential has a specific route back — reconnect that one

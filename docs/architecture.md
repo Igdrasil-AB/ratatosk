@@ -48,56 +48,19 @@ alarm → service-worker → collector.runAllConnected()
         1. auth evidence     API predicate + final redirect, or exact DOM list
         2. resolveScopes     recipe.config → [{}] or one scope per workspace
         3. strategy.list     observationally enumerate bounded pages → stable refs + traversal proof
-        4. month boundary    for an explicit manual range, keep only refs with a trusted issue month
-        5. preflight         reject incomplete discovered-candidate paths before delivery
-        6. reserve identity  claim every equivalent company/source/invoice key
-        7. strategy.fetch    resolve one unseen action or fetch PDF bytes
-        8. validate          enforce byte cap and PDF signature; claim content identity
+        4. preflight         reject incomplete discovered-candidate paths before delivery
+        5. reserve identity  claim every equivalent company/source/invoice key
+        6. strategy.fetch    resolve one unseen action or fetch PDF bytes
+        7. validate          enforce byte cap and PDF signature; claim content identity
   └─ sink.send(doc) through one exclusive commit lane
   └─ seen.add(key) + ledger receipt after the sink accepts
   └─ discovery admission callback only after durable dedup evidence
 ```
 
-### Month-bounded manual collection
-
-The user-facing boundary is month-only: an optional `YYYY-MM` starting month
-through the current calendar month, both inclusive. The platform turns that
-choice into a typed `SyncMonthWindow`; the engine does not accept arbitrary date
-expressions from recipes or the UI.
-
-Every strategy already normalizes invoice metadata into the same `InvoiceRef`
-contract. Network and embedded-page candidates map a discovered date-like field
-to `issuedAt`. DOM candidates carry labelled row dates as provenance-bearing
-metadata evidence. A supplier-provided `YYYY-MM` billing period is sufficient
-for this filter even though downstream accounting metadata still requires a
-full valid date. The engine resolves that shared evidence and applies the
-month boundary after complete list traversal but before identity reservation or
-PDF materialization. First-time discovery stores the month choice in its
-session-state handoff before requesting permissions, so an already-granted
-permission cannot race ahead into an unbounded candidate run.
-
-The decision is supplier-wide and keeps behavior explainable:
-
-- invoices before the starting month or after the current month are skipped;
-- when every listed invoice has a unique trustworthy issue date, only in-range
-  invoices are eligible;
-- when any successful scope contains a missing, invalid, or equally strong
-  conflicting date, every scope falls back to normal all-history collection;
-- the completion result and first-time discovery card explicitly disclose that
-  all history was used because date filtering was unavailable;
-- an unbounded run retains the existing all-history behavior.
-
-List APIs that support server-side bounds may use the closed run variables
-`syncFromYearMonth`, `syncFromDate`, `syncFromIso`,
-`syncFromEpochSeconds`/`syncFromEpochMs`, and the matching
-`syncToExclusive*` values in a recipe request. This is an efficiency
-optimization only and is safe only for a reviewed API contract that guarantees
-date coverage or supports an unbounded retry. Generic discovery enumerates the
-available metadata before filtering. The engine still enforces the normalized
-invoice month, so a supplier that ignores or misinterprets its query cannot
-expand a reliably dated requested set. When the normalized response contains an
-unreliable date, the document phase deliberately uses the disclosed all-history
-fallback instead.
+Ratatosk always enumerates all available invoice history. Duplicate protection
+is the only selection rule: identities are skipped only after a destination has
+accepted them. The removed month-filtering experiment is preserved under
+`archive/month-filtering/` and is not part of the live collector.
 
 ## Concurrency and cancellation
 
@@ -227,9 +190,10 @@ Collector uses a two-confirmation state machine in `chrome.storage.session` so
 Chrome may close the popup during either permission prompt without losing the
 user's intent:
 
-1. **Find Invoices** requests the active tab's exact HTTPS origin and passively
-   snapshots the rendered page without clicking, navigating, reloading,
-   scrolling, or closing it.
+1. **Find Invoices** requests the active tab's exact HTTPS origin, snapshots the
+   rendered page, and may reveal only guarded workspace/account, Settings, and
+   Billing navigation so the warm application supplies its own route. It never
+   activates a document control during discovery.
    Collector then dynamically registers a packaged
    `document_start` MAIN-world observer for that exact origin. It keeps a bounded,
    sanitized, in-memory sample of JSON fetch/XHR responses, including the method,
@@ -238,7 +202,7 @@ user's intent:
    `status`, and `page`) is preserved for replay; account identifiers,
    signatures, credentials, and unknown query values remain redacted.
    After registration succeeds, Collector reopens the exact canonical entry URL
-   once in an inactive disposable tab before it tries speculative routes. That
+   once in a disposable tab before it tries speculative routes. That
    cold replay captures early, cached, POST, and cross-origin API evidence that
    cannot be reconstructed from `performance` URLs. Generic hydration JSON does
    not end observation: the probe waits for bounded request-shape quiescence or
@@ -263,8 +227,9 @@ user's intent:
    read-only GraphQL queries while blocking mutating fetch/XHR, beacon, form,
    popup, and unsafe navigation attempts. It never activates a document or form action. Same-origin frames contribute
    passive network evidence only; frame DOM routes and controls are not admitted.
-   Common billing paths are a bounded compatibility fallback in an explicit deep
-   search only; they are not tried during the ten-second fast search. The fast
+   No unobserved billing path is assembled or guessed. Common billing words are
+   ranking signals only when they occur in an application-exposed URL,
+   accessible name, or nearby context. The fast
    frontier checks at most fifteen pages to depth three. A `limit_reached` result
    retains only reconstructable safe targets and offers one explicit deeper
    continuation within the remaining portion of the 45-second total envelope. A
@@ -399,3 +364,10 @@ has been removed. Supplier support now comes from generic discovery only.
   scrolling after the first invoice structure has already been verified. Any
   click-capable or continuation run is isolated in a disposable tab.
 - The **popup** is framework-free by design — a thin view over the message bus.
+
+## Scheduled retry recovery
+
+Calendar schedules retain their daily, weekly, and monthly occurrence. A persisted
+ten-minute run lease recovers interrupted sweeps, while bounded transient retries
+share the one-shot alarm. The existing collection coordinator serializes scheduled
+and interactive acquisition. Authentication failures wait for a manual reconnect.

@@ -140,7 +140,7 @@ const RequestSpec = z
   .object({
     method: z.enum(["GET", "POST"]).optional(),
     url: z.string().min(1),
-    headers: z.record(z.string()).optional(),
+    headers: z.record(z.string(), z.string()).optional(),
     body: z.string().optional(),
   })
   .strict();

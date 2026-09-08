@@ -50,7 +50,7 @@ describe("stopping a probe wave early", () => {
     // The break belongs inside the per-probe loop; at the end of the wave it
     // would save nothing, which is the bug this replaced.
     const wave = source.slice(source.indexOf("for await (const probe of probes)"), source.indexOf("await checkpoint();"));
-    expect(wave).toContain("if (structuredProofRetained(retained) && entryObserved) {");
+    expect(wave).toContain('(structuredProofRetained(retained) || (target.source === "common_route" && retained.length > 0)) && entryObserved');
     expect(wave).toContain("break;");
   });
 
@@ -61,7 +61,7 @@ describe("stopping a probe wave early", () => {
     const source = readFileSync("collector/src/platform/discovery.ts", "utf8");
     const wave = source.slice(source.indexOf("for await (const probe of probes)"), source.indexOf("await checkpoint();"));
 
-    expect(wave).toContain("if (structuredProofRetained(retained) && entryObserved) {");
+    expect(wave).toContain('(structuredProofRetained(retained) || (target.source === "common_route" && retained.length > 0)) && entryObserved');
     // Marked on settle, not on success: a failed entry probe has no title left
     // to contribute either, and waiting past it would stall the shortcut.
     expect(wave).toMatch(/if \(target\.source === "entry"\) entryObserved = true;[\s\S]{0,120}if \(probe\.status !== "fulfilled"\)/);

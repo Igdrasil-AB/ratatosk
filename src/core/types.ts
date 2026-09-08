@@ -115,23 +115,38 @@ export interface RetrievalProof {
 export interface InvoiceListResult {
   refs: InvoiceRef[];
   retrieval: RetrievalProof;
+  /** Privacy-safe browser replay phases. Platform adapters may provide this;
+   * network and embedded strategies omit it. */
+  replay?: ReplayTrace;
 }
 
-/** User-selected invoice issue-month range. Both endpoints are inclusive. */
-export interface SyncMonthWindow {
-  granularity: "month";
-  fromMonth: string;
-  throughMonth: string;
+export type ReplayPlanKind = "network" | "embedded" | "exact_dom" | "typed_dom" | "semantic_dom";
+export type ReplayPhase =
+  | "shell_create"
+  | "supplier_commit"
+  | "menu_reveal"
+  | "settings_select"
+  | "billing_select"
+  | "invoice_section_select"
+  | "document_enumeration"
+  | "identity_validation";
+export type ReplayPhaseResult =
+  | "complete"
+  | "not_present"
+  | "time_cap"
+  | "action_cap"
+  | "mutation_blocked"
+  | "ambiguous"
+  | "page_left_origin";
+export interface ReplayPhaseAttempt {
+  phase: ReplayPhase;
+  result: ReplayPhaseResult;
+  durationMs: number;
 }
-
-export interface SyncWindowStats {
-  range: SyncMonthWindow;
-  /** One supplier-wide decision made after every successful scope is listed. */
-  mode: "bounded" | "all_history_fallback";
-  matched: number;
-  skippedBefore: number;
-  skippedAfter: number;
-  skippedUndated: number;
+export interface ReplayTrace {
+  planKind: ReplayPlanKind;
+  phases: ReplayPhaseAttempt[];
+  firstFailure?: Pick<ReplayPhaseAttempt, "phase" | "result">;
 }
 
 /** A fully materialized invoice document, ready to hand to an {@link IngestSink}. */
@@ -484,8 +499,6 @@ export interface RunContext {
   companyId: string;
   /** Base template variables, e.g. the current `{year}`/`{month}` window. */
   vars: Record<string, unknown>;
-  /** Present only for an explicitly month-bounded collection run. */
-  syncWindow?: SyncMonthWindow;
   seen: SeenStore;
   /** Performs a credentialed HTTP request. Injected so the engine stays platform-free. */
   fetch: (spec: RequestSpec, vars: Record<string, unknown>, signal?: AbortSignal) => Promise<HttpResponse>;
@@ -515,7 +528,6 @@ export interface RunResult {
   /** List proofs in deterministic scope traversal order. A scope that failed
    * before producing a list has no proof and remains visible in `scopes`. */
   retrievalProofs: RetrievalProof[];
-  syncWindow?: SyncWindowStats;
   scopes: {
     total: number;
     succeeded: number;

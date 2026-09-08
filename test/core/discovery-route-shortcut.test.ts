@@ -23,7 +23,6 @@ import { createSimulation, type Portal } from "../support/portal-simulator";
 const HUNTED = new Set([
   "rest portal with a query-addressed list",
   "billing behind a settings bridge",
-  "tenant-prefixed billing route",
   "opaque route named only by its label",
 ]);
 

@@ -51,16 +51,20 @@ Collector handles only the data required for that purpose:
    billing route. It stores no page body, API response, cookie, or header.
 
 During Find Invoices, Collector temporarily inspects the active page and up to
-fourteen additional same-origin pages the application actually exposed, to depth
-three. The ten-second fast search starts from the active page, one cold replay,
-and observed links, SPA navigation, network, or inert-page evidence; it does not
-guess common billing URLs. If it reaches its safe cap, the person may explicitly
-continue the retained safe frontier under the remaining portion of a 45-second
-total envelope. It uses inactive temporary tabs, performs only page navigation
-and bounded same-origin GET probes. The active page remains passive; a disposable
-    replay may open up to four native menus and two localized Settings/Billing
-    controls, never activates a document control or
-    submits a form, and closes the tabs when the search ends. While those controls
+thirty-nine additional same-origin pages, to depth four. The sixty-second search
+starts from the active page, one cold replay, and observed links, SPA navigation,
+network, or inert-page evidence. If those do not resolve the supplier, it tries a
+reviewed universal list such as billing, settings/billing, account/billing,
+invoices, and receipts, including a bounded tenant prefix already present in the
+active URL. No supplier-specific route is packaged or downloaded. If it reaches
+its safe cap, the person may explicitly continue the retained safe frontier under
+a longer bounded envelope. It may use up to four inactive temporary tabs for the
+universal route wave, performs page navigation and bounded same-origin GET probes,
+and closes the unused tabs when evidence wins. During the explicit search, the
+warm active page or a disposable replay may open bounded workspace/account menus
+and localized Settings/Billing controls to observe routes; neither activates a
+document control or submits a form. Document controls are activated only after
+Verify & Collect in a guarded disposable tab. While navigation controls
     are revealed, a temporary packaged guard permits only GET/HEAD and explicit
     read-only GraphQL queries; it blocks mutating fetch/XHR, beacon, form, popup,
     and unsafe navigation attempts and discards that probe. On those temporary pages, a packaged
@@ -185,8 +189,9 @@ permission so the persistent side panel can identify the active tab after tab
 switches. Ratatosk reads only the current tab URL for this UI context, does not
 store a browsing history, and this permission does not authorize page inspection.
 After exact-origin approval, the bounded search may inspect up
-to fourteen additional same-origin pages exposed by the application; generic
-billing guesses are reserved for an explicit deeper continuation. HTTPS supplier access is optional and Chrome
+to thirty-nine additional same-origin pages. It may append only reviewed universal
+billing suffixes to the approved origin or one bounded tenant prefix already in
+the active URL; it never contains a supplier-specific route. HTTPS supplier access is optional and Chrome
 asks for the exact origin when the user connects or tests it. During that explicit
 search, `scripting` also installs and removes the bounded exact-origin page-load
 observer described above. The optional

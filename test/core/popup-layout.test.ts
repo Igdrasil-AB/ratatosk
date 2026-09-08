@@ -172,17 +172,21 @@ describe("Collector popup layout regressions", () => {
   it("identifies the exact collector and discovery engine on load and every search", () => {
     expect(serviceWorkerSource).toContain("[collector] ready ${formatCollectorRuntimeIdentity()}");
     expect(serviceWorkerSource).toContain("[collector] discovery start ${formatCollectorRuntimeIdentity()}");
+    expect(serviceWorkerSource).toContain('currentDiscovery.origin === message.origin');
+    expect(serviceWorkerSource).toContain('if (currentDiscovery.stage === "scanning") await cancelCurrentDiscovery();');
+    expect(serviceWorkerSource).toContain("runConnectedVendor(message.vendorId)");
+    expect(serviceWorkerSource).toContain("discoverSupplierInTab(tab.id, profile.primaryOrigin, { mode: \"fast\" })");
   });
 
   it("offers local discovery with a reviewed-recipe fallback", () => {
     expect(popupSource).toContain("Supplier not listed?");
     expect(popupSource).toContain("Find Invoices");
     expect(popupSource).toContain("Copy details");
-    expect(popupSource).toContain("Verify &amp; Collect");
+    expect(popupSource).toContain("Collect Invoices");
     expect(popupSource).not.toContain("Studio on GitHub");
     expect(popupSource).not.toContain("Build a reviewed recipe instead");
     expect(popupSource).not.toContain('data-action="open-add-supplier"');
-    expect(popupSource).toContain("Possible invoice source");
+    expect(popupSource).toContain("Invoice downloads found");
     expect(popupSource).toContain("No invoices found");
     expect(popupSource).toContain("possible invoice control");
     expect(popupStyles).toMatch(/\.supplier-request-link \{[^}]*min-height:\s*40px/s);
@@ -190,7 +194,7 @@ describe("Collector popup layout regressions", () => {
     expect(popupStyles).toMatch(/\.tab-awareness \.discovery-actions \{[^}]*flex-direction:\s*row/s);
     expect(popupStyles).toContain("prefers-reduced-motion: reduce");
     expect(popupSource).toContain('data-action="retry-discovery"');
-    expect(popupSource).toContain("may not include billing access");
+    expect(popupSource).toContain("No safe unfinished route remains");
   });
 
   it("keeps invoice metadata truthful and collection controls available with history", () => {
@@ -201,27 +205,18 @@ describe("Collector popup layout regressions", () => {
     expect(popupSource).toContain('data-action="sync-all">Collect Invoices');
   });
 
-  it("asks for an optional starting month before manual collection", () => {
-    expect(popupStyles).toContain('id="sync-dialog"');
-    expect(popupStyles).toContain('id="sync-from-month" name="fromMonth" type="month" min="1970-01"');
-    expect(popupStyles).toContain('id="sync-all-history"');
-    expect(popupStyles).toContain('id="sync-from-month-choice"');
-    expect(popupStyles).toContain("All available history");
-    expect(popupSource).toContain('openSyncDialog({ kind: "connected", vendorId: vendorId! })');
-    expect(popupSource).toContain('openSyncDialog({ kind: "connected" })');
-    expect(popupSource).toContain('openSyncDialog({ kind: "discovery", vendorId })');
-    expect(popupSource).toContain("...(fromMonth ? { fromMonth } : {})");
-    expect(serviceWorkerSource).toContain("isSyncMonth(message.fromMonth)");
-    expect(serviceWorkerSource).toContain("beginSupplierDiscoveryConnect(message.vendorId, message.fromMonth, message.destinationId)");
-    expect(serviceWorkerSource).toContain("}, pending.fromMonth)");
-    expect(serviceWorkerSource).toContain("DISCOVERY_FAILURE_MESSAGES.monthRangeEmpty");
-    expect(popupSource).toContain('connection.lastCode === "month_range_fallback_all"');
-    expect(popupSource).toContain("used all history");
-    expect(popupStyles).toContain("Ratatosk will collect all history and tell you when it finishes");
-    // The fallback stays disclosed on the completion card, in one short clause
-    // rather than a sentence that doubles the card's height.
-    expect(popupSource).toContain("discovery.monthFallbackAll");
-    expect(popupSource).toContain("All history checked, no invoice dates.");
+  it("collects all available history without a date-filtering step", () => {
+    expect(popupStyles).not.toContain('id="sync-dialog"');
+    expect(popupStyles).not.toContain('name="fromMonth"');
+    expect(popupSource).not.toContain("fromMonth");
+    expect(popupSource).toContain('case "sync": void run({ type: "runNow", vendorId: vendorId! }, vendorId);');
+    expect(popupSource).toContain('case "sync-all": void run({ type: "runNow" });');
+  });
+
+  it("makes destination rebinding perform the collection promised by its label", () => {
+    expect(popupSource).toContain('toast("Moving & Collecting…")');
+    expect(popupSource).toContain('if ("summaries" in response) showRunCompletion(response.summaries)');
+    expect(serviceWorkerSource).toContain("const summary = await runConnectedVendor(message.vendorId)");
   });
 
   it("closes the date menu with Escape or an outside click and clears stale toast text", () => {

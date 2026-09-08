@@ -4,6 +4,7 @@ import {
   parseDiscoveredSupplierProfile,
   requiredCandidateOrigins,
   extendCandidateDocumentOrigins,
+  replayPlanKindForRecipe,
   type DiscoveredSupplierCandidateSetV1,
   type DiscoveredSupplierProfileV1,
 } from "../../../src/core/discovery";
@@ -12,11 +13,12 @@ import { parseDiscoveryDiagnostic, type DiscoveryDiagnosticV1 } from "./discover
 import {
   continueExplorationCheckpoint,
   explorationBudget,
+  hasResumableExplorationFrontier,
   parseExplorationCheckpoint,
   type ExplorationCheckpoint,
 } from "./discovery-explorer";
-import { isSyncMonth } from "../../../src/core/sync-window";
 import { LOCAL_DESTINATION_ID, type DestinationId } from "./storage";
+import type { ReplayPlanKind } from "../../../src/core/types";
 
 const KEY = "supplierDiscovery.v1";
 const ACTIVE_TTL_MS = 15 * 60_000;
@@ -43,14 +45,13 @@ export const DISCOVERY_FAILURE_MESSAGES = {
   timeCap: "Ratatosk reached its safe search-time limit before it could verify an invoice source.",
   pageCap: "Ratatosk checked its safe page limit without verifying an invoice source.",
   capacity: "Ratatosk has reached its local discovered-supplier limit. Disconnect one discovered supplier and try again.",
-  monthRangeEmpty: "No invoices were available from that month. Choose an earlier month or leave it empty to collect all history.",
 } as const;
 
 type DiscoveryState =
   | { stage: "awaiting_permission" | "scanning"; runId: string; tabId: number; origin: string; checkpoint?: ExplorationCheckpoint; updatedAt: number }
   | { stage: "preview"; runId: string; candidates: DiscoveredSupplierCandidateSetV1; diagnostic: DiscoveryDiagnosticV1; updatedAt: number }
-  | { stage: "confirming"; runId: string; candidates: DiscoveredSupplierCandidateSetV1; diagnostic: DiscoveryDiagnosticV1; fromMonth?: string; destinationId?: DestinationId; updatedAt: number }
-  | { stage: "complete"; runId: string; vendorId: string; name: string; count: number; monthFallbackAll?: boolean; updatedAt: number }
+  | { stage: "confirming"; runId: string; candidates: DiscoveredSupplierCandidateSetV1; diagnostic: DiscoveryDiagnosticV1; destinationId?: DestinationId; updatedAt: number }
+  | { stage: "complete"; runId: string; vendorId: string; name: string; count: number; updatedAt: number }
   | {
     stage: "failed";
     runId: string;
@@ -66,7 +67,6 @@ type DiscoveryState =
 export interface PendingSupplierDiscovery {
   runId: string;
   candidates: DiscoveredSupplierCandidateSetV1;
-  fromMonth?: string;
   /** The destination the user chose for this supplier before granting access. */
   destinationId?: DestinationId;
 }
@@ -80,6 +80,8 @@ export type DiscoveryStatusView =
     name: string;
     origin: string;
     candidateCount: number;
+    planCount: number;
+    planKinds: readonly ReplayPlanKind[];
     adapterId: DiscoveredSupplierProfileV1["adapter"]["id"];
     requiredOrigins: readonly string[];
     /** A retained plan re-mints the short-lived token this site issues to
@@ -87,7 +89,7 @@ export type DiscoveryStatusView =
     usesSessionToken: boolean;
   }
   | { stage: "connecting"; name: string }
-  | { stage: "complete"; vendorId: string; name: string; count: number; monthFallbackAll?: boolean }
+  | { stage: "complete"; vendorId: string; name: string; count: number }
   | {
     stage: "failed";
     message: string;
@@ -153,26 +155,22 @@ export async function setSupplierDiscoveryPreview(
 
 export async function beginSupplierDiscoveryConnect(
   vendorId: string,
-  fromMonth?: string,
   destinationId?: DestinationId,
 ): Promise<PendingSupplierDiscovery | undefined> {
   return transition(async () => {
     const state = await read();
     if (!state || state.stage !== "preview" || state.candidates.id !== vendorId) return undefined;
-    if (fromMonth && !isSyncMonth(fromMonth)) return undefined;
     await write({
       stage: "confirming",
       runId: state.runId,
       candidates: state.candidates,
       diagnostic: state.diagnostic,
-      ...(fromMonth ? { fromMonth } : {}),
       ...(destinationId ? { destinationId } : {}),
       updatedAt: Date.now(),
     });
     return {
       runId: state.runId,
       candidates: state.candidates,
-      ...(fromMonth ? { fromMonth } : {}),
       ...(destinationId ? { destinationId } : {}),
     };
   });
@@ -184,7 +182,6 @@ export async function getPendingSupplierDiscoveryConnect(): Promise<PendingSuppl
     ? {
       runId: state.runId,
       candidates: state.candidates,
-      ...(state.fromMonth ? { fromMonth: state.fromMonth } : {}),
       ...(state.destinationId ? { destinationId: state.destinationId } : {}),
     }
     : undefined;
@@ -231,7 +228,6 @@ export async function completeSupplierDiscovery(
   vendorId: string,
   name: string,
   count: number,
-  monthFallbackAll = false,
 ): Promise<boolean> {
   return transition(async () => {
     const state = await read();
@@ -242,7 +238,6 @@ export async function completeSupplierDiscovery(
       vendorId: safeId(vendorId),
       name: safeName(name),
       count: Math.max(0, Math.min(500, Math.trunc(count))),
-      ...(monthFallbackAll ? { monthFallbackAll: true } : {}),
       updatedAt: Date.now(),
     });
     return true;
@@ -256,13 +251,17 @@ export async function failSupplierDiscovery(
   diagnostic?: DiscoveryDiagnosticV1,
 ): Promise<boolean> {
   return transition(async () => {
-  let resumable: { tabId: number; origin: string; checkpoint: ExplorationCheckpoint } | undefined;
+  let failedContext: { tabId?: number; origin: string; checkpoint?: ExplorationCheckpoint } | undefined;
   if (runId) {
     const state = await read();
-    if (!state || state.runId !== runId || (state.stage !== "scanning" && state.stage !== "confirming")) return false;
-    if (state.stage === "scanning" && state.checkpoint) {
-      resumable = { tabId: state.tabId, origin: state.origin, checkpoint: state.checkpoint };
-    }
+    if (!state || state.runId !== runId) return false;
+    if (state.stage === "scanning") {
+      failedContext = state.checkpoint
+        ? { tabId: state.tabId, origin: state.origin, checkpoint: state.checkpoint }
+        : { origin: state.origin };
+    } else if (state.stage === "confirming") {
+      failedContext = { origin: state.candidates.primaryOrigin };
+    } else return false;
   }
   await write({
     stage: "failed",
@@ -270,7 +269,11 @@ export async function failSupplierDiscovery(
     message: safeMessage(message),
     origins: safeOrigins(origins),
     diagnostic: diagnostic ? parseDiscoveryDiagnostic(diagnostic) : undefined,
-    ...(resumable ? { tabId: resumable.tabId, origin: resumable.origin, checkpoint: resumable.checkpoint } : {}),
+    ...(failedContext ? {
+      origin: failedContext.origin,
+      ...(failedContext.tabId !== undefined ? { tabId: failedContext.tabId } : {}),
+      ...(failedContext.checkpoint ? { checkpoint: failedContext.checkpoint } : {}),
+    } : {}),
     updatedAt: Date.now(),
   });
   return true;
@@ -333,6 +336,8 @@ export async function getSupplierDiscoveryStatus(): Promise<DiscoveryStatusView>
       name: state.candidates.displayName,
       origin: state.candidates.primaryOrigin,
       candidateCount: state.candidates.candidates[0].candidateCount,
+      planCount: state.candidates.candidates.length,
+      planKinds: [...new Set(state.candidates.candidates.map((candidate) => replayPlanKindForRecipe(candidate.recipe)))],
       adapterId: state.candidates.candidates[0].adapter.id,
       requiredOrigins: requiredCandidateOrigins(state.candidates),
       // Any retained candidate may be the one that runs, so the disclosure
@@ -345,14 +350,14 @@ export async function getSupplierDiscoveryStatus(): Promise<DiscoveryStatusView>
       vendorId: state.vendorId,
       name: state.name,
       count: state.count,
-      ...(state.monthFallbackAll ? { monthFallbackAll: true } : {}),
     };
     case "failed": return {
-      ...(state.checkpoint?.mode === "fast" && state.diagnostic?.result === "limit_reached" && state.origin && state.tabId !== undefined
+      ...(state.origin ? { origin: state.origin } : {}),
+      ...(state.checkpoint?.mode === "fast" && hasResumableExplorationFrontier(state.checkpoint) &&
+        state.diagnostic?.result === "limit_reached" && state.origin && state.tabId !== undefined
         ? {
           canSearchDeeper: true as const,
           deepRemainingMs: Math.max(0, explorationBudget("deep").durationMs - state.checkpoint.elapsedMs),
-          origin: state.origin,
         }
         : {}),
       stage: "failed",
@@ -399,12 +404,6 @@ function parseState(value: unknown): DiscoveryState | undefined {
   }
   if (raw.stage === "preview" || raw.stage === "confirming") {
     try {
-      const fromMonth = raw.stage === "confirming" && typeof raw.fromMonth === "string"
-        ? raw.fromMonth
-        : undefined;
-      if (raw.stage === "confirming" && raw.fromMonth !== undefined && (!fromMonth || !isSyncMonth(fromMonth))) {
-        return undefined;
-      }
       // A destination is an identity, so a persisted one is re-parsed rather
       // than trusted: a malformed value drops the binding and the connect flow
       // asks again, instead of admitting a supplier to an unknown destination.
@@ -414,7 +413,6 @@ function parseState(value: unknown): DiscoveryState | undefined {
         stage: raw.stage,
         runId: raw.runId, candidates: parseDiscoveredSupplierCandidateSet(raw.candidates),
         diagnostic: parseDiscoveryDiagnostic(raw.diagnostic),
-        ...(fromMonth ? { fromMonth } : {}),
         ...(destinationId ? { destinationId } : {}),
         updatedAt,
       };
@@ -426,7 +424,6 @@ function parseState(value: unknown): DiscoveryState | undefined {
   }
   if (raw.stage === "complete") {
     if (typeof raw.vendorId !== "string" || typeof raw.name !== "string" || !Number.isFinite(raw.count)) return undefined;
-    if (raw.monthFallbackAll !== undefined && raw.monthFallbackAll !== true) return undefined;
     try {
       return {
         stage: raw.stage,
@@ -434,7 +431,6 @@ function parseState(value: unknown): DiscoveryState | undefined {
         vendorId: safeId(raw.vendorId),
         name: safeName(raw.name),
         count: Math.max(0, Math.min(500, Math.trunc(Number(raw.count)))),
-        ...(raw.monthFallbackAll === true ? { monthFallbackAll: true } : {}),
         updatedAt,
       };
     } catch {
@@ -445,17 +441,20 @@ function parseState(value: unknown): DiscoveryState | undefined {
     try {
       const checkpoint = raw.checkpoint === undefined ? undefined : parseExplorationCheckpoint(raw.checkpoint);
       if (raw.checkpoint !== undefined && !checkpoint) return undefined;
-      const hasContinuation = raw.tabId !== undefined || raw.origin !== undefined || checkpoint !== undefined;
+      const origin = raw.origin === undefined ? undefined : typeof raw.origin === "string" ? raw.origin : null;
+      if (origin === null) return undefined;
+      if (origin) exactOriginPattern(origin);
+      const hasContinuation = raw.tabId !== undefined || checkpoint !== undefined;
       if (hasContinuation) {
-        if (!Number.isInteger(raw.tabId) || Number(raw.tabId) < 0 || typeof raw.origin !== "string" || !checkpoint) return undefined;
-        exactOriginPattern(raw.origin);
+        if (!Number.isInteger(raw.tabId) || Number(raw.tabId) < 0 || !origin || !checkpoint) return undefined;
       }
       return {
         stage: raw.stage,
         runId: raw.runId, message: safeMessage(raw.message),
         origins: safeOrigins(raw.origins),
         diagnostic: raw.diagnostic === undefined ? undefined : parseDiscoveryDiagnostic(raw.diagnostic),
-        ...(hasContinuation ? { tabId: Number(raw.tabId), origin: raw.origin as string, checkpoint: checkpoint! } : {}),
+        ...(origin ? { origin } : {}),
+        ...(hasContinuation ? { tabId: Number(raw.tabId), checkpoint: checkpoint! } : {}),
         updatedAt,
       };
     } catch {

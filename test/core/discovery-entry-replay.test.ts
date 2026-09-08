@@ -23,7 +23,7 @@ describe("exact-entry cold replay", () => {
         source: "entry_replay",
         family: "exact_entry",
         hintSource: "cold_replay",
-        score: Number.MAX_SAFE_INTEGER - 1,
+        score: Number.MAX_SAFE_INTEGER - 2,
       },
     ]);
   });
@@ -33,19 +33,24 @@ describe("exact-entry cold replay", () => {
       .toHaveLength(1);
   });
 
-  it("registers the observer before creating the replay plan and never navigates the active tab", () => {
+  it("registers the observer before warm guarded navigation and exact replay", () => {
     const observerStart = discoverySource.indexOf("await pageObserver.start()");
     const replayPlan = discoverySource.indexOf("createInitialExplorationTargets(firstUrl, observerReady, remembered)");
 
     expect(observerStart).toBeGreaterThan(0);
     expect(replayPlan).toBeGreaterThan(observerStart);
-    expect(discoverySource).toContain('target.source === "entry_replay"');
+    expect(discoverySource).toContain('source: "entry_replay"');
     expect(discoverySource).not.toMatch(/chrome\.tabs\.update\(tabId,\s*\{/);
-    expect(discoverySource).toContain('allowSemanticNavigation: target.source !== "entry"');
+    expect(discoverySource).toContain("allowSemanticNavigation: true");
     expect(discoverySource).toContain('allowScroll: target.source !== "entry"');
-    expect(discoverySource).toContain('if (topLevelFrame && options.allowSemanticNavigation !== false) {');
-    expect(discoverySource).toContain('await withDiscoveryMutationGuard(async () => {');
-    expect(discoverySource).toContain('await revealSemanticNavigation()');
+    expect(discoverySource).toContain('target.source === "entry_replay"\n            ? capExplorationProbeOptions(explorationProbeOptions(target, "deep"), 20_000)');
+    expect(discoverySource).toContain('if (options.foregroundRetryWithoutBillingIntent && leaseAvailable)');
+    expect(discoverySource).toContain('chrome.tabs.create({ url: "about:blank", active: false })');
+    expect(discoverySource).toContain('chrome.tabs.update(this.tabId!, { url: target, active: true })');
+    expect(discoverySource).toContain('topLevelFrame && options.allowSemanticNavigation !== false ? "complete" : "disabled"');
+    expect(discoverySource).toContain("activeSemanticCandidateRetained");
+    expect(discoverySource).toContain('const mutationBlocked = await withDiscoveryMutationGuard');
+    expect(discoverySource).toContain('revealStatus = await revealSemanticNavigation(');
     expect(discoverySource).toContain('topLevelFrame && options.allowScroll !== false && !usefulEvidencePresent()');
   });
 

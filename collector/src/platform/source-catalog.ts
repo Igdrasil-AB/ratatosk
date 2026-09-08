@@ -10,6 +10,8 @@ export type CollectorSource = {
   recipe: VendorRecipe;
   lifecycle?: VendorLifecycleEntry;
   primaryOrigin: string;
+  /** Minimum document controls proven when a discovered source was admitted. */
+  candidateCount?: number;
   presentationIcon?: string;
 };
 
@@ -33,6 +35,7 @@ export async function listCollectorSources(): Promise<CollectorSource[]> {
       kind: "discovered",
       recipe: profile.recipe,
       primaryOrigin: profile.primaryOrigin,
+      candidateCount: profile.candidateCount,
       presentationIcon: knownSupplierIcon(profile.primaryOrigin),
     }));
   return [...official, ...discovered];
@@ -55,6 +58,7 @@ export async function resolveCollectorSource(id: string): Promise<CollectorSourc
         kind: "discovered",
         recipe: discovered.recipe,
         primaryOrigin: discovered.primaryOrigin,
+        candidateCount: discovered.candidateCount,
         presentationIcon: knownSupplierIcon(discovered.primaryOrigin),
       }
     : undefined;

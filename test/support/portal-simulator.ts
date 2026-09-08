@@ -100,6 +100,9 @@ export interface Portal {
   entryPath: string;
   /** Cost of a full page load in a fresh tab. */
   navMs?: number;
+  /** Regression hook: the active document refuses a late all-frame observer
+   * injection. A resumed frontier must not depend on adopting it again. */
+  entryObserverAdoptHangs?: boolean;
   routes: PortalRoute[];
   /** Serves what a compiled recipe replays during candidate preview. */
   endpoint?: (request: {
@@ -373,7 +376,13 @@ export function createSimulation(portal: Portal): Simulation {
         semanticControls: hydrated ? route!.semanticControls ?? 0 : 0,
         semanticSections: hydrated ? route!.semanticSections ?? 0 : 0,
         semanticControlsRejected: 0,
-        semanticNavigationSteps: 0,
+        semanticNavigationSteps: Math.min(3, navigations.length),
+        semanticNavigationStatus: options.allowSemanticNavigation === false
+          ? "disabled" as const
+          : (route?.semanticRevealMs ?? 0) > semanticRevealMs
+            ? "time_cap" as const
+            : "complete" as const,
+        evidenceDropped: 0,
       },
     };
   };
@@ -456,6 +465,9 @@ export function createSimulation(portal: Portal): Simulation {
         // Injecting the observer into an already-open document, as discovery
         // does for the tab the person is looking at.
         if (files?.length) {
+          if (portal.entryObserverAdoptHangs && target.tabId === entryTab.id) {
+            return new Promise<never>(() => undefined);
+          }
           tab.observed = observerRegistered;
           return [{ result: undefined }];
         }
@@ -503,6 +515,17 @@ export function createSimulation(portal: Portal): Simulation {
             truncated: false,
             navigationSteps: 0,
             sectionObserved: Boolean(route?.semanticSections),
+            replay: {
+              planKind: "semantic_dom",
+              phases: [{
+                phase: "document_enumeration",
+                result: count > 0 ? "complete" : "not_present",
+                durationMs: 0,
+              }],
+              ...(count > 0 ? {} : {
+                firstFailure: { phase: "document_enumeration", result: "not_present" },
+              }),
+            },
           } }];
         }
         if (args?.length === 1 && typeof first?.url === "string") {

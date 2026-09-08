@@ -194,7 +194,11 @@ function canonicalOrigin(value: string): string | undefined {
 function safeRouteUrl(value: string, origin: string): string | undefined {
   try {
     const safe = safeEntryUrl(value);
-    return new URL(safe).origin === origin ? safe : undefined;
+    const url = new URL(safe);
+    // The site root is a shell, not a shortcut. Remembering it adds a slow
+    // duplicate probe before every real search and cannot move discovery any
+    // closer to an invoice surface.
+    return url.origin === origin && url.pathname !== "/" ? safe : undefined;
   } catch {
     return undefined;
   }

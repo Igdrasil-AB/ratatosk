@@ -13,7 +13,6 @@ import { type Destination, seenStore } from "./storage";
 import { BrowserDomDriver } from "./browser-dom-driver";
 import { render } from "../../../src/core/template";
 import { createDocumentProviderFetch } from "./document-provider-fetch";
-import { createSyncMonthWindow, syncMonthWindowVars } from "../../../src/core/sync-window";
 
 /**
  * Assembles the platform-specific pieces the platform-free core needs: the
@@ -27,6 +26,10 @@ import { createSyncMonthWindow, syncMonthWindowVars } from "../../../src/core/sy
 export interface StrategyInstrumentation {
   /** Privacy-safe count only; no action or supplier data crosses this hook. */
   onSemanticDocumentAction?: () => void;
+  /** Observed page-owned download attempts inside the guarded page scope. */
+  onPageOwnedDownloadObservation?: (attempted: boolean) => void;
+  /** Optional absolute cap used by no-sink discovery verification. */
+  expiresAt?: number;
 }
 
 export function buildStrategies(
@@ -40,6 +43,8 @@ export function buildStrategies(
           recipe,
           undefined,
           instrumentation.onSemanticDocumentAction,
+          instrumentation.onPageOwnedDownloadObservation,
+          instrumentation.expiresAt,
         ))
       : unavailableDomStrategy,
     html: htmlStrategy,
@@ -52,20 +57,18 @@ export interface PreparedRun {
   dispose: () => Promise<void>;
 }
 
-export function buildRunContext(companyId: string, recipe: VendorRecipe, fromMonth?: string): PreparedRun {
+export function buildRunContext(companyId: string, recipe: VendorRecipe): PreparedRun {
   const now = new Date();
-  const syncWindow = fromMonth ? createSyncMonthWindow(fromMonth, now) : undefined;
   const vars = {
     year: now.getUTCFullYear(),
     month: String(now.getUTCMonth() + 1).padStart(2, "0"),
-    ...(syncWindow ? syncMonthWindowVars(syncWindow) : {}),
   };
   const seen = seenStore();
 
   if (recipe.fetchContext === "page") {
     const pageFetcher = new PageFetcher(recipe);
     return {
-      ctx: { companyId, vars, seen, ...(syncWindow ? { syncWindow } : {}), fetch: pageFetcher.fetch },
+      ctx: { companyId, vars, seen, fetch: pageFetcher.fetch },
       dispose: () => pageFetcher.dispose(),
     };
   }
@@ -76,7 +79,6 @@ export function buildRunContext(companyId: string, recipe: VendorRecipe, fromMon
       companyId,
       vars,
       seen,
-      ...(syncWindow ? { syncWindow } : {}),
       fetch: async (spec, requestVars) => {
         const url = render(spec.url, requestVars);
         if (!recipeAllowsUrl(recipe, url)) throw new Error("request targets an origin outside the supplier permission set");

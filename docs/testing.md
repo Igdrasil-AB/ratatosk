@@ -1,10 +1,55 @@
 # Testing a supplier live
 
+For a discovery or replay failure that requires iterative implementation, follow
+[`plans/016-build-iterative-end-to-end-acquisition-lab.md`](../plans/016-build-iterative-end-to-end-acquisition-lab.md).
+That plan defines the red-case, supplier-shape, exact-build, delivery, duplicate,
+cadence, iteration-ledger, and promotion gates. The procedure below is the live
+operator branch of that loop.
+
+## Built-extension discovery gate
+
+`npm run test:chrome-discovery` builds Collector, loads that unpacked output in
+Playwright Chromium, and drives the real service worker, MAIN-world injection,
+frames, DNR guards, tab cleanup, serialization, and no-sink candidate preview.
+Its synthetic HTTPS portal covers immediate and delayed server links, iframe
+network evidence, four-menu navigation, semantic-only controls, an opaque
+user-opened billing surface, and a blocked telemetry effect.
+Every case must find a candidate inside the ten-second fast envelope. This gate
+is required by CI and `validate:collector-release`; it complements rather than
+replaces the authorized ClickUp first/second/cadence acceptance below.
+
+`npm run test:chrome-acquisition` uses the same built-extension harness and
+drives the public discovery, connection, run, ledger, schedule, storage, and
+Chrome download contracts through structured-network, direct-DOM, and semantic
+DOM delivery. It requires one first-run file and ledger entry, then zero files
+and zero accepted actions on both an immediate rerun and an actual Chrome alarm
+rerun. It also fails closed for invalid PDFs and incomplete traversal, proves
+candidate fallback, and retries a document after destination rejection.
+
 Fixture tests prove mapping and engine behavior. They cannot prove that a current
 vendor endpoint, browser auth flow, or bot-protection rule still works. Complete
 this test before naming a vendor as supported in a release.
 
 ## Iteration discipline for a live failure
+
+Run one deterministic built-browser shape repeatedly with:
+
+```bash
+npm run test:discovery-iteration -- --case semantic-replay-timeout --repeat 3
+```
+
+Prepare the committed package for the supplier tabs already open in Chrome,
+then follow the hostname-only wizard:
+
+```bash
+npm run prepare:live-supplier-test -- --browser chrome
+scripts/live-supplier-test.sh
+```
+
+The preparation command records the commit, ZIP checksum, unpacked-tree digest,
+service-worker chunk, and runtime revisions under ignored `artifacts/live/`.
+Chrome cannot let an extension reload itself, so the wizard pauses for that one
+explicit reload and rejects a copied ready line from any other build.
 
 Do not advance the package version, publish a ZIP, or describe a supplier as
 fixed until the exact built extension has passed the live acceptance loop below.
@@ -107,30 +152,34 @@ rows. A Chrome-native supplier download is never a Ratatosk success even if its
 URL was observed. The immediate second run and configured-cadence diagnostic
 must both report zero document actions.
 
-## Transactional semantic-DOM release matrix
+## Transactional live acquisition release matrix
 
 Before a Collector release, use the exact unpacked build and complete:
 
-- Supabase-class semantic supplier with the filesystem destination: first run,
-  immediate second run, and one real configured cadence.
-- One additional authorized semantic supplier with both filesystem and
-  Igdrasil destinations.
-- One authorized observed-SPA discovery supplier with the filesystem
-  destination: the route must be discovered without revealing its private path
-  to the engine, then pass first run, immediate second run, and configured
-  cadence with zero page-owned downloads. This may be ClickUp when an
+- One opaque-route semantic SPA, one server-rendered document portal, and one
+  structured API or GraphQL portal. ClickUp may supply the first family when an
   authorized dedicated account is available.
-- The synthetic local native-download archetype with both destinations. It
-  must close as `browser_download_unsupported`, accept nothing, leave no file,
-  and not touch an unrelated user download.
-- Permission denial, cancellation, invalid/oversized PDF, controlled URL, and
-  bounded blob cases.
+- At least one family must deliver to a dedicated Igdrasil test company and be
+  read back there; the others may use the isolated filesystem destination.
+- Every family must accept and ledger at least one valid PDF on its first run,
+  then add zero documents, ledger rows, semantic actions, and page-owned browser
+  downloads on both the immediate and real-alarm cadence runs.
+- The built-Chromium gate separately covers native-download containment,
+  candidate fallback, invalid PDF, partial traversal, destination rejection and
+  retry, and unrelated user-download safety.
 
-Copy `store/semantic-dom-acceptance.template.json` to the release receipt only
-after observing the results. Use only its closed fields. `npm run
-validate:collector-release` checks the exact package version, acquisition
-revision, freshness, required destination/site classes, first-run acceptance,
-zero second/cadence actions and additions, and zero page-owned download delta.
+After the hostname-only wrapper captures one preview plus first, immediate, and
+cadence snapshots for three families, run `npm run build:live-acceptance-receipt`.
+Each snapshot is generated by the extension and contains only runtime identity,
+hostname, closed plan/destination identities, timestamps, and counts. The
+builder validates their order and deltas, strips hostnames, and writes the
+ignored exact-artifact receipt; do not hand-edit or substitute synthetic results.
+`npm run
+validate:collector-release` checks the exact artifact SHA, Collector version,
+discovery and acquisition revisions, seven-day freshness, three supplier
+families, explicit ClickUp completion, distinct opaque supplier tokens,
+candidate plan kinds/count, Igdrasil readback, first-run acceptance/ledger agreement, zero
+immediate/cadence actions or additions, and zero page-owned download delta.
 The command deliberately fails when the receipt is absent.
 
 For an unsupported supplier, open its signed-in home or billing page and select
@@ -146,13 +195,13 @@ resulting semantic candidate and confirm verification keeps its disposable tab
 visible until controls are enumerated and document captures finish, then
 restores the prior tab before cleanup. Saturate the entry
 page with at least nine billing-shaped links and one observed, opaque SPA
-destination. Confirm the observed destination is probed before any generic
-route; the same opaque path without observed navigation must be ignored. Fast
-search must return `limit_reached` within ten seconds rather than starting deep
+destination. Confirm the active page and exact replay run first, followed by the
+reviewed universal billing routes before the noisy link graph, and that no
+supplier-specific production route exists.
+The first search must return within sixty seconds rather than starting deep
 search automatically. Confirm the card offers **Search Deeper**, states the
 remaining bound, and resumes the saved frontier without re-probing completed
-pages. Generic common billing routes may appear only in that explicit deep
-continuation. Include a root tenant route whose tenant value is also returned
+pages. Include a root tenant route whose tenant value is also returned
 under a typed first-party scope key; confirm the preview stores a `{scope}`
 template rather than the tenant value, and **Connect & Collect** renders it only
 at run time. The same route without typed scope provenance must not preview.
@@ -233,6 +282,14 @@ issue.
   popup says `partial`, including only bounded failed/empty scope counts.
 - Simulate HTTP 429 and confirm automatic and manual runs remain skipped until
   the persisted per-vendor eligibility time; another vendor must still run.
+- Simulate a transient network or destination failure and confirm scheduled work
+  uses the bounded 5 minute, 30 minute, then 2 hour retry policy while a manual
+  check can retry immediately.
+- Close and restart Chrome after a schedule becomes overdue and confirm exactly
+  one catch-up sweep starts. Interrupt a scheduled sweep and confirm it becomes
+  eligible again after its bounded lease rather than remaining stuck.
+- Trigger a manual check while an alarm sweep is active and confirm the vendor
+  request and destination write occur once.
 - Use **Copy diagnostic** on a non-OK vendor and inspect the JSON. It may contain
   only vendor ID, Collector/lifecycle revisions, stable outcome code, timestamps,
   counts, closed verification stage/cause codes, HTTP status/content-type

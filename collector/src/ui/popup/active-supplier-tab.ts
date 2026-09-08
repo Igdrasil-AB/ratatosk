@@ -4,10 +4,10 @@ export interface ActiveSupplierTab {
   hostname: string;
 }
 
-type ActivatedListener = (activeInfo: chrome.tabs.TabActiveInfo) => void;
+type ActivatedListener = (activeInfo: chrome.tabs.OnActivatedInfo) => void;
 type UpdatedListener = (
   tabId: number,
-  changeInfo: chrome.tabs.TabChangeInfo,
+  changeInfo: chrome.tabs.OnUpdatedInfo,
   tab: chrome.tabs.Tab,
 ) => void;
 

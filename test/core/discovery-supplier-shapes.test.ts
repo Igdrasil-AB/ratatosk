@@ -12,13 +12,13 @@ import { createSimulation, type Portal } from "../support/portal-simulator";
  * lost candidate or a slower search rather than as a changed constant.
  *
  * The time assertion is the product promise: a person clicks Find Invoices and
- * waits seconds, not minutes. It is modelled from the same navigation and
+ * gets one bounded correctness-first minute. It is modelled from the same navigation and
  * hydration delays that decide whether evidence is found at all, so nothing can
  * pass it by simply waiting less.
  */
 
 const INTERACTIVE_BUDGET_MS = EXPLORATION_BUDGETS.fast.durationMs;
-const TARGET_MS = 10_000;
+const TARGET_MS = INTERACTIVE_BUDGET_MS;
 
 let active: { restore(): void } | undefined;
 
@@ -78,7 +78,53 @@ describe("supplier discovery across portal shapes", () => {
     expect(trace.elapsedMs).toBeLessThanOrEqual(5_000);
   });
 
-  it("fails fast, and labels the failure so the caller knows a deeper pass is still owed", async () => {
+  it("keeps a safe hash-routed billing surface replayable", async () => {
+    const portal: Portal = {
+      name: "hash-routed SPA billing",
+      origin: "https://app.hash-billing.example",
+      entryPath: "/new#settings/billing",
+      routes: [{
+        path: "/new",
+        title: "Billing | Example",
+        hydrateMs: 100,
+        html: '<html><body><h1>Invoices</h1><a href="https://invoice.stripe.com/i/acct_example/live_example">View</a></body></html>',
+      }],
+    };
+
+    const { result } = await discover(portal);
+    const recipe = result.candidates.candidates[0].recipe;
+    expect(recipe.invoices.strategy).toBe("dom");
+    if (recipe.invoices.strategy === "dom") {
+      expect(recipe.invoices.list.open).toBe(`${portal.origin}/new#settings/billing`);
+    }
+  });
+
+  it("persists the safe billing fragment revealed from a generic shell route", async () => {
+    const portal: Portal = {
+      name: "shell revealing hash-routed billing",
+      origin: "https://app.hash-reveal.example",
+      entryPath: "/home",
+      routes: [
+        { path: "/home", hydrateMs: 100, html: "<html><body>Home</body></html>" },
+        {
+          path: "/settings/billing",
+          title: "Billing | Example",
+          hydrateMs: 100,
+          navigations: [{ href: "/new#settings/billing", label: "Billing" }],
+          html: '<html><body><h1>Invoices</h1><a href="https://invoice.stripe.com/i/acct_example/live_example">View</a><a href="/downloads">Get apps</a></body></html>',
+        },
+      ],
+    };
+
+    const { result } = await discover(portal);
+    const recipe = result.candidates.candidates[0].recipe;
+    expect(recipe.invoices.strategy).toBe("dom");
+    if (recipe.invoices.strategy === "dom") {
+      expect(recipe.invoices.list.open).toBe(`${portal.origin}/new#settings/billing`);
+    }
+  });
+
+  it("closes an exhausted correctness-first search within its bounded minute", async () => {
     const barren: Portal = {
       name: "portal with no billing surface",
       origin: "https://app.barren.example",
@@ -100,7 +146,7 @@ describe("supplier discovery across portal shapes", () => {
     expect(simulation.trace.elapsedMs).toBeLessThanOrEqual(TARGET_MS);
   });
 
-  it("resolves a portal too slow for the interactive envelope on the deeper pass", async () => {
+  it("resolves a five-second portal in the first correctness envelope", async () => {
     const glacial: Portal = {
       name: "portal that hydrates billing after five seconds",
       origin: "https://app.glacial.example",
@@ -125,26 +171,58 @@ describe("supplier discovery across portal shapes", () => {
     const fast = createSimulation(glacial);
     active = fast;
     fast.install();
-    let fastError: unknown;
     try {
-      await discoverSupplierInTab(fast.entryTabId, glacial.origin, { mode: "fast" });
-    } catch (error) {
-      fastError = error;
+      const result = await discoverSupplierInTab(fast.entryTabId, glacial.origin, { mode: "fast" });
+      expect(result.candidates.candidates[0].adapter.id).toBe("dom-links");
     } finally {
       fast.restore();
       active = undefined;
     }
-    expect(fastError).toBeInstanceOf(SupplierDiscoveryError);
-    expect((fastError as SupplierDiscoveryError).diagnostic.coverage?.mode).toBe("fast");
+  });
 
-    const deep = createSimulation(glacial);
-    active = deep;
-    deep.install();
+  it("checkpoints an unfinished semantic lane instead of reporting not found", async () => {
+    const portal: Portal = {
+      name: "portal whose menu exceeds the first bounded lane",
+      origin: "https://app.semantic-lane.example",
+      entryPath: "/home",
+      routes: [{
+        path: "/home",
+        title: "Home | Semantic Lane",
+        hydrateMs: 100,
+        semanticRevealMs: 30_000,
+        html: "<html><body><h1>Home</h1></body></html>",
+      }],
+    };
+    const simulation = createSimulation(portal);
+    const checkpoints: ReturnType<typeof createExplorationCheckpoint>[] = [];
+    active = simulation;
+    simulation.install();
     try {
-      const result = await discoverSupplierInTab(deep.entryTabId, glacial.origin, { mode: "deep" });
-      expect(result.candidates.candidates[0].adapter.id).toBe("dom-links");
+      let failure: unknown;
+      try {
+        await discoverSupplierInTab(simulation.entryTabId, portal.origin, {
+          mode: "fast",
+          onCheckpoint: async (checkpoint) => { checkpoints.push(checkpoint); },
+        });
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toBeInstanceOf(SupplierDiscoveryError);
+      expect((failure as SupplierDiscoveryError).diagnostic).toMatchObject({
+        result: "limit_reached",
+        termination: "time_cap",
+      });
+      expect(checkpoints.at(-1)?.frontier).toContainEqual(expect.objectContaining({
+        source: "entry",
+        route: "/home",
+      }));
+      expect((failure as SupplierDiscoveryError).diagnostic.attempts).toContainEqual(expect.objectContaining({
+        source: "entry",
+        evidence: expect.objectContaining({ semanticNavigationStatus: "time_cap" }),
+      }));
     } finally {
-      deep.restore();
+      simulation.restore();
       active = undefined;
     }
   });
@@ -178,10 +256,13 @@ describe("supplier discovery across portal shapes", () => {
 
     expect(result.candidates.candidates[0].adapter.id).toBe("dom-links");
     expect(trace.probes.map((probe) => new URL(probe.url).pathname)).toContain("/surface/r7");
-    expect(trace.probes.map((probe) => new URL(probe.url).pathname)).not.toContain("/billing");
-    const activeEntry = trace.probes.findIndex((probe) => probe.foreground && new URL(probe.url).pathname === "/home");
-    const coldReplay = trace.probes.findIndex((probe) => !probe.foreground && new URL(probe.url).pathname === "/home");
-    expect(trace.probePhases[activeEntry].semanticRevealMs).toBe(0);
+    expect(trace.probes.map((probe) => new URL(probe.url).pathname)).toContain("/billing");
+    const homeProbes = trace.probes.flatMap((probe, index) =>
+      new URL(probe.url).pathname === "/home" ? [index] : []);
+    expect(homeProbes).toHaveLength(2);
+    const [activeEntry, coldReplay] = homeProbes;
+    expect(trace.probes[coldReplay].foreground).toBe(true);
+    expect(trace.probePhases[activeEntry].semanticRevealMs).toBeGreaterThan(0);
     expect(trace.probePhases[coldReplay].semanticRevealMs).toBeGreaterThan(0);
     expect(trace.probePhases).toContainEqual(expect.objectContaining({
       semanticRevealMs: expect.any(Number),
@@ -302,6 +383,63 @@ describe("supplier discovery across portal shapes", () => {
     expect(JSON.stringify(profile)).not.toContain(tenant);
   });
 
+  it("templates an opaque route from an observed cross-origin read-only GraphQL scope", async () => {
+    const tenant = "9012345678901";
+    const origin = "https://app.graphql-scope.example";
+    const scopeUrl = "https://api.graphql-scope.example/graphql?operationName=Workspace";
+    const requestBody = JSON.stringify({ query: "query Workspace { viewer { workspace { id } } }", operationName: "Workspace" });
+    const scopeBody = JSON.stringify({ data: { viewer: { workspace: { id: tenant } } } });
+    const portal: Portal = {
+      name: "opaque route with cross-origin GraphQL scope",
+      origin,
+      entryPath: `/${tenant}/home`,
+      routes: [
+        {
+          path: `/${tenant}/home`,
+          hydrateMs: 100,
+          navigations: [{ href: `/${tenant}/surface/r7`, label: "Billing and invoices" }],
+          html: "<html><body>Home</body></html>",
+        },
+        {
+          path: `/${tenant}/surface/r7`,
+          title: "Invoices | GraphQL Scope",
+          hydrateMs: 300,
+          calls: [{
+            url: scopeUrl,
+            method: "POST",
+            requestBody,
+            requestHeaders: { "content-type": "application/json" },
+            body: scopeBody,
+          }],
+          html: '<html><body><h1>Invoices</h1><a href="/documents/july.pdf">Download</a></body></html>',
+        },
+      ],
+      endpoint: (request) => request.url === scopeUrl && request.method === "POST"
+        ? { body: scopeBody }
+        : undefined,
+    };
+
+    const { result } = await discover(portal);
+    const profile = result.candidates.candidates.find((candidate) => candidate.adapter.id === "dom-links")!;
+    expect(profile.recipe.invoices).toMatchObject({
+      strategy: "dom",
+      list: { open: `${origin}/{workspace}/surface/r7` },
+    });
+    expect(profile.recipe.config).toEqual([{
+      id: "workspace",
+      discover: {
+        request: {
+          url: scopeUrl,
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: requestBody,
+        },
+        value: "data.viewer.workspace.id",
+      },
+    }]);
+    expect(JSON.stringify(profile)).not.toContain(tenant);
+  });
+
   it("does not preview a root tenant DOM route when typed scope provenance is absent", async () => {
     const tenant = "9012345678901";
     const portal: Portal = {
@@ -353,5 +491,41 @@ describe("supplier discovery across portal shapes", () => {
     expect(recipe.config?.[0]?.id).toBe("workspaceId");
     // The provider's hosted invoice page is rewritten to the direct document.
     expect(JSON.stringify(recipe.invoices.list.map.documentUrl)).toContain("pay.stripe.com");
+  });
+
+  it("does not hang a resumed deep search on active-tab observer adoption", async () => {
+    const portal: Portal = {
+      name: "resumed deep search with an unresponsive active document",
+      origin: "https://deep-resume.example",
+      entryPath: "/home",
+      entryObserverAdoptHangs: true,
+      routes: [{ path: "/home", html: "<html><body>Home</body></html>" }],
+    };
+    const checkpoint = createExplorationCheckpoint({
+      mode: "deep",
+      pagesAttempted: 10,
+      linkedPagesAttempted: 8,
+      commonRoutePagesAttempted: 0,
+      elapsedMs: 10_000,
+      frontier: [],
+      completedTargetKeys: ["exact_entry|/home"],
+      attemptedFamilies: ["exact_entry", "observed_navigation"],
+      slicesCompleted: 0,
+    });
+    const simulation = createSimulation(portal);
+    active = simulation;
+    simulation.install();
+    try {
+      const outcome = await Promise.race([
+        discoverSupplierInTab(simulation.entryTabId, portal.origin, { mode: "deep", checkpoint })
+          .then(() => "resolved" as const, (error: unknown) => error),
+        new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 100)),
+      ]);
+
+      expect(outcome).toBeInstanceOf(SupplierDiscoveryError);
+    } finally {
+      simulation.restore();
+      active = undefined;
+    }
   });
 });

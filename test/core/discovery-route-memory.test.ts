@@ -53,6 +53,12 @@ describe("discovery route memory", () => {
     await expect(getRememberedRoute("https://other.example")).resolves.toBeUndefined();
   });
 
+  it("does not remember a site shell as an invoice shortcut", async () => {
+    await rememberSupplierRoute(origin, `${origin}/`);
+
+    await expect(getRememberedRoute(origin)).resolves.toBeUndefined();
+  });
+
   it("keeps one route per origin, the most recent", async () => {
     await rememberSupplierRoute(origin, `${origin}/billing`);
     await rememberSupplierRoute(origin, `${origin}/account/invoices`);
@@ -262,15 +268,14 @@ describe("remembered route in the exploration queue", () => {
   it("is probed after the entry page, never in place of it", () => {
     const targets = createInitialExplorationTargets(entryUrl, true, `${origin}/settings/billing`);
 
-    expect(targets.map((target) => target.source)).toEqual(["entry", "entry_replay", "remembered"]);
-    // The wave gate admits only entry sources, so the remembered route lands in
-    // the first explored wave rather than beside the user's own tab.
-    expect(targets[2].score).toBeLessThan(targets[0].score);
-    expect(targets[2].url).toBe(`${origin}/settings/billing`);
+    expect(targets.map((target) => target.source)).toEqual(["entry", "remembered", "entry_replay"]);
+    // A verified shortcut is still bounded and never replaces the user's page.
+    expect(targets[1].score).toBeLessThan(targets[0].score);
+    expect(targets[1].url).toBe(`${origin}/settings/billing`);
   });
 
   it("outranks every curated guess and observed link", () => {
-    const [, , remembered] = createInitialExplorationTargets(entryUrl, true, `${origin}/settings/billing`);
+    const [, remembered] = createInitialExplorationTargets(entryUrl, true, `${origin}/settings/billing`);
 
     // Curated billing paths score at most 68 and observed links at most ~200.
     expect(remembered.score).toBeGreaterThan(1_000);
