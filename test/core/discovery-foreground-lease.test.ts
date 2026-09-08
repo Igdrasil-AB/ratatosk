@@ -14,7 +14,7 @@ const shellEvidence = {
 };
 
 describe("foreground visibility lease", () => {
-  it("retries only a high-confidence billing route that rendered as an empty shell", () => {
+  it("retries only a billing route or explicit cold entry replay that rendered as an empty shell", () => {
     expect(shouldRetryProbeInForeground(
       "https://vendor.example/dashboard/org/opaque/billing",
       shellEvidence,
@@ -23,6 +23,11 @@ describe("foreground visibility lease", () => {
       "https://vendor.example/dashboard/org/opaque/projects",
       shellEvidence,
     )).toBe(false);
+    expect(shouldRetryProbeInForeground(
+      "https://vendor.example/dashboard/org/opaque/projects",
+      shellEvidence,
+      true,
+    )).toBe(true);
     expect(shouldRetryProbeInForeground(
       "https://vendor.example/dashboard/org/opaque/billing",
       { stats: { ...shellEvidence.stats, semanticControls: 2 } },

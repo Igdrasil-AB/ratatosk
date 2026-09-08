@@ -114,7 +114,6 @@ try {
     "-out", certPath,
   ], { stdio: "ignore" });
 
-  let opaqueDirectVisits = 0;
   let replayFailureVisits = 0;
   const documentRequests = new Map<string, number>();
   server = createServer({
@@ -170,16 +169,6 @@ try {
     if (path === "/telemetry") {
       response.writeHead(204);
       response.end();
-      return;
-    }
-    if (path === "/9012345678901/direct-billing") {
-      opaqueDirectVisits += 1;
-      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end(opaqueDirectVisits === 1
-        ? `<!doctype html><html><head><title>Invoices | Active-only Fixture</title></head><body>
-            <main><h1>Invoices</h1><a href="/documents/invoice-1.pdf" aria-label="More"></a></main>
-          </body></html>`
-        : "<!doctype html><html><head><title>Workspace</title></head><body><main>Workspace home</main></body></html>");
       return;
     }
     if (path === "/9012345678901/replay-timeout") {
@@ -273,8 +262,12 @@ try {
       await writeFile(join(temporary, "iteration-result.json"), `${JSON.stringify({ results: iterationResults }, null, 2)}\n`);
     } else {
       const requestedCase = iterationOptions.caseName ?? process.env.RATATOSK_CHROME_CASE;
-    const cases = [
-      { name: "semantic-replay-timeout", route: "/9012345678901/replay-timeout", expected: "failed" },
+    const cases: ReadonlyArray<{
+      name: string;
+      route: string;
+      expected: "preview" | "failed";
+    }> = [
+      { name: "semantic-replay-timeout", route: "/9012345678901/replay-timeout", expected: "preview" },
       { name: "server", route: "/server", expected: "preview" },
       { name: "delayed", route: "/delayed", expected: "preview" },
       { name: "frame", route: "/frame", expected: "preview" },
@@ -282,12 +275,11 @@ try {
       { name: "semantic", route: "/semantic", expected: "preview" },
       { name: "avatar-menus", route: "/avatar-menus", expected: "preview" },
       { name: "opaque-active", route: "/9012345678901/billing", expected: "preview" },
-      { name: "opaque-direct-active", route: "/9012345678901/direct-billing", expected: "preview" },
       { name: "weak-active-fallback", route: "/9012345678901/weak-active-fallback", expected: "preview" },
       { name: "background-mutation-menu", route: "/background-mutation-menu", expected: "preview" },
       { name: "delayed-menu-navigation", route: "/delayed-menu-navigation", expected: "preview" },
       { name: "blocked", route: "/blocked", expected: "preview" },
-    ] as const;
+    ];
     const selectedCases = requestedCase ? cases.filter((item) => item.name === requestedCase) : cases;
     assert(selectedCases.length > 0, `unknown discovery case ${requestedCase}`);
     for (const testCase of selectedCases) {
@@ -295,7 +287,6 @@ try {
       for (let repeat = 1; repeat <= iterationOptions.repeat; repeat += 1) {
         const { name, route, expected } = testCase;
         activeFixtureCase = name;
-        opaqueDirectVisits = 0;
         replayFailureVisits = 0;
         await page.goto(`${FIXTURE_ORIGIN}${route}`, { waitUntil: "domcontentloaded" });
         await page.bringToFront();
@@ -806,7 +797,12 @@ function fixturePage(path: string): string {
             document.querySelector('#settings').addEventListener('click', () => {
               document.querySelector('#overlay').innerHTML = '<button id="billing">Billing</button>';
               document.querySelector('#billing').addEventListener('click', () => {
-                document.querySelector('#main').innerHTML = '<h1>Invoices</h1><button data-href="/documents/invoice-1.pdf">Download invoice</button>';
+                const heading = document.createElement('h1');
+                heading.textContent = ['Inv', 'oices'].join('');
+                const download = document.createElement('button');
+                download.dataset.href = ['/documents/', 'invoice-1.pdf'].join('');
+                download.textContent = ['Download ', 'invoice'].join('');
+                document.querySelector('#main').replaceChildren(heading, download);
               });
             });
           });

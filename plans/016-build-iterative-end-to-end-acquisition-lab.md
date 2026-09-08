@@ -52,8 +52,12 @@
   and 0.8.54. Collector 0.8.55 moved the first failure later and exposed a
   background-mutation classification defect. Collector 0.8.56 cleared that
   boundary and exposed delayed SPA menu hydration. Collector 0.8.57 / discovery
-  47 / acquisition 5 applies one packaged menu-mount contract to discovery and
-  replay and awaits exact-build live replay; the three-family receipt remains open
+  47 / acquisition 5 applied one packaged menu-mount contract but the cold shell
+  remained visibility-gated. A historical audit then identified mandatory cold
+  DOM preview, added in `4eb9e99`, as the fundamental regression. Collector
+  0.8.59 / discovery 49 / acquisition 5 restores guarded deferred DOM
+  verification while preserving the disposable foreground lease and awaits
+  exact-build live replay; the three-family receipt remains open
 
 ## Goal
 
@@ -168,6 +172,27 @@ first failed boundary is **candidate replay / semantic list enumeration**. Do
 not change frontier ranking, route intent, or global budgets until replay emits
 a more precise closed cause and a red browser case reproduces it.
 
+### Historical regression audit (2026-08-26)
+
+- `v0.8.47` and the July 30 `v0.8.48` release retained direct/semantic DOM
+  candidates from bounded page evidence through `previewCount`; full execution
+  was deferred to Connect & Collect.
+- `77ddd22` reduced the interactive budget from 30 seconds to 10 seconds. It
+  still kept deferred DOM verification and automatic deeper recovery, so the
+  speed change alone did not remove the old capability.
+- `4eb9e99` removed `previewCount` and required every DOM plan to cold-reopen and
+  enumerate inside the same 10-second Find Invoices run. Opaque and
+  visibility-gated SPAs could therefore expose valid evidence yet never be
+  shown to the user.
+- The old common/contextual route arrays are intentionally not restored. Route
+  authority still comes only from observed links, navigation, requests,
+  structured data, typed runtime scope, or remembered verified evidence.
+- Deferred verification is restored only for safely reproducible DOM plans with
+  strong direct-link or semantic-control/section evidence. A lone document-like
+  link that cannot reproduce its opaque route is rejected. Network and embedded
+  candidates still execute preview, while Connect & Collect remains the
+  authoritative full replay, PDF, destination, commit, and deduplication gate.
+
 ### What existing evidence does not prove
 
 - `npm test` does not execute Chrome injection, DNR, service-worker lifetime, or
@@ -196,8 +221,10 @@ a more precise closed cause and a red browser case reproduces it.
   fails closed.
 - The active user tab stays passive. Clicks and scrolling occur only in an owned
   disposable tab under the existing mutation and download guards.
-- Candidate preview and later collection execute the same plan with the same
-  accessible-name and navigation policy.
+- A strong DOM candidate may be shown from bounded observed evidence without
+  executing it inside the fast search. Connect & Collect executes that same
+  closed plan with the packaged accessible-name/navigation policy and does not
+  persist it unless a valid document is accepted.
 - A candidate is not successful until a valid PDF is accepted by the selected
   destination.
 - Identity becomes seen only after destination acceptance. Second and cadence
@@ -493,17 +520,21 @@ type ReplayPlan =
 ```
 
 No selector, supplier label, tenant value, or executable action enters the plan.
-The same executor performs no-sink preview and connected list enumeration. The
-only difference is that connected document resolution may run after stable
-identity reservation.
+Network and embedded candidates execute no-sink preview through the same
+executor used by connected collection. Strong DOM evidence may defer execution
+until Connect & Collect because opaque/visibility-gated surfaces cannot always
+be reopened honestly inside the fast envelope. Its closed plan is unchanged,
+and connected document resolution still runs only after stable identity
+reservation.
 
 Replay returns incremental evidence and the first closed failure; one malformed
 item or blocked branch cannot erase evidence from another lane.
 
 ### Exit evidence
 
-- preview and collection call the same replay executor;
-- a plan proven in preview reopens the same invoice surface during collection;
+- every executed preview and collection calls the same replay executor;
+- a deferred DOM plan is not persisted until collection reopens it and delivers
+  a valid document;
 - typed scope values are resolved at runtime and absent from persisted state;
 - semantic intent uses the packaged accessibility policy and survives route
   renames and DOM wrapper changes;
@@ -511,20 +542,23 @@ item or blocked branch cannot erase evidence from another lane.
 
 ### Phase 3 evidence (2026-08-26)
 
-- the implementation already has the required deep seam: both
-  `previewCandidate` and `executeRecipeRun` call `buildStrategies`, whose single
-  DOM construction is `BrowserDomDriver` backed by `DocumentActionController`;
+- the implementation already has the required deep seam: executed
+  `previewCandidate` and `executeRecipeRun` calls use `buildStrategies`, whose
+  single DOM construction is `BrowserDomDriver` backed by
+  `DocumentActionController`;
 - the existing closed `VendorRecipe.invoices` union plus `ReplayPlanKind`
   represents network, embedded, exact DOM, typed DOM, and semantic DOM without
   adding a second persisted plan model;
-- preview removes pagination only for its bounded no-sink pass; the DOM open,
+- executed preview removes pagination only for its bounded no-sink pass; the DOM open,
   packaged accessibility policy, typed runtime scope rendering, replay trace,
   enumeration, and connected resolution all stay on the same executor;
 - executable preview, connected collection, candidate-fallback, typed-scope,
   and browser-boundary tests pass 134 checks, including the new guard that no
   preview or collector-local `BrowserDomDriver` construction can fork the seam;
-- no production refactor was made because another executor/interface would
-  duplicate the already shared module without changing behavior.
+- the historical audit later restored deferred verification for strong DOM
+  evidence. This changes when the plan executes, not the plan or executor:
+  Connect & Collect still uses the same `BrowserDomDriver` and fails closed
+  before persistence if replay or delivery cannot be proven.
 
 ## Phase 4 — Extend Chromium from preview to delivery and deduplication
 
@@ -692,7 +726,7 @@ verification.
 | L6 | Blind rename survives | post-build mutation test |
 | L7 | Fast remains honest | actual UI-to-terminal wall clock at or below ten seconds |
 | L8 | Continuation is real | reconstructable frontier and no completed-page replay |
-| L9 | Preview equals collection replay | shared-executor call-path test |
+| L9 | Discovery plan equals collection replay | shared plan/executor call-path plus deferred-DOM verification tests |
 | L10 | Opaque scope stays private | typed runtime template and seeded-canary scan |
 | L11 | Candidate fallback works | first candidate-local failure, second success |
 | L12 | Traversal is complete | full-population refs and stable end proof |
@@ -718,6 +752,7 @@ data.
 | I-002 | 0.8.54 / discovery 44 / acquisition 4 | candidate replay `list_failed@invoice_section_select/time_cap` | A candidate admitted only by one direct document link on an ordinary workspace page is a weak false positive; limiting its preview lease will preserve the remaining fast budget for observed billing routes | `weak-active-fallback` | the exact live run still failed after about 9.4 seconds; admission was `direct_document_link`, with 1 document link, 0 accepted semantic controls, 249 rejected controls, and no semantic navigation | revise | A weak attachment-like candidate monopolized the full envelope. The generic shape passes 3/3 in 3.3–3.5 seconds when weak preview yields after 2.5 seconds and the observed billing route gets the remaining budget |
 | I-003 | 0.8.55 / discovery 45 / acquisition 4 | cold replay `no_candidate` with `mutation_blocked` | The mutation guard counts blocked background application traffic as if Ratatosk's exact navigation action caused it; scoping failure attribution to the synchronous control activation will retain safety and allow navigation evidence | `background-mutation-menu` | weak preview closed at `document_enumeration/time_cap` after 2.8 seconds; cold replay completed in 3.6 seconds with 8 observed JSON requests, 0 navigation steps, and `mutation_blocked`; four linked probes completed before the cap | promote | The weak-candidate fix moved the failure later. The mutation guard must continue blocking every non-read request, but unrelated background attempts must not erase safe navigation evidence |
 | I-004 | 0.8.56 / discovery 46 / acquisition 4 | cold replay `no_candidate` with zero navigation steps | The workspace menu mounts after the one-time trigger snapshot; polling the packaged trigger surface briefly in both discovery and candidate replay will let the same plan survive delayed SPA hydration | `delayed-menu-navigation` | active entry closed in 1.3 seconds; cold replay observed 11 JSON requests with `complete` navigation status but 0 steps; six linked pages completed before later probes met the cap | promote | Mutation attribution is fixed. The remaining gap is duplicated hydration behavior: discovery and replay must consume one packaged `navigationTriggerMountMs` contract |
+| I-005 | 0.8.57 / discovery 47 / acquisition 5 | cold replay `no_candidate` with zero navigation steps | The ordinary cold entry shell is visibility-gated, but the one-use foreground lease is restricted to paths already containing billing intent; allowing only `entry_replay` to bypass path intent will expose the workspace navigation surface | `discovery-foreground-lease > explicit cold entry replay` | weak active evidence yielded after 2.9 seconds; cold replay and two linked pages completed around 4.0 seconds, but the cold replay still had 11 JSON requests, 5 rejected controls, `complete` status, and 0 navigation steps | revise | A hydration delay alone is insufficient when the inactive document never mounts the toolbar. The user's tab remains passive; only its exact disposable replay may spend the existing lease, and only for an empty evidence shell |
 
 ### I-001 hypotheses — record before the next ClickUp run
 
