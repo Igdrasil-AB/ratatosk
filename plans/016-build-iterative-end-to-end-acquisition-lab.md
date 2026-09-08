@@ -48,10 +48,10 @@
 - **Planned at**: commit `b4a84d3`, 2026-08-25
 - **Implementation status**: IN PROGRESS — Phases 0–4, blind Phase 5, and the
   Phase 6 CI/release gate implementation are complete. The first authorized
-  ClickUp trace closed at `invoice_section_select/time_cap` in Collector 0.8.53 /
-  discovery 43 / acquisition 3. Collector 0.8.54 / discovery 44 / acquisition 4
-  contains the generic-overlay replay fix and awaits exact-build live replay;
-  the three-family receipt remains open
+  ClickUp traces closed at `invoice_section_select/time_cap` in Collector 0.8.53
+  and 0.8.54. Collector 0.8.55 / discovery 45 / acquisition 4 contains the
+  generic-overlay improvement plus the weak-candidate budget fix and awaits
+  exact-build live replay; the three-family receipt remains open
 
 ## Goal
 
@@ -713,6 +713,7 @@ data.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | I-000 | 0.8.52 / discovery 42 / acquisition 3 | candidate replay `list_failed` | Replay loses workspace-scoped invoice state; a phase trace will stop before document enumeration | pending Phase 0 case | 1 compiled, 1 previewed, 0 retained; fast time cap | revise | Candidate discovery is not the current first failure; replay must become red and typed before another behavior change |
 | I-001 | 0.8.53 / discovery 43 / acquisition 3 | candidate replay `list_failed@invoice_section_select/time_cap` | H3: a generic overlay hides the causally revealed Settings control from the role-only menu pass; recognizing only the newly visible control will remove the duplicate scan | `browser DOM boundary > uses a newly revealed Settings control from a generic menu overlay` | two uninterrupted fast runs failed at the same phase after about 9.5 seconds; entry replay produced no candidate | revise | The menu exists, but its generic overlay is not a `role=menu`; the fallback repeats semantic navigation after the first pass consumes the remaining invoice-section budget |
+| I-002 | 0.8.54 / discovery 44 / acquisition 4 | candidate replay `list_failed@invoice_section_select/time_cap` | A candidate admitted only by one direct document link on an ordinary workspace page is a weak false positive; limiting its preview lease will preserve the remaining fast budget for observed billing routes | `weak-active-fallback` | the exact live run still failed after about 9.4 seconds; admission was `direct_document_link`, with 1 document link, 0 accepted semantic controls, 249 rejected controls, and no semantic navigation | revise | A weak attachment-like candidate monopolized the full envelope. The generic shape passes 3/3 in 3.3–3.5 seconds when weak preview yields after 2.5 seconds and the observed billing route gets the remaining budget |
 
 ### I-001 hypotheses — record before the next ClickUp run
 

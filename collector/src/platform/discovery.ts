@@ -241,6 +241,7 @@ export function createInitialExplorationTargets(
 /** Above the curated billing paths (which top out near 68) and every observed
  * link, but far below the entry page. */
 const REMEMBERED_ROUTE_SCORE = 5_000;
+const WEAK_SEMANTIC_PREVIEW_MS = 2_500;
 
 export async function discoverSupplierInTab(
   tabId: number,
@@ -475,9 +476,19 @@ export async function discoverSupplierInTab(
           if (remainingMs <= 0) throw new CandidatePreviewError(
             "limit_reached", replayFailure(planKind, "document_enumeration", "time_cap"),
           );
+          // A lone document-shaped link on an ordinary application page is
+          // useful enough to verify, but too weak to monopolize the interactive
+          // search. Give that semantic fallback a short causal replay lease so
+          // observed billing routes still receive most of the global budget.
+          const weakSemanticLink = candidate.adapterId === "dom-actions" &&
+            candidate.admission.length === 1 && candidate.admission[0] === "direct_document_link";
+          const candidateDeadline = weakSemanticLink
+            ? Math.min(explorationDeadline, Date.now() + WEAK_SEMANTIC_PREVIEW_MS)
+            : explorationDeadline;
+          const candidateRemainingMs = Math.max(1, candidateDeadline - Date.now());
           const preview = await runWithinExplorationBudget(
-            previewCandidate(candidate.recipe, explorationDeadline, planKind),
-            remainingMs,
+            previewCandidate(candidate.recipe, candidateDeadline, planKind),
+            candidateRemainingMs,
           ).catch((error) => {
             if (discoveryProbeFailureCode(error) === "outer_deadline") {
               throw new CandidatePreviewError(
