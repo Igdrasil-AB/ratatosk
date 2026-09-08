@@ -11,7 +11,10 @@ const mocks = vi.hoisted(() => ({
   buildRunContext: vi.fn(),
   buildStrategies: vi.fn((
     _recipe?: unknown,
-    _instrumentation?: { onSemanticDocumentAction(): void },
+    _instrumentation?: {
+      onSemanticDocumentAction(): void;
+      onPageOwnedDownloadObservation(attempted: boolean): void;
+    },
   ) => ({})),
   buildSink: vi.fn(),
   recordCollected: vi.fn(async () => undefined),
@@ -175,6 +178,7 @@ describe("Collector per-vendor run coordinator", () => {
     mocks.buildStrategies.mockImplementationOnce((_recipe, instrumentation) => {
       instrumentation!.onSemanticDocumentAction();
       instrumentation!.onSemanticDocumentAction();
+      instrumentation!.onPageOwnedDownloadObservation(false);
       return {};
     });
     mocks.streamVendor.mockResolvedValueOnce({
@@ -187,10 +191,11 @@ describe("Collector per-vendor run coordinator", () => {
       status: "ok",
       count: 0,
       documentActionCount: 2,
+      pageOwnedDownloadCount: 0,
     });
     expect(mocks.recordRun).toHaveBeenCalledWith(
       "vendor-action-count",
-      expect.objectContaining({ lastDocumentActionCount: 2 }),
+      expect.objectContaining({ lastDocumentActionCount: 2, lastPageOwnedDownloadCount: 0 }),
     );
   });
 
@@ -417,6 +422,7 @@ describe("Collector per-vendor run coordinator", () => {
       code: "rate_limited",
       nextEligibleRunAt: 1_800_000,
       documentActionCount: 0,
+      pageOwnedDownloadCount: 0,
       failure: {
         stage: "authentication",
         cause: "rate_limited",

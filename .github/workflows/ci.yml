@@ -49,7 +49,7 @@ jobs:
         run: npm run package:collector
 
   chrome-discovery:
-    name: Built-extension discovery (Chromium)
+    name: Built-extension discovery and acquisition (Chromium)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -62,4 +62,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright-core install --with-deps chromium
-      - run: npm run test:chrome-discovery
+      - run: npm run build:collector
+      - run: npm run test:chrome-discovery:built
+      - run: npm run test:chrome-acquisition:built

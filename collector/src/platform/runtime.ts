@@ -27,6 +27,8 @@ import { createSyncMonthWindow, syncMonthWindowVars } from "../../../src/core/sy
 export interface StrategyInstrumentation {
   /** Privacy-safe count only; no action or supplier data crosses this hook. */
   onSemanticDocumentAction?: () => void;
+  /** Observed page-owned download attempts inside the guarded page scope. */
+  onPageOwnedDownloadObservation?: (attempted: boolean) => void;
   /** Optional absolute cap used by no-sink discovery verification. */
   expiresAt?: number;
 }
@@ -42,6 +44,7 @@ export function buildStrategies(
           recipe,
           undefined,
           instrumentation.onSemanticDocumentAction,
+          instrumentation.onPageOwnedDownloadObservation,
           instrumentation.expiresAt,
         ))
       : unavailableDomStrategy,

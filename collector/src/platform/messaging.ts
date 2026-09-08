@@ -5,6 +5,8 @@ import type { CollectorDiagnostic } from "./diagnostics";
 import type { DiscoveryStatusView } from "./discovery-state";
 import type { DiscoveryDiagnosticV1 } from "./discovery-diagnostic";
 import type { SyncSchedule } from "../../../src/core/sync-schedule";
+import type { LiveAcceptanceSnapshot } from "../../../src/core/live-acceptance";
+export type { LiveAcceptanceSnapshot } from "../../../src/core/live-acceptance";
 export type { DiscoveryStatusView } from "./discovery-state";
 export type { SyncSchedule } from "../../../src/core/sync-schedule";
 
@@ -37,6 +39,7 @@ export type Message =
   | { type: "forgetVendorHistory"; vendorId: string }
   | { type: "runNow"; vendorId?: string; fromMonth?: string }
   | { type: "getVendorDiagnostic"; vendorId: string }
+  | { type: "getLiveAcceptanceSnapshot"; hostname: string; sessionNonce: string }
   | { type: "getLedger" }
   | { type: "getSchedule" }
   | { type: "setSchedule"; schedule: SyncSchedule }
@@ -69,6 +72,7 @@ export type Response =
   | { ok: true; sources: SourceView[] }
   | { ok: true; summaries: VendorRunSummary[] }
   | { ok: true; diagnostic: CollectorDiagnostic }
+  | { ok: true; acceptanceSnapshot: LiveAcceptanceSnapshot }
   | { ok: true; destinations: DestinationMap }
   | { ok: true; unboundVendorIds: string[] }
   | { ok: true; ledger: LedgerEntry[] }

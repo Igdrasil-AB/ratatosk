@@ -14,6 +14,10 @@ import {
   type DocumentActionFailureKind,
 } from "../../../src/core/errors";
 import { exactPublicHttpsOriginPattern } from "../../../src/core/origin-policy";
+import {
+  replayFailureTrace,
+  replayTraceWithPhase as withReplayFailure,
+} from "../../../src/core/replay-trace";
 import { acquireForegroundTabVisibility } from "./tab-visibility";
 import { SemanticActionObserver } from "./semantic-action-observer";
 import discoveryPageObserverScript from "./discovery-page-observer?script&iife";
@@ -97,6 +101,7 @@ export class DocumentActionController {
     private readonly allowedOrigins: ReadonlySet<string>,
     private readonly vendorId: string,
     private readonly onDocumentAction: () => void = () => undefined,
+    private readonly onPageOwnedDownloadObservation: (attempted: boolean) => void = () => undefined,
   ) {}
 
   async registerPageObserver(origin: string): Promise<{ dispose(tabId?: number): Promise<void> }> {
@@ -151,7 +156,7 @@ export class DocumentActionController {
           : error.kind === "document_action_side_effect" ? "mutation_blocked"
             : error.kind === "document_action_ambiguous" || error.kind === "unstable_action_identity"
               ? "ambiguous" : "not_present";
-        throw new ReplayPhaseFailed(error.kind, failureReplayTrace(phase, result));
+        throw new ReplayPhaseFailed(error.kind, replayFailureTrace("semantic_dom", phase, result));
       }
       throw error;
     } finally {
@@ -313,6 +318,7 @@ export class DocumentActionController {
       observer.endAction();
     }
     const nativeDownloadAttempted = observer.snapshotNativeDownloadAttempted();
+    try { this.onPageOwnedDownloadObservation(nativeDownloadAttempted); } catch { /* observability cannot change acquisition */ }
     observer.stop();
     try {
       await releaseNativeDownloadGuard();
@@ -355,28 +361,6 @@ export class DocumentActionController {
     if (parsed.kind === "inline_pdf") return { kind: "inline_pdf", dataUrl: parsed.dataUrl };
     throw new DocumentActionFailed("document_action_ambiguous", this.vendorId);
   }
-}
-
-function failureReplayTrace(phase: ReplayPhase, result: ReplayPhaseResult): ReplayTrace {
-  return {
-    planKind: "semantic_dom",
-    phases: [{ phase, result, durationMs: 0 }],
-    firstFailure: { phase, result },
-  };
-}
-
-function withReplayFailure(
-  replay: ReplayTrace,
-  phase: ReplayPhase,
-  result: ReplayPhaseResult,
-): ReplayTrace {
-  const phases = [...replay.phases.filter((item) => item.phase !== phase), { phase, result, durationMs: 0 }];
-  const firstFailure = phases.find((item) => item.result !== "complete");
-  return {
-    ...replay,
-    phases,
-    ...(firstFailure ? { firstFailure: { phase: firstFailure.phase, result: firstFailure.result } } : {}),
-  };
 }
 
 async function readCurrentReplayPhase(tabId: number): Promise<ReplayPhase | undefined> {

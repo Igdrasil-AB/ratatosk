@@ -1,18 +1,29 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium, type BrowserContext, type Page, type Worker } from "playwright-core";
+import type { LiveAcceptanceSnapshot } from "../src/core/live-acceptance";
 
 const FIXTURE_HOST = "discovery-fixture.ratatosk.test";
 const FIXTURE_ORIGIN = `https://${FIXTURE_HOST}`;
+const blindSeed = process.env.RATATOSK_BLIND_SEED ?? "a10393d04be2";
+if (!/^[a-f0-9]{12}$/.test(blindSeed)) throw new Error("blind seed must be 12 lowercase hex characters");
+const acceptanceNonce = randomBytes(16).toString("hex");
+const BLIND_ROUTE = `/x${blindSeed.slice(0, 6)}/z${blindSeed.slice(6)}`;
+const BLIND_WRAPPER = `w${blindSeed}`;
+const BLIND_DELAY_MS = 200 + Number.parseInt(blindSeed.slice(0, 2), 16) % 700;
+const BLIND_MENU_ORDER = [1, 2, 3, 4].map((value, index, values) =>
+  values[(index + Number.parseInt(blindSeed.slice(2, 4), 16)) % values.length]);
 const ACQUISITION_CASES = [
   { name: "network", host: "network-acquisition.ratatosk.test", route: "/network-acquisition", adapterId: "network-json", expectedActions: 0, fallback: false },
   { name: "direct-dom", host: "direct-acquisition.ratatosk.test", route: "/direct-acquisition", adapterId: "dom-links", expectedActions: 0, fallback: false },
   { name: "semantic-dom", host: "semantic-acquisition.ratatosk.test", route: "/semantic-acquisition", adapterId: "dom-actions", expectedActions: 1, fallback: false },
   { name: "candidate-fallback", host: "fallback-acquisition.ratatosk.test", route: "/fallback-acquisition", adapterId: "network-json", expectedActions: 0, fallback: true },
+  { name: "blind-synthetic", host: "blind-acquisition.ratatosk.test", route: "/blind-home", adapterId: "dom-actions", expectedActions: 1, fallback: false },
 ] as const;
 const NEGATIVE_ACQUISITION_CASES = [
   { name: "invalid-pdf", host: "invalid-acquisition.ratatosk.test", route: "/invalid-acquisition", adapterId: "dom-links", result: "document_invalid" },
@@ -60,8 +71,28 @@ const iterationResults: Array<{
   firstFailure?: { phase: string; result: string };
 }> = [];
 
-const temporary = await mkdtemp(join(tmpdir(), "ratatosk-chrome-discovery-"));
+const suppliedTemporary = process.env.RATATOSK_CHROME_TEST_DIRECTORY;
+const temporary = suppliedTemporary
+  ? validatedTestDirectory(suppliedTemporary)
+  : await mkdtemp(join(tmpdir(), "ratatosk-chrome-discovery-"));
 let context: BrowserContext | undefined;
+let server: ReturnType<typeof createServer> | undefined;
+let cleanupPromise: Promise<void> | undefined;
+const cleanupResources = (): Promise<void> => cleanupPromise ??= (async () => {
+  const activeContext = context;
+  context = undefined;
+  await activeContext?.close().catch(() => undefined);
+  if (server?.listening) {
+    await new Promise<void>((resolvePromise) => server?.close(() => resolvePromise()));
+  }
+  server = undefined;
+  await rm(temporary, { recursive: true, force: true });
+})();
+const stopAfterCleanup = (code: number): void => { void cleanupResources().finally(() => process.exit(code)); };
+const onInterrupt = (): void => stopAfterCleanup(130);
+const onTerminate = (): void => stopAfterCleanup(143);
+process.once("SIGINT", onInterrupt);
+process.once("SIGTERM", onTerminate);
 try {
   const extensionPath = join(temporary, "collector");
   await cp(resolve("dist/collector"), extensionPath, { recursive: true });
@@ -86,7 +117,7 @@ try {
   let opaqueDirectVisits = 0;
   let replayFailureVisits = 0;
   const documentRequests = new Map<string, number>();
-  const server = createServer({
+  server = createServer({
     key: await readFile(keyPath),
     cert: await readFile(certPath),
   }, (request, response) => {
@@ -164,11 +195,12 @@ try {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(fixturePage(path));
   });
+  const fixtureServer = server;
   await new Promise<void>((resolvePromise, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolvePromise);
+    fixtureServer.once("error", reject);
+    fixtureServer.listen(0, "127.0.0.1", resolvePromise);
   });
-  const address = server.address();
+  const address = fixtureServer.address();
   assert(address && typeof address === "object", "fixture server did not bind");
 
   try {
@@ -242,6 +274,7 @@ try {
     } else {
       const requestedCase = iterationOptions.caseName ?? process.env.RATATOSK_CHROME_CASE;
     const cases = [
+      { name: "semantic-replay-timeout", route: "/9012345678901/replay-timeout", expected: "failed" },
       { name: "server", route: "/server", expected: "preview" },
       { name: "delayed", route: "/delayed", expected: "preview" },
       { name: "frame", route: "/frame", expected: "preview" },
@@ -250,7 +283,6 @@ try {
       { name: "avatar-menus", route: "/avatar-menus", expected: "preview" },
       { name: "opaque-active", route: "/9012345678901/billing", expected: "preview" },
       { name: "opaque-direct-active", route: "/9012345678901/direct-billing", expected: "preview" },
-      { name: "semantic-replay-timeout", route: "/9012345678901/replay-timeout", expected: "failed" },
       { name: "blocked", route: "/blocked", expected: "preview" },
     ] as const;
     const selectedCases = requestedCase ? cases.filter((item) => item.name === requestedCase) : cases;
@@ -304,13 +336,12 @@ try {
       await writeFile(join(temporary, "iteration-result.json"), `${JSON.stringify({ results: iterationResults }, null, 2)}\n`);
     }
   } finally {
-    await context?.close();
-    context = undefined;
-    await new Promise<void>((resolvePromise) => server.close(() => resolvePromise()));
+    await cleanupResources();
   }
 } finally {
-  await context?.close();
-  await rm(temporary, { recursive: true, force: true });
+  process.removeListener("SIGINT", onInterrupt);
+  process.removeListener("SIGTERM", onTerminate);
+  await cleanupResources();
 }
 
 function parseIterationOptions(args: readonly string[]): { caseName?: string; repeat: number; acquisition: boolean } {
@@ -323,6 +354,15 @@ function parseIterationOptions(args: readonly string[]): { caseName?: string; re
   if (caseName !== undefined && !/^[a-z0-9-]{1,80}$/.test(caseName)) throw new Error("invalid discovery case name");
   if (!Number.isInteger(repeat) || repeat < 1 || repeat > 20) throw new Error("repeat must be an integer from 1 to 20");
   return { ...(caseName ? { caseName } : {}), repeat, acquisition: args.includes("--acquisition") };
+}
+
+function validatedTestDirectory(value: string): string {
+  const directory = resolve(value);
+  const root = resolve(tmpdir());
+  if (!directory.startsWith(`${root}/ratatosk-chrome-discovery-`)) {
+    throw new Error("browser test directory must be a dedicated temporary directory");
+  }
+  return directory;
 }
 
 async function inspectFixtureFrames(page: Page): Promise<unknown> {
@@ -410,6 +450,11 @@ async function runAcquisition(
   if (preview.stage !== "preview" || !preview.vendorId || preview.adapterId !== expectedAdapter) {
     throw new Error(`unexpected acquisition preview ${JSON.stringify(preview)}`);
   }
+  const hostname = new URL(origin).hostname;
+  const previewSnapshot = (await sendExtensionMessage(extensionPage, {
+    type: "getLiveAcceptanceSnapshot", hostname, sessionNonce: acceptanceNonce,
+  })).acceptanceSnapshot as LiveAcceptanceSnapshot;
+  assert.equal(previewSnapshot.stage, "preview", "live snapshot did not preserve preview evidence");
   await sendExtensionMessage(extensionPage, { type: "beginDiscoveryConnect", vendorId: preview.vendorId, destinationId: "local" });
   const connected = await sendExtensionMessage(extensionPage, { type: "completeDiscoveryConnect", vendorId: preview.vendorId });
   let first = (connected.summaries as RunSummary[] | undefined)?.[0];
@@ -431,10 +476,16 @@ async function runAcquisition(
     }
   }
   if (!first) throw new Error("discovered connection returned no first-run result");
+  const firstSnapshot = (await sendExtensionMessage(extensionPage, {
+    type: "getLiveAcceptanceSnapshot", hostname, sessionNonce: acceptanceNonce,
+  })).acceptanceSnapshot as LiveAcceptanceSnapshot;
 
   const immediateReply = await sendExtensionMessage(extensionPage, { type: "runNow", vendorId: preview.vendorId });
   const immediate = (immediateReply.summaries as RunSummary[] | undefined)?.[0];
   if (!immediate) throw new Error("immediate rerun returned no summary");
+  const immediateSnapshot = (await sendExtensionMessage(extensionPage, {
+    type: "getLiveAcceptanceSnapshot", hostname, sessionNonce: acceptanceNonce,
+  })).acceptanceSnapshot as LiveAcceptanceSnapshot;
   const sourceBeforeCadence = ((await sendExtensionMessage(extensionPage, { type: "listSources" })).sources as Source[])
     .find((source) => source.id === preview.vendorId);
   const attemptBeforeCadence = sourceBeforeCadence?.connection?.lastAttemptAt ?? 0;
@@ -457,6 +508,19 @@ async function runAcquisition(
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
   }
   if (cadenceActionCount === undefined) throw new Error("scheduled acquisition did not complete");
+  const cadenceSnapshot = (await sendExtensionMessage(extensionPage, {
+    type: "getLiveAcceptanceSnapshot", hostname, sessionNonce: acceptanceNonce,
+  })).acceptanceSnapshot as LiveAcceptanceSnapshot;
+  if (
+    previewSnapshot.stage !== "preview" || firstSnapshot.stage !== "connected" ||
+    immediateSnapshot.stage !== "connected" || cadenceSnapshot.stage !== "connected" ||
+    previewSnapshot.planCount < 1 || !previewSnapshot.planKinds.includes(firstSnapshot.selectedPlanKind) ||
+    firstSnapshot.destinationToken !== immediateSnapshot.destinationToken ||
+    firstSnapshot.destinationToken !== cadenceSnapshot.destinationToken ||
+    firstSnapshot.run.acceptedCount !== 1 || immediateSnapshot.run.acceptedCount !== 0 ||
+    immediateSnapshot.run.actionCount !== 0 || cadenceSnapshot.run.acceptedCount !== 0 ||
+    cadenceSnapshot.run.actionCount !== 0
+  ) throw new Error("extension-generated live acceptance snapshots were inconsistent");
   const ledgerAfter = ((await sendExtensionMessage(extensionPage, { type: "getLedger" })).ledger as unknown[]).length;
   const downloadsAfter = await extensionDownloadCount(extensionPage);
   return {
@@ -609,6 +673,33 @@ function fixturePage(path: string): string {
   if (path === "/destination-acquisition") {
     return `<!doctype html><html><head><title>Invoices | Destination Retry</title></head><body>
       <h1>Invoices</h1><a href="/documents/destination-retry.pdf">Download invoice</a></body></html>`;
+  }
+  if (path === "/blind-home") {
+    return `<!doctype html><html><head><title>Workspace | Blind Shape</title></head><body>
+      <header>${BLIND_MENU_ORDER.map((value) => `<button aria-haspopup="menu" data-menu="${value}" class="${BLIND_WRAPPER}-${value}">Workspace ${value}</button>`).join("")}</header>
+      <div id="overlay"></div><main id="main"><h1>Workspace home</h1></main>
+      <script>
+        document.querySelectorAll('[data-menu]').forEach(button => button.addEventListener('click', () => {
+          document.querySelector('#overlay').innerHTML = button.getAttribute('data-menu') === '4'
+            ? '<div role="menu"><button id="blind-settings">Settings</button></div>'
+            : '<div role="menu"><button>Activity</button></div>';
+          document.querySelector('#blind-settings')?.addEventListener('click', () => {
+            document.querySelector('#overlay').innerHTML = '<button id="blind-billing">Billing</button>';
+            document.querySelector('#blind-billing').addEventListener('click', () => {
+              setTimeout(() => {
+                history.pushState({}, '', '${BLIND_ROUTE}');
+                document.querySelector('#main').innerHTML = '<h1>Invoices</h1><table><tr data-invoice-id="blind-1"><td>BLIND-1</td><td><button id="blind-download">Download invoice</button></td></tr></table>';
+                document.querySelector('#blind-download').addEventListener('click', () => { fetch('/documents/blind.pdf').catch(() => undefined); });
+              }, ${BLIND_DELAY_MS});
+            });
+          });
+        }));
+      </script></body></html>`;
+  }
+  if (path === BLIND_ROUTE) {
+    return `<!doctype html><html><head><title>Invoices | Blind Shape</title></head><body class="${BLIND_WRAPPER}">
+      <h1>Invoices</h1><table><tr data-invoice-id="blind-1"><td>BLIND-1</td><td><button id="blind-download">Download invoice</button></td></tr></table>
+      <script>document.querySelector('#blind-download').addEventListener('click', () => { fetch('/documents/blind.pdf').catch(() => undefined); });</script></body></html>`;
   }
   if (path === "/") {
     return activeFixtureCase === "semantic-replay-timeout"

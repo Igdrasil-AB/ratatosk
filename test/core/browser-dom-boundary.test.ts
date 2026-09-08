@@ -596,7 +596,13 @@ describe("browser DOM boundary", () => {
       downloads: { onCreated: downloadCreated, cancel, removeFile, erase },
     });
 
-    const driver = new BrowserDomDriver(domRecipe());
+    const pageOwnedDownloadObservations: boolean[] = [];
+    const driver = new BrowserDomDriver(
+      domRecipe(),
+      undefined,
+      undefined,
+      (attempted) => pageOwnedDownloadObservations.push(attempted),
+    );
     await expect(driver.run("https://vendor.example/billing", [
       { action: "extractSemanticDownloads", as: "documents", maxActions: 8 },
     ])).rejects.toMatchObject({ kind: "document_action_side_effect" });
@@ -618,6 +624,7 @@ describe("browser DOM boundary", () => {
     expect(cancel).not.toHaveBeenCalled();
     expect(removeFile).not.toHaveBeenCalled();
     expect(erase).not.toHaveBeenCalled();
+    expect(pageOwnedDownloadObservations).toEqual([true]);
     expect(beforeRequest.listenerCount).toBe(0);
     expect(downloadCreated.listenerCount).toBe(0);
   });

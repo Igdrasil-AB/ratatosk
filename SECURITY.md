@@ -75,8 +75,10 @@ row text, URLs, filenames, paths, and invoice metadata are never persisted.
 - Raw programmatic page clicks outside the reviewed document-action controller
   and guarded discovery probe fail `npm run check:boundaries`.
 - A Collector release reruns the native-download regression and requires a
-  fresh exact-version semantic-DOM receipt with zero second/cadence actions and
-  zero page-owned downloads.
+  fresh exact-artifact acquisition receipt built from extension-generated,
+  per-session snapshots with three supplier families, explicit ClickUp and
+  Igdrasil readback, and zero second/cadence actions or observed page-owned
+  downloads.
 
 Public supplier reports must omit tenant-, workspace-, account-, customer-,
 employee-, and internal-specific origins.

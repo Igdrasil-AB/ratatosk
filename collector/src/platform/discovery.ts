@@ -8,6 +8,7 @@ import {
   MAX_DISCOVERY_CANDIDATES,
   safeEntryUrl,
   reuseDiscoveredSupplierIdentity,
+  replayPlanKindForRecipe,
   withSupplierDisplayName,
   type DiscoveryAdapterId,
   type DiscoveredSupplierCandidateSetV1,
@@ -23,14 +24,19 @@ import type { CapturedEntry, DraftRecipe } from "../../../src/core/recorder/type
 import { validateRecipe } from "../../../src/core/schema";
 import type {
   InvoiceRef,
-  ReplayPhase,
-  ReplayPhaseResult,
   ReplayPlanKind,
   ReplayTrace,
   RequestSpec,
   VendorRecipe,
 } from "../../../src/core/types";
 import { DEFAULT_SAFE_CONCURRENCY, mapConcurrentInSettleOrder, mapConcurrentOrdered } from "../../../src/core/concurrency";
+import {
+  emptyReplayTrace as emptyReplay,
+  replayFailureTrace as replayFailure,
+  replayTraceWithComplete as withReplayComplete,
+  replayTraceWithPhase as withReplayFailure,
+  replayTraceWithPlanKind as withReplayPlanKind,
+} from "../../../src/core/replay-trace";
 import {
   canonicalDocumentProviderUrl,
   documentProviderForUrl,
@@ -631,7 +637,7 @@ export async function disposeDiscoveryResources(
 export async function previewCandidate(
   recipe: VendorRecipe,
   expiresAt?: number,
-  planKind: ReplayPlanKind = recipeReplayPlanKind(recipe),
+  planKind: ReplayPlanKind = replayPlanKindForRecipe(recipe),
 ): Promise<{ count: number; replay?: ReplayTrace }> {
   let run: ReturnType<typeof buildRunContext>;
   try {
@@ -888,20 +894,39 @@ export async function probeSupplierTab(
     throw new Error("the supplier tab changed before discovery started");
   }
   const controller = new DocumentActionController(new Set([expectedOrigin]), "discovery");
-  const frameProbe = chrome.scripting.executeScript({
-    target: { tabId, allFrames: true },
-    world: "MAIN",
-    func: collectFrameNetworkEvidenceInPage,
-    args: [options],
-  }).catch(() => [] as chrome.scripting.InjectionResult<PageEvidence | null>[]);
-  const mainProbe = controller.runDiscoveryProbe(tabId, () =>
-    chrome.scripting.executeScript({
-      target: { tabId },
-      world: "MAIN",
-      func: collectPageEvidenceInPage,
-      args: [options, { ...EXPLORATION_ROUTE_POLICY, documentSelector: DOM_LINK_SELECTOR }, DISCOVERY_DOM_POLICY],
-    }), { blockMutations: options.allowSemanticNavigation === true });
-  const [injections, frameInjections] = await Promise.all([mainProbe, frameProbe]);
+  const mainProbe = async () => ({
+      kind: "main" as const,
+      injections: await controller.runDiscoveryProbe(tabId, () => chrome.scripting.executeScript({
+        target: { tabId },
+        world: "MAIN",
+        func: collectPageEvidenceInPage,
+        args: [options, { ...EXPLORATION_ROUTE_POLICY, documentSelector: DOM_LINK_SELECTOR }, DISCOVERY_DOM_POLICY],
+      }), { blockMutations: options.allowSemanticNavigation === true }),
+    });
+  const frameProbe = async () => ({
+      kind: "frames" as const,
+      injections: await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        world: "MAIN",
+        func: collectFrameNetworkEvidenceInPage,
+        args: [options],
+      }).catch(() => [] as chrome.scripting.InjectionResult<PageEvidence | null>[]),
+    });
+  type ParallelPageProbe = Awaited<ReturnType<typeof mainProbe>> | Awaited<ReturnType<typeof frameProbe>>;
+  const probeTasks: Array<() => Promise<ParallelPageProbe>> = [mainProbe, frameProbe];
+  const probes = await mapConcurrentOrdered(
+    probeTasks,
+    { limit: DEFAULT_SAFE_CONCURRENCY.frameProbes },
+    (probe) => probe(),
+  );
+  const mainOutcome = probes.find((probe) => probe.status === "fulfilled" && probe.value.kind === "main");
+  if (!mainOutcome || mainOutcome.status !== "fulfilled") {
+    const failure = probes[0];
+    throw failure?.status === "rejected" ? failure.error : new Error("supplier page evidence is unavailable");
+  }
+  const framesResult = probes.find((probe) => probe.status === "fulfilled" && probe.value.kind === "frames");
+  const injections = mainOutcome.value.injections;
+  const frameInjections = framesResult?.status === "fulfilled" ? framesResult.value.injections : [];
   const mainResult = mainFrameInjectionResult(injections);
   if (mainResult === undefined) throw new Error("supplier page evidence is invalid:main_result");
   const main = parsePageEvidence(mainResult, expectedOrigin, options);
@@ -2487,63 +2512,7 @@ function previewResult(error: unknown): DiscoveryAttemptResult {
 function candidateReplayPlanKind(candidate: Candidate): ReplayPlanKind {
   if (candidate.adapterId === "network-json") return "network";
   if (candidate.adapterId === "embedded-json") return "embedded";
-  return recipeReplayPlanKind(candidate.recipe);
-}
-
-function recipeReplayPlanKind(recipe: VendorRecipe): ReplayPlanKind {
-  if (recipe.invoices.strategy === "network") return "network";
-  if (recipe.invoices.strategy === "html") return "embedded";
-  if (recipe.config?.length) return "typed_dom";
-  return recipe.invoices.list.steps.some((step) => step.action === "extractSemanticDownloads")
-    ? "semantic_dom"
-    : "exact_dom";
-}
-
-function emptyReplay(planKind: ReplayPlanKind): ReplayTrace {
-  return { planKind, phases: [] };
-}
-
-function replayFailure(
-  planKind: ReplayPlanKind,
-  phase: ReplayPhase,
-  result: ReplayPhaseResult,
-): ReplayTrace {
-  return {
-    planKind,
-    phases: [{ phase, result, durationMs: 0 }],
-    firstFailure: { phase, result },
-  };
-}
-
-function withReplayPlanKind(replay: ReplayTrace, planKind: ReplayPlanKind): ReplayTrace {
-  return { ...replay, planKind };
-}
-
-function withReplayFailure(
-  replay: ReplayTrace,
-  phase: ReplayPhase,
-  result: ReplayPhaseResult,
-): ReplayTrace {
-  return replayWithPhase(replay, { phase, result, durationMs: 0 });
-}
-
-function withReplayComplete(replay: ReplayTrace, phase: ReplayPhase): ReplayTrace {
-  return replayWithPhase(replay, { phase, result: "complete", durationMs: 0 });
-}
-
-function replayWithPhase(replay: ReplayTrace, attempt: ReplayTrace["phases"][number]): ReplayTrace {
-  const existing = replay.phases.findIndex((item) => item.phase === attempt.phase);
-  const phases = [...replay.phases];
-  if (existing >= 0) phases[existing] = attempt;
-  else phases.push(attempt);
-  const firstFailure = phases.find((item) => item.result !== "complete");
-  return {
-    ...replay,
-    phases,
-    ...(firstFailure
-      ? { firstFailure: { phase: firstFailure.phase, result: firstFailure.result } }
-      : { firstFailure: undefined }),
-  };
+  return replayPlanKindForRecipe(candidate.recipe);
 }
 
 function candidateScore(adapter: DiscoveryAdapterId, count: number, routeScore: number): number {

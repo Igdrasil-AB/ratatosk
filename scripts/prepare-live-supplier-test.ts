@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { resolve, relative } from "node:path";
@@ -62,6 +62,8 @@ const session = {
   unpackedDigest: stableDigest,
   serviceWorkerChunk,
   serviceWorkerSha256,
+  acceptanceSalt: randomBytes(32).toString("hex"),
+  acceptanceNonce: randomBytes(16).toString("hex"),
   extensionPath: stable,
   preparedAt: new Date().toISOString(),
 };

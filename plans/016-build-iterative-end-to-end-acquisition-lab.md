@@ -46,12 +46,10 @@
 - **Supersedes**: Plan 015's remaining iterative debugging and live-release work
 - **Category**: correctness, testing, diagnostics, performance, release safety
 - **Planned at**: commit `b4a84d3`, 2026-08-25
-- **Implementation status**: IN PROGRESS — Phases 0–4 now provide closed replay
-  tracing, deterministic built-Chromium/live-package control, and the generic
-  supplier-shape corpus on one preview/collection replay executor, plus built
-  browser delivery and duplicate proof, in Collector 0.8.53 / discovery 43.
-  Authorized multi-supplier acceptance and Phases 5–6 remain; no exact build has
-  passed that live multi-supplier gate end to end
+- **Implementation status**: IN PROGRESS — Phases 0–4, blind Phase 5, and the
+  Phase 6 CI/release gate implementation are complete in Collector 0.8.53 /
+  discovery 43. The authorized three-family/ClickUp run and its exact-artifact
+  receipt remain; no build has passed that live gate end to end
 
 ## Goal
 
@@ -170,9 +168,9 @@ a more precise closed cause and a red browser case reproduces it.
 
 - `npm test` does not execute Chrome injection, DNR, service-worker lifetime, or
   a real destination.
-- `scripts/test-chrome-discovery.ts` currently stops at discovery preview; it
-  does not prove PDF resolution, destination acceptance, duplicate commit, or
-  cadence behavior.
+- the discovery mode of `scripts/test-chrome-discovery.ts` stops at preview;
+  its acquisition mode separately proves PDF resolution, destination
+  acceptance, duplicate commit, and cadence behavior.
 - A compiled candidate does not prove its list can reopen.
 - A retained candidate does not prove a valid PDF arrives.
 - A first delivery does not prove the immediate or cadence run is idempotent.
@@ -413,8 +411,9 @@ page source, screenshot containing invoices, or DevTools network body.
   bounded `--repeat`; twenty consecutive `semantic-replay-timeout` runs ended
   at `invoice_section_select/time_cap` in 9.3–9.6 seconds each;
 - the runner rejects terminal-signature drift, enforces a 15-second ceiling,
-  and its `finally` cleanup left no Chromium, fixture server, profile, or
-  temporary directory after both a deliberately failing and a passing run;
+  and its parent trap plus in-process cleanup left no Chromium, fixture server,
+  profile, or temporary directory after passing, failing, and explicit SIGINT
+  exit-130 runs;
 - `prepare:live-supplier-test` requires committed clean source, runs CI and the
   security/package gates, records the exact commit and artifact checksum, and
   mirrors a byte-matching unpacked tree under ignored `artifacts/live/`;
@@ -616,6 +615,27 @@ skip a red supplier-shape case.
 - ClickUp first/second/cadence acceptance passes from an ordinary page;
 - no acceptance artifact contains account or invoice data.
 
+### Phase 5 evidence (2026-08-26, partial)
+
+- after Collector was already built, the harness generated a new neutral route,
+  wrapper class, four-menu order, and hydration delay; `blind-synthetic` still
+  delivered `1/0/0` documents and activated semantic controls `1/0/0` across
+  first, immediate, and real-alarm cadence runs without rebuilding;
+- the signed-in wrapper processes every approved hostname independently and
+  accepts only extension-generated preview/first/immediate/cadence snapshots.
+  Those snapshots bind the runtime, plan count/kinds, selected plan, opaque
+  destination identity, per-session nonce, timestamps, accepted/action/ledger
+  counts, and the action-scope's observed page-owned download count; only the
+  external destination readback count remains an explicit operator observation.
+  A malformed or failed supplier row is isolated and later approved hosts still
+  run;
+- Chrome-control diagnostics found Google Chrome running, but the currently
+  selected profile does not have the ChatGPT browser-control extension enabled.
+  The wrapper remains the safe fallback, but no supplier tab was exercised in
+  this run;
+- the authorized three-family and ClickUp rows therefore remain open. No live
+  receipt or release claim was created from synthetic evidence.
+
 ## Phase 6 — Make the learning loop release-blocking
 
 Wire the end-to-end Chromium command and a fresh sanitized live receipt into
@@ -633,6 +653,28 @@ verification.
 - release validation fails when the live receipt is absent, stale, from another
   artifact, or missing a supplier family;
 - an exact validated artifact can be reproduced from the reviewed commit.
+
+### Phase 6 evidence (2026-08-26, receipt pending)
+
+- CI now builds Collector once and runs both the complete built-extension
+  discovery corpus and `test:chrome-acquisition:built`;
+- `validate:collector-release` reruns acquisition, verifies the ZIP, and then
+  requires receipt schema v2 bound to the exact artifact SHA, Collector version,
+  discovery revision, acquisition revision, and a seven-day completion window;
+- the validator requires explicit ClickUp completion, distinct opaque supplier
+  tokens, opaque semantic SPA, server-rendered document, and structured API
+  families, at least one Igdrasil readback, positive first-run
+  destination/ledger agreement, and zero immediate/cadence accepted documents,
+  actions, ledger rows, or page-owned downloads;
+- `build:live-acceptance-receipt` accepts only four ordered extension snapshots
+  per distinct approved hostname, verifies run/destination identity and count
+  deltas, requires ClickUp explicitly, rejects snapshots older than the runtime
+  match or carrying another session nonce, strips every hostname behind a salted
+  opaque token, and writes the ignored release receipt. A transient
+  three-family fixture proved builder/validator compatibility and was deleted;
+- release validation still fails closed because no authorized live receipt is
+  present. Upload, submission, and publication remain outside this plan and
+  were not attempted.
 
 ## Acceptance matrix
 
@@ -668,6 +710,19 @@ data.
 | Iteration | Exact build | First boundary | Hypothesis/prediction | Regression case | Result | Decision | Learning |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | I-000 | 0.8.52 / discovery 42 / acquisition 3 | candidate replay `list_failed` | Replay loses workspace-scoped invoice state; a phase trace will stop before document enumeration | pending Phase 0 case | 1 compiled, 1 previewed, 0 retained; fast time cap | revise | Candidate discovery is not the current first failure; replay must become red and typed before another behavior change |
+
+### I-001 hypotheses — record before the next ClickUp run
+
+| Hypothesis | Falsifiable prediction in the closed trace | Shared seam if confirmed |
+| --- | --- | --- |
+| H1: replay reaches billing but does not reveal the invoice-history section | `menu_reveal`, `settings_select`, and `billing_select` complete; `invoice_section_select` is `not_present` or `time_cap` | packaged semantic section recognition/reveal |
+| H2: replay enters a personal/account shell instead of the workspace billing shell | `supplier_commit` completes, then `menu_reveal`, `settings_select`, or `billing_select` is `not_present`; no later phase appears | semantic menu ranking and workspace/personal disambiguation |
+| H3: the right surface hydrates after the candidate budget has already been consumed | the first failure is `time_cap` at `invoice_section_select` or `document_enumeration`, with earlier phases complete and zero verified documents | replay deadline allocation and incremental evidence return |
+| H4: controls are present but their stable invoice identity cannot be reproduced | `document_enumeration` completes, then `identity_validation/ambiguous`; action/control counts are nonzero | shared row/cell identity evidence |
+
+The exact `0.8.53` live snapshot must distinguish these predictions before any
+production behavior edit. A generic `list_failed`, `outer_deadline`, or manually
+described page is not enough evidence to select one.
 
 ### Decision meanings
 
@@ -724,6 +779,27 @@ Stop and report when:
   unsanitized account evidence.
 
 ## Handoff discipline
+
+### Draft review stack (2026-08-26)
+
+The implementation is split into stacked draft PRs so no all-in-one branch can
+be merged accidentally:
+
+1. [PR 55](https://github.com/Igdrasil-AB/ratatosk/pull/55) — evidence-only replay baseline;
+2. [PR 56](https://github.com/Igdrasil-AB/ratatosk/pull/56) — Plan 016 documents;
+3. [PR 57](https://github.com/Igdrasil-AB/ratatosk/pull/57) — Phase 0 replay trace;
+4. [PR 58](https://github.com/Igdrasil-AB/ratatosk/pull/58) — Phase 1 iteration/package runner;
+5. [PR 59](https://github.com/Igdrasil-AB/ratatosk/pull/59) — Phase 2 supplier-shape corpus;
+6. [PR 60](https://github.com/Igdrasil-AB/ratatosk/pull/60) — Phase 3 shared replay seam;
+7. [PR 61](https://github.com/Igdrasil-AB/ratatosk/pull/61) — Phase 4 built-browser acquisition;
+8. [PR 62](https://github.com/Igdrasil-AB/ratatosk/pull/62) — Phases 5–6 blind/live/release gates.
+
+A two-axis standards/spec review found the automated implementation conformant
+after remediation of concurrency policy, copied-count evidence, page-download
+measurement, snapshot freshness, failure isolation, interruption cleanup, and
+replay-trace duplication. Every PR remains draft and unmerged. The remaining
+review blockers are the authorized live outcome, a green ClickUp iteration, and
+maintainer approval.
 
 - Use one branch and PR per phase:
   `test/replay-phase-trace`, `test/discovery-iteration-runner`,

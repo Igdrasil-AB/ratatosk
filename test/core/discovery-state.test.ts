@@ -40,6 +40,8 @@ describe("durable supplier discovery handoff", () => {
 
     await expect(getSupplierDiscoveryStatus()).resolves.toMatchObject({
       stage: "preview",
+      planCount: 1,
+      planKinds: ["network"],
       usesSessionToken: true,
     });
   });
@@ -61,6 +63,8 @@ describe("durable supplier discovery handoff", () => {
 
     await expect(getSupplierDiscoveryStatus()).resolves.toMatchObject({
       stage: "preview",
+      planCount: 1,
+      planKinds: ["exact_dom"],
       usesSessionToken: false,
     });
   });
