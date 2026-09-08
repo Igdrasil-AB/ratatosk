@@ -1074,6 +1074,14 @@ export async function runSemanticDocumentOperationInPage(
   let navigationSteps = 0;
   const revealBillingSurface = async (): Promise<void> => {
     if (downloadControls().length > 0) return;
+    const billing = navigationControl(billingNavigation);
+    if (billing) {
+      const startedAt = beginReplayPhase("billing_select");
+      safeNavigationClick(billing);
+      navigationSteps += 1;
+      finishReplayPhase("billing_select", "complete", startedAt);
+      return;
+    }
     const startedAt = beginReplayPhase("menu_reveal");
     let menuRevealed = false;
     let settingsSelected = false;

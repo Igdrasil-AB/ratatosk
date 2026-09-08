@@ -1228,6 +1228,31 @@ describe("browser DOM boundary", () => {
     expect(driverSource).toContain("if (semanticActions.has(actionRef.vendorInvoiceId)) continue");
   });
 
+  it.each(["discovery", "replay"])("%s uses visible Billing before unrelated account menus", async (lane) => {
+    const page = stubSemanticPage({ directBilling: true, menuTriggerCount: 4, mountDelayMs: 0 });
+    Object.assign(document, { documentElement: { outerHTML: "<html></html>", scrollHeight: 0 } });
+    Object.assign(window, { top: window, fetch: vi.fn(), open: vi.fn(), scrollTo: vi.fn() });
+    vi.stubGlobal("performance", { getEntriesByType: () => [] });
+    vi.stubGlobal("HTMLElement", class {
+      static [Symbol.hasInstance](value: { getAttribute?: unknown }): boolean { return typeof value?.getAttribute === "function"; }
+    });
+    try {
+      if (lane === "discovery") {
+        const evidence = await collectPageEvidenceInPage(
+          { settleMs: 0, maxResources: 1, deadlineMs: 4_000, allowSemanticNavigation: true },
+          { ...EXPLORATION_ROUTE_POLICY, documentSelector: "[data-document]" }, DISCOVERY_DOM_POLICY,
+        );
+        expect(evidence).toMatchObject({ stats: { semanticControls: 1 } });
+      } else {
+        const result = await runSemanticDocumentOperationInPage(
+          { kind: "enumerate", maximumActions: 8 }, ["https://vendor.example"], DISCOVERY_DOM_POLICY, Date.now() + 4_000,
+        );
+        expect(result).toMatchObject({ ok: true, resolvedItems: 1 });
+      }
+      expect(page.clicked).toEqual(["Billing"]);
+    } finally { page.restore(); }
+  });
+
   it("captures invoice-shaped blob XHRs even without a PDF content type", () => {
     expect(observerSource).toContain("this.response instanceof Blob");
     expect(observerSource).toContain("DOCUMENT_HINT");
@@ -1450,6 +1475,7 @@ function stubSemanticPage(options: {
   mountDelayMs?: number;
   settingsMountDelayMs?: number;
   menuTriggerCount?: number;
+  directBilling?: boolean;
 } = {}): { clicked: string[]; restore: () => void } {
   const clicked: string[] = [];
   const navigation: unknown[] = [];
@@ -1496,9 +1522,9 @@ function stubSemanticPage(options: {
   }, "Open profile menu", () => {
     setTimeout(() => navigation.push(settingsItem), settingsMountDelayMs);
   });
-  navigation.push(profileTrigger);
+  navigation.push(options.directBilling ? billingTab : profileTrigger);
   const menuTriggers = options.menuTriggerCount
-    ? [profileTrigger, ...Array.from({ length: options.menuTriggerCount - 1 }, (_, index) =>
+    ? [...(options.directBilling ? [] : [profileTrigger]), ...Array.from({ length: options.menuTriggerCount - (options.directBilling ? 0 : 1) }, (_, index) =>
       control({ role: "button", "aria-haspopup": "menu" }, `Menu ${index + 2}`))]
     : [];
 
@@ -1516,7 +1542,7 @@ function stubSemanticPage(options: {
       return [];
     },
   });
-  vi.stubGlobal("location", { href: "https://vendor.example/settings/billing", pathname: "/settings/billing" });
+  vi.stubGlobal("location", { origin: "https://vendor.example", href: "https://vendor.example/settings/billing", pathname: "/settings/billing", search: "" });
   vi.stubGlobal("getComputedStyle", () => ({ display: "block", visibility: "visible", opacity: "1" }));
   vi.stubGlobal("window", {});
   // A framework mutation lands immediately and says nothing about the tier
@@ -1578,7 +1604,7 @@ function stubDivDocumentPage(
       ? [control]
       : selector === "h1,h2,h3,caption" ? [node(`${kind}s`)] : [],
   });
-  vi.stubGlobal("location", { href: "https://vendor.example/settings/billing", pathname: "/settings/billing" });
+  vi.stubGlobal("location", { origin: "https://vendor.example", href: "https://vendor.example/settings/billing", pathname: "/settings/billing", search: "" });
   vi.stubGlobal("getComputedStyle", () => ({ display: "block", visibility: "visible", opacity: "1" }));
   vi.stubGlobal("window", {});
   for (const name of ["HTMLElement", "HTMLAnchorElement"]) vi.stubGlobal(name, class {});
@@ -1632,7 +1658,7 @@ function stubVirtualizedInvoiceGrid(): { restore: () => void } {
       ? controls
       : selector === "h1,h2,h3,caption" ? [node("Invoices")] : [],
   });
-  vi.stubGlobal("location", { href: "https://vendor.example/settings/billing", pathname: "/settings/billing" });
+  vi.stubGlobal("location", { origin: "https://vendor.example", href: "https://vendor.example/settings/billing", pathname: "/settings/billing", search: "" });
   vi.stubGlobal("getComputedStyle", () => ({ display: "block", visibility: "visible", opacity: "1" }));
   vi.stubGlobal("window", {});
   for (const name of ["HTMLElement", "HTMLAnchorElement"]) vi.stubGlobal(name, class {});

@@ -1551,6 +1551,12 @@ export async function collectPageEvidenceInPage(
     runNavigationAction: (action: () => void) => void = (action) => action(),
   ): Promise<"complete" | "time_cap" | "action_cap"> => {
     if (billingSurfaceObserved()) return "complete";
+    const billing = semanticNavigationControl(billingNavigation);
+    if (billing) {
+      runNavigationAction(() => billing.click());
+      semanticNavigationSteps += 1;
+      return "complete";
+    }
     // A tier is worth waiting for only while something can still mount it: the
     // application's own startup for the first tier, or the previous click. A
     // single mutation fires on the first unrelated attribute change, long

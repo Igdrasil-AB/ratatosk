@@ -25,6 +25,7 @@ const ACQUISITION_CASES = [
   { name: "direct-dom", host: "direct-acquisition.ratatosk.test", route: "/direct-acquisition", adapterId: "dom-links", expectedCount: 1, expectedActions: 0, fallback: false },
   { name: "stripe-common", host: "stripe-common-acquisition.ratatosk.test", route: "/stripe-home", adapterId: "dom-links", expectedCount: 1, expectedActions: 0, fallback: false },
   { name: "native-attachment", host: "native-attachment-acquisition.ratatosk.test", route: NATIVE_TENANT_ROUTE, adapterId: "dom-actions", expectedCount: 4, expectedActions: 4, fallback: false },
+  { name: "visible-billing", host: "visible-billing.ratatosk.test", route: "/visible-billing", adapterId: "dom-actions", expectedCount: 1, expectedActions: 1, fallback: false },
   { name: "semantic-dom", host: "semantic-acquisition.ratatosk.test", route: "/semantic-acquisition", adapterId: "dom-actions", expectedCount: 1, expectedActions: 1, fallback: false },
   { name: "candidate-fallback", host: "fallback-acquisition.ratatosk.test", route: "/fallback-acquisition", adapterId: "network-json", expectedCount: 1, expectedActions: 0, fallback: true },
   { name: "blind-synthetic", host: "blind-acquisition.ratatosk.test", route: "/blind-home", adapterId: "dom-actions", expectedCount: 1, expectedActions: 1, fallback: false },
@@ -763,6 +764,18 @@ function fixturePage(path: string): string {
   if (path === "/direct-acquisition") {
     return `<!doctype html><html><head><title>Invoices | Direct Acquisition</title></head><body>
       <h1>Invoices</h1><a href="/documents/direct.pdf">Download invoice</a></body></html>`;
+  }
+  if (path === "/visible-billing") {
+    return `<!doctype html><html><head><title>Profile | Workspace</title></head><body>
+      <header>${[1, 2, 3, 4].map(index => `<button aria-haspopup="menu" data-testid="workspace-menu-${index}">Workspace ${index}</button>`).join("")}</header>
+      <nav><a href="/visible-billing" id="billing">Billing</a></nav><main><h1>Profile</h1></main>
+      <script>
+        document.querySelector('#billing').onclick = event => {
+          event.preventDefault();
+          document.querySelector('main').innerHTML = '<h1>Invoices</h1><table><tr data-invoice-id="fixture-visible-1"><td>INV-1001</td><td><button id="download">Download invoice</button></td></tr></table>';
+          document.querySelector('#download').onclick = () => fetch('/documents/visible.pdf');
+        };
+      </script></body></html>`;
   }
   if (path === "/semantic-acquisition") {
     return `<!doctype html><html><head><title>Invoices | Semantic Acquisition</title></head><body>
