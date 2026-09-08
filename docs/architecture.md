@@ -167,10 +167,14 @@ concurrent document work stops and the popup can offer Review Access.
 `IngestSink` is the single boundary for where collected documents go, selected by
 config:
 
-- **`FilesystemSink`** — saves to `Downloads/<root>/<supplier>/<date>/<file>`
+- **`FilesystemSink`** — saves to `Downloads/<root>/<supplier>/<date>/<identity>/<file>`
   via `chrome.downloads`. Runs in the background service worker; bytes go out as a
   `data:` URL (SWs can't make Blob URLs). `dateMode` folders by collection date
-  (default) or invoice date (deterministic path → overwrite-safe).
+  (default) or invoice date. The identity folder separates invoices with identical
+  supplier filenames. Pending deliveries retain their journaled path across upgrades.
+  Filenames prefer the document response's `Content-Disposition`, then captured
+  download-link evidence, then the recipe's generated fallback. Names are bounded
+  and sanitized; deduplication never depends on the filename.
 - **`HttpSink`** — multipart POST + normalized metadata + idempotency key to any
   URL; a `409` means "already have it" and is treated as success.
 - **`IgdrasilSink`** — an `HttpSink` pointed at engine-api's `/api/documents/ingest`

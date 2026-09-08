@@ -1,3 +1,4 @@
+import { filenameFromContentDisposition, safeDocumentFilename } from "../../../src/core/document-filename";
 export interface DocumentObservation {
   url: string;
   method: string;
@@ -131,7 +132,7 @@ export class SemanticActionObserver {
     }>;
   }> {
     return [...this.candidates].flatMap(([url, observation]) => {
-      const filename = safeFilename(observation.filename);
+      const filename = safeDocumentFilename(observation.filename);
       if (!filename) return [];
       return [{
         url,
@@ -221,23 +222,6 @@ function isNativeDownloadResponse(
   return type === "application/octet-stream" ||
     type === "application/force-download" ||
     type === "application/x-download";
-}
-
-function filenameFromContentDisposition(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  const encoded = value.match(/filename\*\s*=\s*UTF-8''([^;]+)/i)?.[1];
-  if (encoded) {
-    try { return decodeURIComponent(encoded.replace(/^["']|["']$/g, "")); } catch { /* use basic form */ }
-  }
-  return value.match(/filename\s*=\s*"([^"]+)"/i)?.[1] ??
-    value.match(/filename\s*=\s*([^;]+)/i)?.[1]?.trim();
-}
-
-function safeFilename(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  const basename = value.split(/[\\/]/).pop()?.trim();
-  if (!basename || basename.length > 240) return undefined;
-  return basename.replace(/[\u0000-\u001f\u007f]/g, "_");
 }
 
 function chromeSemanticActionObserverPlatform(): SemanticActionObserverPlatform {

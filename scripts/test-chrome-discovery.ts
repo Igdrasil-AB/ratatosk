@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -25,6 +25,7 @@ const ACQUISITION_CASES = [
   { name: "direct-dom", host: "direct-acquisition.ratatosk.test", route: "/direct-acquisition", adapterId: "dom-links", expectedCount: 1, expectedActions: 0, fallback: false },
   { name: "stripe-common", host: "stripe-common-acquisition.ratatosk.test", route: "/stripe-home", adapterId: "dom-links", expectedCount: 1, expectedActions: 0, fallback: false },
   { name: "native-attachment", host: "native-attachment-acquisition.ratatosk.test", route: NATIVE_TENANT_ROUTE, adapterId: "dom-actions", expectedCount: 4, expectedActions: 4, fallback: false },
+  { name: "blob-filename", host: "blob-acquisition.ratatosk.test", route: "/blob-acquisition", adapterId: "dom-actions", expectedCount: 1, expectedActions: 1, fallback: false },
   { name: "semantic-dom", host: "semantic-acquisition.ratatosk.test", route: "/semantic-acquisition", adapterId: "dom-actions", expectedCount: 1, expectedActions: 1, fallback: false },
   { name: "candidate-fallback", host: "fallback-acquisition.ratatosk.test", route: "/fallback-acquisition", adapterId: "network-json", expectedCount: 1, expectedActions: 0, fallback: true },
   { name: "blind-synthetic", host: "blind-acquisition.ratatosk.test", route: "/blind-home", adapterId: "dom-actions", expectedCount: 1, expectedActions: 1, fallback: false },
@@ -144,7 +145,7 @@ try {
       documentRequests.set(key, (documentRequests.get(key) ?? 0) + 1);
       response.writeHead(200, {
         "content-type": "application/octet-stream",
-        "content-disposition": "attachment",
+        "content-disposition": 'attachment; filename="invoice.pdf"',
       });
       response.end(`%PDF-1.4\n${path}\n%%EOF\n`);
       return;
@@ -154,6 +155,7 @@ try {
       documentRequests.set(key, (documentRequests.get(key) ?? 0) + 1);
       response.writeHead(200, {
         "content-type": path.includes("invalid") ? "text/plain" : "application/pdf",
+        ...(path === "/documents/network.pdf" || path === "/documents/semantic.pdf" ? { "content-disposition": "inline; filename*=UTF-8''Faktura%20%C3%A5.pdf" } : {}),
         ...(path.includes("native-attachment") ? { "content-disposition": 'attachment; filename="native-invoice.pdf"' } : {}),
       });
       response.end(path.includes("invalid") ? "not a pdf" : "%PDF-1.4\n%%EOF\n");
@@ -248,6 +250,11 @@ try {
   assert(address && typeof address === "object", "fixture server did not bind");
 
   try {
+    await mkdir(join(temporary, "profile", "Default"), { recursive: true });
+    await mkdir(join(temporary, "downloads"), { recursive: true });
+    await writeFile(join(temporary, "profile", "Default", "Preferences"), JSON.stringify({
+      download: { default_directory: join(temporary, "downloads"), prompt_for_download: false },
+    }));
     context = await chromium.launchPersistentContext(join(temporary, "profile"), {
       channel: "chromium",
       headless: true,
@@ -265,6 +272,13 @@ try {
     await extensionPage.goto(`chrome-extension://${extensionId}/collector/src/ui/popup/popup.html`);
     const page = await context.newPage();
     if (iterationOptions.acquisition) {
+      // CDP allow/allowAndName bypass extension filename determination. Use Chrome defaults.
+      const downloadsSession = await context.newCDPSession(page);
+      await downloadsSession.send("Browser.setDownloadBehavior", {
+        behavior: "default", eventsEnabled: true,
+      });
+    }
+    if (iterationOptions.acquisition) {
       for (const testCase of ACQUISITION_CASES) {
         if (iterationOptions.caseName && iterationOptions.caseName !== testCase.name) continue;
         const origin = `https://${testCase.host}`;
@@ -279,6 +293,25 @@ try {
         assert.equal(result.cadenceActionCount, 0, `${testCase.name}: cadence rerun activated an accepted control`);
         assert.equal(result.ledgerDelta, testCase.expectedCount, `${testCase.name}: ledger did not commit every document exactly once`);
         assert.equal(result.downloadDelta, testCase.expectedCount, `${testCase.name}: browser created an unexpected download count`);
+        const expectedFilename: Record<string, string> = {
+          "network": "Faktura å.pdf", "direct-dom": "Original  invoice.pdf",
+          "semantic-dom": "Faktura å.pdf", "blob-filename": "Receipt å.pdf", "native-attachment": "invoice.pdf",
+        };
+        if (expectedFilename[testCase.name]) {
+          const names = await extensionPage.evaluate(async (limit) => {
+            const c = (globalThis as typeof globalThis & { chrome: {
+              downloads: { search(query: object): Promise<Array<{ filename: string }>> };
+            } }).chrome;
+            return (await c.downloads.search({ orderBy: ["-startTime"], limit })).map((item) => item.filename);
+          }, testCase.expectedCount);
+          assert.equal(names.length, testCase.expectedCount, "missing supplier downloads");
+          for (const name of names) {
+            assert.equal(name.split("/").at(-1), expectedFilename[testCase.name]);
+            assert.match(name.split("/").at(-2)!, /^[a-f0-9]{64}$/);
+            assert(name.startsWith(join(temporary, "downloads") + "/"), "download escaped the fixture directory");
+            assert.equal((await readFile(name)).subarray(0, 5).toString(), "%PDF-");
+          }
+        }
         if (testCase.fallback) {
           assert((documentRequests.get(`${testCase.host}/documents/invalid.pdf`) ?? 0) >= 1, "fallback case did not exercise the failed candidate");
           assert((documentRequests.get(`${testCase.host}/documents/fallback.pdf`) ?? 0) >= 1, "fallback case did not reach the working candidate");
@@ -762,7 +795,17 @@ function fixturePage(path: string): string {
   }
   if (path === "/direct-acquisition") {
     return `<!doctype html><html><head><title>Invoices | Direct Acquisition</title></head><body>
-      <h1>Invoices</h1><a href="/documents/direct.pdf">Download invoice</a></body></html>`;
+      <h1>Invoices</h1><a href="/documents/direct.pdf" download="Original  invoice.pdf">Download invoice</a></body></html>`;
+  }
+  if (path === "/blob-acquisition") {
+    return `<!doctype html><html><head><title>Invoices | Blob Acquisition</title></head><body>
+      <h1>Invoices</h1><table><thead><tr><th>Invoice Number</th><th>Actions</th></tr></thead>
+      <tbody><tr data-invoice-id="fixture-blob-1"><td>FIXTURE-BLOB-1</td><td><button id="download">Download invoice</button></td></tr></tbody></table>
+      <script>document.querySelector('#download').onclick = () => {
+        const url = URL.createObjectURL(new Blob(['%PDF-1.7 blob fixture'], {type:'application/pdf'}));
+        const a = document.createElement('a'); a.href = url; a.download = 'Receipt å.pdf';
+        a.click(); URL.revokeObjectURL(url);
+      };</script></body></html>`;
   }
   if (path === "/semantic-acquisition") {
     return `<!doctype html><html><head><title>Invoices | Semantic Acquisition</title></head><body>

@@ -11,6 +11,7 @@ import type {
   DomDocumentAction,
   DomDriver,
   DomDriverRunResult,
+  DomResolvedDocument,
 } from "../../../src/core/strategies/dom";
 import {
   AuthExpired,
@@ -21,6 +22,7 @@ import {
   SelectorMiss,
   UnexpectedResponse,
 } from "../../../src/core/errors";
+import { filenameFromContentDisposition } from "../../../src/core/document-filename";
 import { readDocumentBytes } from "../../../src/core/document-size";
 import { replayTraceWithPrefix as withReplayPrefix } from "../../../src/core/replay-trace";
 import { exactPublicHttpsOriginPattern } from "../../../src/core/origin-policy";
@@ -371,7 +373,7 @@ export class BrowserDomDriver implements DomDriver {
     }
   }
 
-  async resolve(handle: string, signal?: AbortSignal): Promise<{ kind: "url"; url: string } | { kind: "bytes"; bytes: ArrayBuffer; contentType: string }> {
+  async resolve(handle: string, signal?: AbortSignal): Promise<DomResolvedDocument> {
     const task = this.semanticResolutionChain.then(
       () => this.resolveSemanticAction(handle, signal),
       () => this.resolveSemanticAction(handle, signal),
@@ -380,7 +382,7 @@ export class BrowserDomDriver implements DomDriver {
     return task;
   }
 
-  private async resolveSemanticAction(handle: string, signal?: AbortSignal): Promise<{ kind: "url"; url: string } | { kind: "bytes"; bytes: ArrayBuffer; contentType: string }> {
+  private async resolveSemanticAction(handle: string, signal?: AbortSignal): Promise<DomResolvedDocument> {
     const action = this.semanticActions.get(handle);
     if (!action) throw new DomActionFailed("semantic document action is no longer available", this.recipe.id);
     this.semanticActions.delete(handle);
@@ -416,11 +418,11 @@ export class BrowserDomDriver implements DomDriver {
     return this.materializeSemanticResolution(resolved);
   }
 
-  private async materializeSemanticResolution(resolved: SemanticResolutionResult): Promise<{ kind: "url"; url: string } | { kind: "bytes"; bytes: ArrayBuffer; contentType: string }> {
+  private async materializeSemanticResolution(resolved: SemanticResolutionResult): Promise<DomResolvedDocument> {
     if (resolved.kind === "url") return resolved;
     const materialized = await materializeInlinePdfDataUrl(resolved.dataUrl);
     if (!materialized) throw new DomActionFailed("semantic action returned an invalid document", this.recipe.id);
-    return { kind: "bytes", bytes: materialized.bytes, contentType: "application/pdf" };
+    return { kind: "bytes", bytes: materialized.bytes, contentType: "application/pdf", ...(resolved.filename ? { filename: resolved.filename } : {}) };
   }
 
   async dispose(): Promise<void> {
@@ -438,7 +440,7 @@ export class BrowserDomDriver implements DomDriver {
     return Math.min(Date.now() + maximumMs, this.expiresAt ?? Number.POSITIVE_INFINITY);
   }
 
-  async download(url: string): Promise<{ bytes: ArrayBuffer; contentType: string }> {
+  async download(url: string): Promise<{ bytes: ArrayBuffer; contentType: string; filename?: string }> {
     const owner = this.inlineDocumentOwners.get(url);
     const inline = owner?.take(url);
     if (inline) this.inlineDocumentOwners.delete(url);
@@ -457,6 +459,7 @@ export class BrowserDomDriver implements DomDriver {
       return {
         bytes: await readDocumentBytes(response, this.recipe.id),
         contentType: response.headers.get("content-type") ?? "",
+        filename: filenameFromContentDisposition(response.headers.get("content-disposition")),
       };
     } finally {
       await fetcher.dispose();
@@ -756,6 +759,9 @@ export async function runDomStepsInPage(
               const documentUrl = absolute.toString();
               values.add(documentUrl);
               const evidence = metadataForElement(element);
+              const filename = element instanceof HTMLAnchorElement && new URL(element.href, location.href).origin === location.origin
+                ? element.getAttribute("download") : null;
+              if (filename && filename.length <= 4_096) evidence.push({ source: "download-filename", confidence: "medium", filename });
               if (evidence.length) documents.push({ url: documentUrl, evidence });
             }
           } catch {

@@ -24,6 +24,8 @@ import { AuthExpired, DocumentInvalid, DocumentNotFound, UnexpectedResponse } fr
 import { MAX_DOCUMENT_BYTES, readDocumentBytes } from "../document-size";
 import { extract, extractString } from "../extract";
 import { get, getArray } from "../jsonpath";
+import { filenameFromContentDisposition } from "../document-filename";
+import { resolveInvoiceMetadata } from "../invoice-metadata";
 import { render } from "../template";
 import { createInvoiceListResult } from "../retrieval";
 
@@ -141,7 +143,8 @@ export const networkStrategy: Strategy = {
     const contentType = expectedContentType === "application/pdf"
       ? "application/pdf"
       : responseContentType || expectedContentType;
-    const filename = render(doc.filename ?? DEFAULT_FILENAME, {
+    const filename = filenameFromContentDisposition(res.headers.get("content-disposition")) ??
+      resolveInvoiceMetadata(ref).filename ?? render(doc.filename ?? DEFAULT_FILENAME, {
       vendorId: recipe.id,
       issuedAt: ref.issuedAt ?? "unknown",
       vendorInvoiceId: ref.vendorInvoiceId,

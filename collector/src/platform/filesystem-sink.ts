@@ -1,9 +1,10 @@
+import { safeDocumentFilename } from "../../../src/core/document-filename";
 import type { FetchedDocument } from "../../../src/core/types";
 import type { IngestResult, IngestSink } from "../../../src/ingest/sink";
-import { folderSegments, pathSegment, rememberDownloadRoot, stripControl } from "./download-path";
+import { folderSegments, pathSegment, rememberDownloadRoot } from "./download-path";
 
 /**
- * Saves each invoice to disk as `Downloads/<root>/<supplier>/<date>/<file>`,
+ * Saves each invoice to disk as `Downloads/<root>/<supplier>/<date>/<identity>/<file>`,
  * via `chrome.downloads` (which creates the subfolders from the path).
  *
  * Why downloads and not the File System Access API: this runs in the background
@@ -12,7 +13,7 @@ import { folderSegments, pathSegment, rememberDownloadRoot, stripControl } from 
  * `data:` URL — fine for invoice-sized files.
  *
  * Duplicates: the engine's persisted seen-store skips already-saved invoices
- * before download. Invoice-mode paths include the stable delivery identity, so
+ * before download. Paths include a folder for the stable delivery identity, so
  * a retry can safely overwrite only its own file and never a same-date invoice
  * that happened to use the same supplier filename.
  */
@@ -64,30 +65,16 @@ export function buildInvoicePath(
   doc: { vendorName?: string; vendorId: string; issuedAt?: string; filename: string; idempotencyKey?: string },
 ): string {
   const dateFolder = cfg.dateMode === "invoice" ? doc.issuedAt || "undated" : cfg.extractionDate;
-  const filename = isDeliveryIdentity(doc.idempotencyKey)
-    ? fileNameWithIdentity(doc.filename, doc.idempotencyKey)
-    : fileName(doc.filename);
+  const filename = safeDocumentFilename(doc.filename) ?? "invoice.pdf";
   // The one place a path must exist even when the configuration named nothing.
   const root = folderSegments(cfg.rootFolder);
   return [
     ...(root.length ? root : ["InvoiceCollector"]),
     pathSegment(doc.vendorName || doc.vendorId) || "unknown",
     pathSegment(dateFolder) || "unknown",
+    ...(isDeliveryIdentity(doc.idempotencyKey) ? [doc.idempotencyKey] : []),
     filename,
   ].join("/");
-}
-
-/** Sanitize a filename (keeps the extension dot). */
-function fileName(s: string): string {
-  const cleaned = stripControl(s.replace(/[/\\:*?"<>|]/g, "-")).trim();
-  return cleaned && !/^\.+$/.test(cleaned) ? cleaned : "invoice.pdf";
-}
-
-function fileNameWithIdentity(filename: string, identity: string): string {
-  const safeFilename = fileName(filename);
-  const dot = safeFilename.lastIndexOf(".");
-  if (dot <= 0) return `${safeFilename}--${identity}`;
-  return `${safeFilename.slice(0, dot)}--${identity}${safeFilename.slice(dot)}`;
 }
 
 function isDeliveryIdentity(value: string | undefined): value is string {

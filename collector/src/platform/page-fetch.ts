@@ -45,6 +45,7 @@ export interface PageFetchResult {
   status: number;
   contentType: string | null;
   linkHeader?: string | null;
+  contentDisposition?: string | null;
   finalUrl?: string;
   redirected?: boolean;
   /** Response body, base64-encoded (the executeScript boundary is JSON-only). */
@@ -79,10 +80,12 @@ export async function pageFetchInPage(req: PageRequest): Promise<PageFetchResult
     });
     const contentType = res.headers.get("content-type");
     const rawLink = res.headers.get("link");
+    const disposition = res.headers.get("content-disposition");
     const metadata = {
       finalUrl: res.url,
       redirected: res.redirected,
       linkHeader: rawLink && rawLink.length <= 4_096 ? rawLink : null,
+      contentDisposition: disposition && disposition.length <= 4_096 ? disposition : null,
     };
     const declared = Number(res.headers.get("content-length") ?? "0");
     const MAX_BYTES = 33_554_432;
@@ -152,6 +155,10 @@ export function parsePageFetchResult(value: unknown): PageFetchResult {
   if (raw.linkHeader !== undefined && raw.linkHeader !== null && (typeof raw.linkHeader !== "string" || raw.linkHeader.length > 4_096)) {
     throw new Error("invalid page fetch result");
   }
+  if (raw.contentDisposition !== undefined && raw.contentDisposition !== null &&
+    (typeof raw.contentDisposition !== "string" || raw.contentDisposition.length > 4_096 || /[\r\n]/.test(raw.contentDisposition))) {
+    throw new Error("invalid page fetch result");
+  }
   if (raw.finalUrl !== undefined) {
     if (typeof raw.finalUrl !== "string" || raw.finalUrl.length > 2_048) throw new Error("invalid page fetch result");
     const url = new URL(raw.finalUrl);
@@ -164,6 +171,7 @@ export function parsePageFetchResult(value: unknown): PageFetchResult {
     status: Number(raw.status),
     contentType: typeof raw.contentType === "string" ? raw.contentType : null,
     linkHeader: typeof raw.linkHeader === "string" ? raw.linkHeader : null,
+    contentDisposition: typeof raw.contentDisposition === "string" ? raw.contentDisposition : null,
     finalUrl: typeof raw.finalUrl === "string" ? raw.finalUrl : undefined,
     redirected: typeof raw.redirected === "boolean" ? raw.redirected : undefined,
     base64: raw.base64,
@@ -192,6 +200,7 @@ export function decodePageResult(value: PageFetchResult): HttpResponse {
         const normalized = name.toLowerCase();
         if (normalized === "content-type") return r.contentType;
         if (normalized === "link") return r.linkHeader ?? null;
+        if (normalized === "content-disposition") return r.contentDisposition ?? null;
         return null;
       },
     },

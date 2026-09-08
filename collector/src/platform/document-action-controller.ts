@@ -1,3 +1,4 @@
+import { safeDocumentFilename } from "../../../src/core/document-filename";
 import type {
   InvoiceMetadataEvidence,
   ReplayPhase,
@@ -57,8 +58,8 @@ export class ReplayPhaseFailed extends DocumentActionFailed {
 }
 
 export type SemanticResolutionResult =
-  | { kind: "url"; url: string }
-  | { kind: "inline_pdf"; dataUrl: string };
+  | { kind: "url"; url: string; filename?: string }
+  | { kind: "inline_pdf"; dataUrl: string; filename?: string };
 
 export interface SemanticActionRelocation {
   continuationActions: number;
@@ -73,8 +74,8 @@ type SemanticPageOperation =
 
 type SemanticPageResult =
   | ({ ok: true; kind: "enumeration" } & SemanticEnumerationResult)
-  | { ok: true; kind: "url"; url: string }
-  | { ok: true; kind: "inline_pdf"; dataUrl: string }
+  | { ok: true; kind: "url"; url: string; filename?: string }
+  | { ok: true; kind: "inline_pdf"; dataUrl: string; filename?: string }
   | {
       ok: false;
       replay: ReplayTrace;
@@ -385,9 +386,9 @@ export class DocumentActionController {
         );
       }
       url.hash = "";
-      return { kind: "url", url: url.toString() };
+      return { kind: "url", url: url.toString(), ...(parsed.filename ? { filename: parsed.filename } : {}) };
     }
-    if (parsed.kind === "inline_pdf") return { kind: "inline_pdf", dataUrl: parsed.dataUrl };
+    if (parsed.kind === "inline_pdf") return { kind: "inline_pdf", dataUrl: parsed.dataUrl, ...(parsed.filename ? { filename: parsed.filename } : {}) };
     throw new DocumentActionFailed("document_action_ambiguous", this.vendorId);
   }
 }
@@ -433,7 +434,9 @@ function recoverSemanticResolution(
   documents: CapturedNativeDocument[],
 ): SemanticResolutionResult | undefined {
   if (value) return value;
-  return documents.length === 1 ? { kind: "url", url: documents[0].url } : undefined;
+  return documents.length === 1 ? { kind: "url", url: documents[0].url,
+    ...(documents[0].evidence[0]?.filename ? { filename: documents[0].evidence[0].filename } : {}),
+  } : undefined;
 }
 
 async function readCurrentReplayPhase(tabId: number): Promise<ReplayPhase | undefined> {
@@ -512,9 +515,12 @@ function parseSemanticPageResult(
     return { ok: false, code: raw.code as Extract<SemanticPageResult, { ok: false }>["code"], replay };
   }
   if (raw.ok !== true) return invalid();
+  if (raw.filename !== undefined && (typeof raw.filename !== "string" || raw.filename.length > 4_096)) return invalid();
+  const name = safeDocumentFilename(raw.filename as string | undefined);
+  const filename = name ? { filename: name } : {};
   if (raw.kind === "url") {
     if (typeof raw.url !== "string" || raw.url.length > 2_048) return invalid();
-    return { ok: true, kind: "url", url: raw.url };
+    return { ok: true, kind: "url", url: raw.url, ...filename };
   }
   if (raw.kind === "inline_pdf") {
     if (
@@ -522,7 +528,7 @@ function parseSemanticPageResult(
       raw.dataUrl.length > 12_000_000 ||
       !raw.dataUrl.startsWith("data:application/pdf;base64,JVBER")
     ) return invalid();
-    return { ok: true, kind: "inline_pdf", dataUrl: raw.dataUrl };
+    return { ok: true, kind: "inline_pdf", dataUrl: raw.dataUrl, ...filename };
   }
   if (raw.kind !== "enumeration") return invalid();
   const replay = parseReplayTrace(raw.replay as ReplayTrace);
@@ -995,11 +1001,13 @@ export async function runSemanticDocumentOperationInPage(
   });
   const actionObserver = (): {
     snapshotActionDocuments?: () => Promise<string[]>;
+    filenameForActionDocument?: (url: string) => string | undefined;
     beginDocumentAction?: () => void;
     endDocumentAction?: () => void;
   } | undefined => (window as Window & {
     __ratatoskDiscoveryObserverV1?: {
       snapshotActionDocuments?: () => Promise<string[]>;
+      filenameForActionDocument?: (url: string) => string | undefined;
       beginDocumentAction?: () => void;
       endDocumentAction?: () => void;
     };
@@ -1359,6 +1367,10 @@ export async function runSemanticDocumentOperationInPage(
   }> = [];
   for (const control of controls.slice(0, 500)) {
     const evidence = metadataForElement(control);
+    const filename = control instanceof HTMLAnchorElement &&
+      (new URL(control.href, location.href).origin === location.origin || control.protocol === "data:")
+      ? control.getAttribute("download") : null;
+    if (filename && filename.length <= 4_096) evidence.push({ source: "download-filename", confidence: "medium", filename });
     const url = directUrl(control);
     if (url) {
       candidates.push({ control, url, evidence });
@@ -1463,14 +1475,15 @@ export async function runSemanticDocumentOperationInPage(
       return { ok: false, code: unique.length > 1 ? "document_action_ambiguous" : "document_action_timeout", replay: replayTrace() };
     }
     const value = unique[0];
+    const filename = observer.filenameForActionDocument?.(value);
     if (value.startsWith("data:application/pdf;base64,JVBER")) {
-      return { ok: true, kind: "inline_pdf", dataUrl: value };
+      return { ok: true, kind: "inline_pdf", dataUrl: value, ...(filename ? { filename } : {}) };
     }
     let url: URL;
     try { url = new URL(value); } catch { return { ok: false, code: "action_failed", replay: replayTrace() }; }
     if (url.protocol !== "https:" || url.username || url.password) return { ok: false, code: "action_failed", replay: replayTrace() };
     url.hash = "";
-    return { ok: true, kind: "url", url: url.toString() };
+    return { ok: true, kind: "url", url: url.toString(), ...(filename ? { filename } : {}) };
   } catch {
     return { ok: false, code: "action_failed", replay: replayTrace() };
   } finally {

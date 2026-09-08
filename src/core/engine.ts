@@ -37,6 +37,7 @@ import { assertAuthenticated, resolveAuthToken } from "./auth";
 import { contentIdempotencyKey, idempotencyKey } from "./dedup";
 import { resolveInvoiceMetadata } from "./invoice-metadata";
 import { extract } from "./extract";
+import { safeDocumentFilename } from "./document-filename";
 import { get, getArray } from "./jsonpath";
 import { DEFAULT_SAFE_CONCURRENCY, mapConcurrentOrdered } from "./concurrency";
 import { isBoundedTenantIdentifierSegment } from "./discovery";
@@ -50,6 +51,7 @@ export const MAX_EXPANDED_SCOPES = 100;
 export interface RawDocument {
   bytes: ArrayBuffer;
   contentType: string;
+  /** Strategy-resolved name: supplier evidence before the generated fallback. */
   filename: string;
 }
 
@@ -284,7 +286,7 @@ async function executeVendor(
           currency: metadata.currency,
           metadataEvidence: ref.metadataEvidence,
           metadataConflicts: metadata.conflicts,
-          filename: metadata.filename ?? raw.filename,
+          filename: safeDocumentFilename(raw.filename, raw.contentType) ?? "invoice.pdf",
           contentType: raw.contentType,
           bytes: raw.bytes,
           idempotencyKey: key,

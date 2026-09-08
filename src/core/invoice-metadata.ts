@@ -1,3 +1,4 @@
+import { safeDocumentFilename } from "./document-filename";
 import type {
   InvoiceMetadataEvidence,
   InvoiceRef,
@@ -97,12 +98,12 @@ function directRefEvidence(ref: InvoiceRef): InvoiceMetadataEvidence[] {
 
 function normalizeField(field: MetadataField, raw: string | undefined): string | undefined {
   if (typeof raw !== "string") return undefined;
-  const value = raw.replace(/\s+/g, " ").trim().slice(0, field === "filename" ? 240 : 120);
+  if (field === "filename") return safeDocumentFilename(raw);
+  const value = raw.replace(/\s+/g, " ").trim().slice(0, 120);
   if (!value) return undefined;
   if (field === "issuedAt") return validDate(value);
   if (field === "total") return validDecimal(value);
   if (field === "currency") return /^[A-Za-z]{3}$/.test(value) ? value.toUpperCase() : undefined;
-  if (field === "filename") return value.replace(/[\/\\\u0000-\u001f\u007f]/g, "_");
   return value;
 }
 

@@ -45,9 +45,12 @@ describe("filesystem delivery completion", () => {
     expect(listener).toBeUndefined();
   });
 
-  it("reuses one overwrite path when journal commit fails after a completed download", async () => {
+  it.each([false, true])("reuses one overwrite path after commit failure (legacy journal: %s)", async (legacy) => {
     const identity = "a".repeat(64);
-    const stored: Record<string, unknown> = {};
+    const legacyPath = `Invoices/Vendor/2026-07-01/invoice--${identity}.pdf`;
+    const stored: Record<string, unknown> = legacy ? {
+      filesystemDeliveryJournalV1: { [identity]: { source: "ext:vendor", destination: "Invoices\nextraction", path: legacyPath, status: "pending", updatedAt: 1 } },
+    } : {};
     let setCalls = 0;
     const downloads: chrome.downloads.DownloadOptions[] = [];
     vi.stubGlobal("chrome", {
@@ -95,6 +98,8 @@ describe("filesystem delivery completion", () => {
     expect(new Set(downloads.map(({ filename }) => filename)).size).toBe(1);
     expect(downloads.every(({ conflictAction }) => conflictAction === "overwrite")).toBe(true);
     expect(downloads[0].filename).toContain(identity);
+    if (legacy) expect(downloads[0].filename).toBe(legacyPath);
+    else expect(downloads[0].filename).toMatch(new RegExp(`/${identity}/invoice\\.pdf$`));
   });
 
   it("downloads again after the supplier's filesystem history is forgotten", async () => {

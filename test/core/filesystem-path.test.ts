@@ -20,7 +20,7 @@ describe("buildInvoicePath", () => {
       { rootFolder: "InvoiceCollector", dateMode: "extraction", extractionDate: "2026-07-12" },
       { ...doc, idempotencyKey: identity },
     );
-    expect(path).toBe(`InvoiceCollector/Anthropic (Claude)/2026-07-12/anthropic-2026-06-27-1782543567--${identity}.pdf`);
+    expect(path).toBe(`InvoiceCollector/Anthropic (Claude)/2026-07-12/${identity}/anthropic-2026-06-27-1782543567.pdf`);
   });
 
   it("invoice mode uses the invoice date → deterministic path", () => {
@@ -38,8 +38,8 @@ describe("buildInvoicePath", () => {
     const first = buildInvoicePath(cfg, { ...doc, idempotencyKey: firstKey });
     const second = buildInvoicePath(cfg, { ...doc, idempotencyKey: secondKey });
 
-    expect(first).toBe(`InvoiceCollector/Anthropic (Claude)/2026-06-27/anthropic-2026-06-27-1782543567--${firstKey}.pdf`);
-    expect(second).toBe(`InvoiceCollector/Anthropic (Claude)/2026-06-27/anthropic-2026-06-27-1782543567--${secondKey}.pdf`);
+    expect(first).toBe(`InvoiceCollector/Anthropic (Claude)/2026-06-27/${firstKey}/anthropic-2026-06-27-1782543567.pdf`);
+    expect(second).toBe(`InvoiceCollector/Anthropic (Claude)/2026-06-27/${secondKey}/anthropic-2026-06-27-1782543567.pdf`);
     expect(first).not.toBe(second);
   });
 

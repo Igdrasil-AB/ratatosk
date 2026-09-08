@@ -23,6 +23,7 @@ import type {
 import type { RawDocument, Strategy } from "../engine";
 import { DocumentInvalid, DocumentNotFound, DocumentTooLarge, SelectorMiss, UnexpectedResponse } from "../errors";
 import { preferDocumentUrl } from "../document-candidate";
+import { safeDocumentFilename } from "../document-filename";
 import { render } from "../template";
 import { createInvoiceListResult } from "../retrieval";
 import { MAX_DOCUMENT_BYTES } from "../document-size";
@@ -51,8 +52,8 @@ export interface DomDriverRunResult {
 }
 
 export type DomResolvedDocument =
-  | { kind: "url"; url: string }
-  | { kind: "bytes"; bytes: ArrayBuffer; contentType: string };
+  | { kind: "url"; url: string; filename?: string }
+  | { kind: "bytes"; bytes: ArrayBuffer; contentType: string; filename?: string };
 
 /** Implemented by the platform, backed by a real browser tab. */
 export interface DomDriver {
@@ -61,7 +62,7 @@ export interface DomDriver {
   /** Resolve one previously enumerated semantic action after the engine owns its identity claim. */
   resolve?(handle: string, signal?: AbortSignal): Promise<DomResolvedDocument>;
   /** Fetch a URL as bytes using the live session (delegates to credentialed fetch). */
-  download(url: string): Promise<{ bytes: ArrayBuffer; contentType: string }>;
+  download(url: string): Promise<{ bytes: ArrayBuffer; contentType: string; filename?: string }>;
   dispose?(): Promise<void>;
 }
 
@@ -144,13 +145,14 @@ export function makeDomStrategy(driver: DomDriver): Strategy {
     },
 
     async fetchDocument(recipe, ref, _vars, _ctx, signal): Promise<RawDocument> {
-      let materialized: { bytes: ArrayBuffer; contentType: string };
+      let materialized: { bytes: ArrayBuffer; contentType: string; filename?: string };
       if (ref.resolution?.kind === "semantic_action") {
         if (!driver.resolve) throw new DocumentNotFound(ref.vendorInvoiceId, recipe.id);
         const resolved = await driver.resolve(ref.resolution.handle, signal);
         materialized = resolved.kind === "bytes"
-          ? { bytes: resolved.bytes, contentType: resolved.contentType }
+          ? resolved
           : await driver.download(resolved.url);
+        materialized.filename ??= resolved.filename;
       } else {
         if (!ref.documentUrl) throw new DocumentNotFound(ref.vendorInvoiceId, recipe.id);
         materialized = await driver.download(ref.documentUrl);
@@ -172,7 +174,7 @@ export function makeDomStrategy(driver: DomDriver): Strategy {
         issuedAt: metadata.issuedAt ?? "unknown",
         vendorInvoiceId: ref.vendorInvoiceId,
       });
-      const filename = metadata.filename ?? inferredFilename;
+      const filename = safeDocumentFilename(materialized.filename) ?? metadata.filename ?? inferredFilename;
       return { bytes, contentType: "application/pdf", filename };
     },
 

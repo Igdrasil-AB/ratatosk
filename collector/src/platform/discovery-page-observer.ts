@@ -1,3 +1,5 @@
+import { readBoundedResponse as readBoundedBytes } from "../../../src/core/http";
+import { filenameFromContentDisposition } from "../../../src/core/document-filename";
 import { isJsonContentType, normalizeContentType } from "../../../src/core/recorder/cdp";
 import { buildDiscoveryEvidenceEntry } from "../../../src/core/recorder/discovery-evidence";
 import type { CapturedEntry } from "../../../src/core/recorder/types";
@@ -23,6 +25,7 @@ interface DiscoveryPageObserver {
   snapshotRoutes(): Promise<string[]>;
   snapshotDocuments(): Promise<string[]>;
   snapshotActionDocuments(): Promise<string[]>;
+  filenameForActionDocument?(url: string): string | undefined;
   beginDocumentAction(): void;
   endDocumentAction(): void;
   stop(): void;
@@ -66,6 +69,14 @@ function installObserver(): void {
   const routeKeys = new Set<string>();
   const actionDocuments: string[] = [];
   const actionDocumentKeys = new Set<string>();
+  const actionFilenames = new Map<string, { name: string | null; priority: number }>();
+  const keepActionFilename = (url: string, filename?: string, priority = 1): void => {
+    if (!filename || filename.length > 4_096 || (!actionFilenames.has(url) && actionFilenames.size >= MAX_DOCUMENTS)) return;
+    const previous = actionFilenames.get(url);
+    if (previous && previous.priority > priority) return;
+    const name = !previous || previous.priority < priority || previous.name === filename ? filename : null;
+    actionFilenames.set(url, { name, priority });
+  };
   const pending = new Set<Promise<void>>();
   const xhrState = new WeakMap<XMLHttpRequest, {
     method: string;
@@ -78,6 +89,7 @@ function installObserver(): void {
   let totalInlinePdfBytes = 0;
   let stopped = false;
   let documentActionActive = false;
+  let documentActionGeneration = 0;
   const expiryTimer = setTimeout(() => window[OBSERVER_KEY]?.stop(), MAX_OBSERVER_LIFETIME_MS);
 
   const queue = (work: () => Promise<void>): void => {
@@ -173,7 +185,7 @@ function installObserver(): void {
     actionDocuments.push(value);
   };
 
-  const keepPdfBytes = (bytes: Uint8Array, actionScopedAtRequestStart = false): boolean => {
+  const keepPdfBytes = (bytes: Uint8Array, actionScopedAtRequestStart = false, filename?: string, priority = 1): boolean => {
     if (
       stopped || documents.length >= MAX_DOCUMENTS || bytes.byteLength === 0 ||
       bytes.byteLength > MAX_INLINE_PDF_BYTES ||
@@ -189,6 +201,7 @@ function installObserver(): void {
       actionDocumentKeys.add(value);
       actionDocuments.push(value);
     }
+    if (actionScopedAtRequestStart) keepActionFilename(value, filename, priority);
     if (documentKeys.has(value)) return true;
     documentKeys.add(value);
     documents.push(value);
@@ -200,13 +213,15 @@ function installObserver(): void {
     blob: Blob,
     fallbackUrl?: string,
     actionScopedAtRequestStart = false,
+    filename?: string,
+    priority = 1,
   ): Promise<void> => {
     if (blob.size === 0 || blob.size > MAX_INLINE_PDF_BYTES) {
       if (fallbackUrl) keepDocumentUrl(fallbackUrl, actionScopedAtRequestStart);
       return;
     }
     try {
-      const captured = keepPdfBytes(new Uint8Array(await blob.arrayBuffer()), actionScopedAtRequestStart);
+      const captured = keepPdfBytes(new Uint8Array(await blob.arrayBuffer()), actionScopedAtRequestStart, filename, priority);
       if (!captured && fallbackUrl) keepDocumentUrl(fallbackUrl, actionScopedAtRequestStart);
     } catch {
       if (fallbackUrl) keepDocumentUrl(fallbackUrl, actionScopedAtRequestStart);
@@ -270,7 +285,8 @@ function installObserver(): void {
         contentType === "application/pdf" ||
         (DOCUMENT_HINT.test(responseUrl) && !/(?:json|html|javascript|text\/|image\/)/i.test(contentType))
       ) {
-        await captureDocumentBlob(await response.clone().blob(), responseUrl, actionScopedAtRequestStart);
+        await captureDocumentBlob(await response.clone().blob(), responseUrl, actionScopedAtRequestStart,
+          filenameFromContentDisposition(response.headers.get("content-disposition")));
       }
     });
     return responsePromise;
@@ -334,10 +350,12 @@ function installObserver(): void {
           (DOCUMENT_HINT.test(responseUrl) && !/(?:json|html|javascript|text\/|image\/)/i.test(contentType))
         ) {
           if (this.response instanceof Blob) {
-            await captureDocumentBlob(this.response, responseUrl, current.actionScopedAtRequestStart);
+            await captureDocumentBlob(this.response, responseUrl, current.actionScopedAtRequestStart,
+              filenameFromContentDisposition(this.getResponseHeader("content-disposition")));
           }
           else if (this.response instanceof ArrayBuffer) {
-            if (!keepPdfBytes(new Uint8Array(this.response), current.actionScopedAtRequestStart)) {
+            if (!keepPdfBytes(new Uint8Array(this.response), current.actionScopedAtRequestStart,
+              filenameFromContentDisposition(this.getResponseHeader("content-disposition")))) {
               keepDocumentUrl(responseUrl, current.actionScopedAtRequestStart);
             }
           } else {
@@ -377,6 +395,23 @@ function installObserver(): void {
     return Reflect.apply(originalWindowOpen, window, [url, target, features]) as WindowProxy | null;
   } as typeof window.open;
 
+  const captureNamedDocument = (url: URL, filename?: string): void => {
+    if (url.protocol === "https:") {
+      url.hash = "";
+      keepActionDocumentUrl(url.toString());
+      if (url.origin === location.origin) keepActionFilename(url.toString(), filename, 2);
+    } else if (filename && ((url.protocol === "blob:" && url.origin === location.origin) ||
+      (url.protocol === "data:" && url.href.length <= 12_000_000 && url.href.startsWith("data:application/pdf;base64,JVBER")))) {
+      // Start before the supplier revokes its object URL. No additional HTTP request.
+      const generation = documentActionGeneration;
+      const bytes = originalFetch(url.toString()).then((response) => readBoundedBytes(response, MAX_INLINE_PDF_BYTES));
+      queue(async () => {
+        const captured = await bytes;
+        if (generation === documentActionGeneration) keepPdfBytes(new Uint8Array(captured), true, filename, 2);
+      });
+    }
+  };
+
   const captureGeneratedAnchor = (event: MouseEvent): void => {
     if (!documentActionActive) return;
     const target = event.composedPath()[0];
@@ -391,7 +426,7 @@ function installObserver(): void {
       /(?:\.pdf$|\/download(?:\/|$))/i.test(url.pathname);
     // Preserve ordinary same-origin navigation used to reveal billing UI.
     if (url.origin === location.origin && !explicitDocument) return;
-    if (url.protocol === "https:") keepActionDocumentUrl(url.toString());
+    captureNamedDocument(url, anchor.getAttribute("download") ?? undefined);
     event.preventDefault();
   };
 
@@ -405,6 +440,7 @@ function installObserver(): void {
     if (!raw) return;
     let url: URL;
     try { url = new URL(raw, location.href); } catch { return; }
+    captureNamedDocument(url, event.downloadRequest ?? undefined);
     if (url.protocol === "https:") {
       keepActionDocumentUrl(url.toString());
     } else if (
@@ -495,10 +531,15 @@ function installObserver(): void {
       }
       return [...actionDocuments];
     },
+    filenameForActionDocument(url: string): string | undefined {
+      return actionFilenames.get(url)?.name ?? undefined;
+    },
     beginDocumentAction(): void {
       if (!stopped) {
         actionDocuments.length = 0;
         actionDocumentKeys.clear();
+        actionFilenames.clear();
+        documentActionGeneration++;
         documentActionActive = true;
       }
     },
@@ -531,6 +572,7 @@ function installObserver(): void {
       routeKeys.clear();
       actionDocuments.length = 0;
       actionDocumentKeys.clear();
+      actionFilenames.clear();
       pending.clear();
       delete window[OBSERVER_KEY];
     },
