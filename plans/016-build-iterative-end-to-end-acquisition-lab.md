@@ -46,10 +46,11 @@
 - **Supersedes**: Plan 015's remaining iterative debugging and live-release work
 - **Category**: correctness, testing, diagnostics, performance, release safety
 - **Planned at**: commit `b4a84d3`, 2026-08-25
-- **Implementation status**: IN PROGRESS — Phases 0–2 now provide closed replay
+- **Implementation status**: IN PROGRESS — Phases 0–3 now provide closed replay
   tracing, deterministic built-Chromium/live-package control, and the generic
-  supplier-shape plus neutral mutation corpus in Collector 0.8.53 / discovery
-  43. Authorized ClickUp trace readback and Phases 3–6 remain; no exact build has
+  supplier-shape corpus on one preview/collection replay executor in Collector
+  0.8.53 / discovery 43. Authorized ClickUp trace readback and Phases 4–6 remain;
+  no exact build has
   passed delivery, immediate duplicate, and cadence acceptance end to end
 
 ## Goal
@@ -504,6 +505,23 @@ item or blocked branch cannot erase evidence from another lane.
 - semantic intent uses the packaged accessibility policy and survives route
   renames and DOM wrapper changes;
 - candidate-local replay failures fall through to the next retained plan.
+
+### Phase 3 evidence (2026-08-26)
+
+- the implementation already has the required deep seam: both
+  `previewCandidate` and `executeRecipeRun` call `buildStrategies`, whose single
+  DOM construction is `BrowserDomDriver` backed by `DocumentActionController`;
+- the existing closed `VendorRecipe.invoices` union plus `ReplayPlanKind`
+  represents network, embedded, exact DOM, typed DOM, and semantic DOM without
+  adding a second persisted plan model;
+- preview removes pagination only for its bounded no-sink pass; the DOM open,
+  packaged accessibility policy, typed runtime scope rendering, replay trace,
+  enumeration, and connected resolution all stay on the same executor;
+- executable preview, connected collection, candidate-fallback, typed-scope,
+  and browser-boundary tests pass 134 checks, including the new guard that no
+  preview or collector-local `BrowserDomDriver` construction can fork the seam;
+- no production refactor was made because another executor/interface would
+  duplicate the already shared module without changing behavior.
 
 ## Phase 4 — Extend Chromium from preview to delivery and deduplication
 
