@@ -334,7 +334,7 @@ export class BrowserDomDriver implements DomDriver {
             }
             visited.add(next);
             const updated = await withinRunDeadline(chrome.tabs.update(tabId, { url: next, active: true }), runDeadline);
-            if (updated.status !== "complete") {
+            if (updated?.status !== "complete") {
               await waitForTabComplete(tabId, Math.min(8_000, remainingRunMs(runDeadline)));
             }
           }
@@ -1025,7 +1025,7 @@ function waitForTabComplete(tabId: number, timeoutMs = 20_000): Promise<void> {
       error ? reject(error) : resolve();
     };
     const timer = setTimeout(() => done(new DomRunDeadlineExceeded("supplier page load timed out")), Math.max(0, timeoutMs));
-    const onUpdated = (updatedId: number, info: chrome.tabs.TabChangeInfo) => {
+    const onUpdated = (updatedId: number, info: chrome.tabs.OnUpdatedInfo) => {
       if (updatedId === tabId && info.status === "complete") done();
     };
     chrome.tabs.onUpdated.addListener(onUpdated);

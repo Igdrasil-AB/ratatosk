@@ -1,7 +1,7 @@
 export interface ForegroundTabsApi {
   get(tabId: number): Promise<chrome.tabs.Tab>;
   query(queryInfo: chrome.tabs.QueryInfo): Promise<chrome.tabs.Tab[]>;
-  update(tabId: number, updateProperties: chrome.tabs.UpdateProperties): Promise<chrome.tabs.Tab>;
+  update(tabId: number, updateProperties: chrome.tabs.UpdateProperties): Promise<chrome.tabs.Tab | undefined>;
 }
 
 export type ReleaseForegroundTab = () => Promise<void>;

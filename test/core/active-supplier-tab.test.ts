@@ -8,10 +8,10 @@ import {
 function tabsApi(query: ActiveTabApi["query"]): {
   api: ActiveTabApi;
   activate: (tabId: number) => void;
-  update: (tabId: number, changeInfo: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab) => void;
+  update: (tabId: number, changeInfo: chrome.tabs.OnUpdatedInfo, tab: chrome.tabs.Tab) => void;
 } {
-  let activated: ((info: chrome.tabs.TabActiveInfo) => void) | undefined;
-  let updated: ((tabId: number, changeInfo: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab) => void) | undefined;
+  let activated: ((info: chrome.tabs.OnActivatedInfo) => void) | undefined;
+  let updated: ((tabId: number, changeInfo: chrome.tabs.OnUpdatedInfo, tab: chrome.tabs.Tab) => void) | undefined;
   return {
     api: {
       query,

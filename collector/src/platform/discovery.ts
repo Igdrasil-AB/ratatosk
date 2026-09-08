@@ -2358,7 +2358,7 @@ class BackgroundExplorationTab {
       this.foregroundProbeBudget.remaining -= 1;
       return withForegroundTabVisibility(this.tabId, async () => {
         const tab = await chrome.tabs.update(this.tabId!, { url: target, active: true });
-        if (tab.status !== "complete") {
+        if (tab?.status !== "complete") {
           await waitForTabComplete(this.tabId!, Math.min(8_000, Math.max(1, options.deadlineMs)));
         }
         const remainingMs = options.deadlineMs - (Date.now() - startedAt);
@@ -2373,10 +2373,10 @@ class BackgroundExplorationTab {
       const tab = await chrome.tabs.create({ url: target, active: false });
       if (tab.id === undefined) throw new Error("could not open a bounded exploration tab");
       this.tabId = tab.id;
-      if (tab.status !== "complete") await waitForTabComplete(tab.id, Math.min(8_000, Math.max(1, options.deadlineMs)));
+      if (tab?.status !== "complete") await waitForTabComplete(tab.id, Math.min(8_000, Math.max(1, options.deadlineMs)));
     } else {
       const tab = await chrome.tabs.update(this.tabId, { url: target, active: false });
-      if (tab.status !== "complete") {
+      if (tab?.status !== "complete") {
         await waitForTabComplete(this.tabId, Math.min(8_000, Math.max(1, options.deadlineMs - (Date.now() - startedAt))));
       }
     }
@@ -2434,7 +2434,7 @@ function waitForTabComplete(tabId: number, timeoutMs: number): Promise<void> {
       error ? reject(error) : resolve();
     };
     const timer = setTimeout(() => done(new Error("supplier exploration page load timed out")), timeoutMs);
-    const onUpdated = (updatedId: number, info: chrome.tabs.TabChangeInfo) => {
+    const onUpdated = (updatedId: number, info: chrome.tabs.OnUpdatedInfo) => {
       if (updatedId === tabId && info.status === "complete") done();
     };
     chrome.tabs.onUpdated.addListener(onUpdated);
