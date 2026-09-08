@@ -46,10 +46,10 @@
 - **Supersedes**: Plan 015's remaining iterative debugging and live-release work
 - **Category**: correctness, testing, diagnostics, performance, release safety
 - **Planned at**: commit `b4a84d3`, 2026-08-25
-- **Implementation status**: IN PROGRESS — Phases 0–1 now provide closed replay
-  tracing, a deterministic built-Chromium iteration command, and an exact-build
-  signed-in Chrome handoff in Collector 0.8.53 / discovery 43. Authorized
-  ClickUp trace readback and Phases 2–6 remain; no exact build has
+- **Implementation status**: IN PROGRESS — Phases 0–2 now provide closed replay
+  tracing, deterministic built-Chromium/live-package control, and the generic
+  supplier-shape plus neutral mutation corpus in Collector 0.8.53 / discovery
+  43. Authorized ClickUp trace readback and Phases 3–6 remain; no exact build has
   passed delivery, immediate duplicate, and cadence acceptance end to end
 
 ## Goal
@@ -453,6 +453,23 @@ supplier-labelled fixture.
 - route/name/DOM mutation seeds produce no supplier-specific production diff;
 - the corpus includes at least three unrelated retrieval families: structured
   API, server-rendered documents, and semantic SPA documents.
+
+### Phase 2 evidence (2026-08-26)
+
+- the permanent corpus covers fourteen supplier shapes across network JSON,
+  embedded JSON, direct DOM, and semantic DOM families, including delayed and
+  visibility-gated SPAs, same- and cross-origin typed scopes, bearer replay,
+  opaque navigation, provider documents, and cursor traversal;
+- built-Chromium cases cover iframe evidence, four competing menus, competing
+  personal/workspace avatars, safe mutation blocking, and semantic replay;
+- controller, pagination, fallback, transaction, scheduler, and worker-restart
+  tests close the remaining traversal, failure, and lifecycle rows;
+- deterministic seeds 17, 41, and 73 mutate neutral routes, navigation labels,
+  wrapper elements, wrapper classes, and hydration delays. None contains billing
+  vocabulary in its route or class, and all three retain two direct documents
+  inside the ten-second envelope without a production-code change;
+- the focused seven-file matrix passes 144 tests with no supplier literal or
+  route dictionary added to production.
 
 ## Phase 3 — Make replay one deep module
 

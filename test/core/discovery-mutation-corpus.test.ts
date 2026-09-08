@@ -52,6 +52,56 @@ describe("evidence-first discovery mutation corpus", () => {
     });
   }
 
+  for (const [seed, wrapper, label, documentLabel, hydrateMs] of [
+    [17, "section", "Payment history", "Get receipt", 180],
+    [41, "article", "Statements", "Download statement", 650],
+    [73, "div", "Billing documents", "Download invoice", 1_300],
+  ] as const) {
+    const left = (Math.imul(seed, 2_654_435_761) >>> 0).toString(36);
+    const right = (Math.imul(seed + 11, 1_597_334_677) >>> 0).toString(36);
+    const route = `/x${left}/z${right}`;
+    const wrapperClass = `w${right} x${left}`;
+
+    it(`survives neutral route, label, and ${wrapper} wrapper mutation seed ${seed}`, async () => {
+      expect(route).not.toMatch(/billing|payment|invoice|receipt|statement/i);
+      expect(wrapperClass).not.toMatch(/billing|payment|invoice|receipt|statement/i);
+      const origin = `https://mutation-${seed}.example`;
+      const portal: Portal = {
+        name: `deterministic mutation seed ${seed}`,
+        origin,
+        entryPath: "/home",
+        routes: [
+          {
+            path: "/home",
+            hydrateMs: 100,
+            navigations: [{ href: route, label }],
+            html: "<html><body><div id=app></div></body></html>",
+          },
+          {
+            path: route,
+            hydrateMs,
+            html: `<html><body><${wrapper} class="${wrapperClass}"><h1>${label}</h1><a href="/d/a.pdf" aria-label="${documentLabel}">${documentLabel}</a><a href="/d/b.pdf" aria-label="${documentLabel}">${documentLabel}</a></${wrapper}></body></html>`,
+          },
+        ],
+      };
+      const simulation = createSimulation(portal);
+      active = simulation;
+      simulation.install();
+      try {
+        const result = await discoverSupplierInTab(simulation.entryTabId, origin, { mode: "fast" });
+        expect(result.candidates.candidates[0]).toMatchObject({
+          adapter: { id: "dom-links" },
+          candidateCount: 2,
+        });
+        expect(simulation.trace.probes.map((probe) => new URL(probe.url).pathname)).toContain(route);
+        expect(simulation.trace.elapsedMs).toBeLessThanOrEqual(10_000);
+      } finally {
+        simulation.restore();
+        active = undefined;
+      }
+    });
+  }
+
   it("keeps look-alike destructive SPA destinations out even when they were observed", () => {
     const origin = "https://unsafe-navigation.example";
     expect(planExplorationTargets({
