@@ -134,10 +134,14 @@ issue creation or recipe promotion from a Chatwoot conversation.
 | --- | --- | --- |
 | Ratatosk | `npm ci && npm run ci && npm run build:collector && npm run test:chrome-discovery:built && npm run test:chrome-acquisition:built` | Exit 0; built extension uses only synthetic cases |
 | Ratatosk security | `npm run audit:security && npm run package:collector && npm run verify:collector-artifact` | No high advisory; exact ZIP excludes keys and unreviewed permissions |
-| Svala | `cd svala-app && npm ci && npm run typecheck && npm test && npm run db:verify-migration && npm run build` | Exit 0 against a safe test DB where required |
+| Svala | `cd svala-app && npm ci && npm run typecheck && npm test && npm audit --omit=dev --audit-level=high && npm run db:migrate && npm run db:status && npm run build` | Exit 0 against a disposable PostgreSQL test DB where required; status has zero pending migrations and no high production advisory |
 | Contract | Compare synthetic v1 fixture bytes/hash in both repositories | Parsers accept/reject the same population |
 
 ## Steps
+
+`db:verify-migration` compares a legacy SQLite export with PostgreSQL row
+content. It does not verify a new Ratatosk table, so the gate above uses the
+PostgreSQL migration runner and status plus focused schema tests.
 
 ### 1. Freeze the cross-repository contract
 
