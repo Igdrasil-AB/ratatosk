@@ -35,7 +35,9 @@
   and placed both App credentials on that folder. The test controller and its
   temporary volume were removed afterward.
 - The exact pinned Node 20/22/24 containers each passed 968 tests and emitted
-  JUnit with zero failures. The final pinned Playwright container passed 13
+  JUnit with zero failures on integration commit `3b6f15c`. The final
+  `3f2d31d` change only disables GPU in the browser harness. Its pinned
+  Playwright container passed 13
   discovery and 10 acquisition cases with zero JUnit failures, then verified
   the Collector ZIP. An earlier run failed in blind acquisition and another
   crashed before Chrome startup; disabling headless GPU passed three full
