@@ -150,10 +150,14 @@ try {
         const body = Buffer.concat(chunks).toString("utf8");
         const id = String(request.headers["idempotency-key"] ?? "");
         feedbackRequests.push({ id, body });
-        response.writeHead(feedbackRequests.length === 1 ? 503 : 201, { "content-type": "application/json", "cache-control": "no-store" });
-        response.end(feedbackRequests.length === 1 ? '{"code":"temporarily_unavailable"}' : JSON.stringify({
-          receipt: { reportId: id, acceptedAt: "2026-09-30T12:00:00.000Z", status: "received" }, replayed: false,
-        }));
+        const first = feedbackRequests.length === 1;
+        const respond = () => {
+          response.writeHead(first ? 503 : 201, { "content-type": "application/json", "cache-control": "no-store" });
+          response.end(first ? '{"code":"temporarily_unavailable"}' : JSON.stringify({
+            receipt: { reportId: id, acceptedAt: "2026-09-30T12:00:00.000Z", status: "received" }, replayed: false,
+          }));
+        };
+        if (first) setTimeout(respond, 200); else respond();
       });
       return;
     }
@@ -408,7 +412,7 @@ try {
     }
     if (!requestedCase || requestedCase === "feedback") {
       await runFeedbackBrowserCase(context, extensionId, extensionPage, page, feedbackRequests);
-      console.info("[chrome-discovery] feedback reviewed=1 rejected_note=1 replay_same_id=1 received=1");
+      console.info("[chrome-discovery] feedback reviewed=1 rejected_note=1 duplicate_click=1 replay_same_id=1 received=1");
     }
       await writeFile(join(temporary, "iteration-result.json"), `${JSON.stringify({ results: iterationResults }, null, 2)}\n`);
     }
@@ -511,6 +515,10 @@ async function runFeedbackBrowserCase(
   assert.equal(requests.length, 0, "unsafe note reached the Svala fixture");
   await extensionPage.locator("#feedback-note").fill("The September invoices are missing.");
   await extensionPage.locator("#feedback-send").click();
+  await extensionPage.evaluate(() => {
+    const page = globalThis as typeof globalThis & { document: { getElementById(id: string): { click(): void } | null } };
+    page.document.getElementById("feedback-send")?.click();
+  });
   await extensionPage.locator("#feedback-result").getByText(/saved here for retry/).waitFor();
   assert.equal(requests.length, 1, "first Send did not reach Svala exactly once");
   const cdp = await browser.newCDPSession(extensionPage);
