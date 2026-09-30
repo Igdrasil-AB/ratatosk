@@ -6,6 +6,8 @@ import type { DiscoveryStatusView } from "./discovery-state";
 import type { DiscoveryDiagnosticV1 } from "./discovery-diagnostic";
 import type { SyncSchedule } from "../../../src/core/sync-schedule";
 import type { LiveAcceptanceSnapshot } from "../../../src/core/live-acceptance";
+import type { FeedbackKind, FeedbackSendResult, FeedbackStatus } from "./feedback";
+import type { IssueReport } from "./issue-report";
 export type { LiveAcceptanceSnapshot } from "../../../src/core/live-acceptance";
 export type { DiscoveryStatusView } from "./discovery-state";
 export type { SyncSchedule } from "../../../src/core/sync-schedule";
@@ -39,6 +41,11 @@ export type Message =
   | { type: "forgetVendorHistory"; vendorId: string }
   | { type: "runNow"; vendorId?: string }
   | { type: "getVendorDiagnostic"; vendorId: string }
+  | { type: "beginFeedbackReview"; kind: FeedbackKind; vendorId?: string }
+  | { type: "sendReviewedFeedback"; draftId: string; note: string }
+  | { type: "retryFeedback" }
+  | { type: "discardFeedback" }
+  | { type: "getFeedbackStatus" }
   | { type: "getLiveAcceptanceSnapshot"; hostname: string; sessionNonce: string }
   | { type: "getLedger" }
   | { type: "getSchedule" }
@@ -68,10 +75,22 @@ export interface SourceView {
   connection: Connection | null;
 }
 
+export interface FeedbackReview {
+  draftId: string;
+  kind: FeedbackKind;
+  siteOrVendor: string;
+  build: string;
+  summary: string;
+  fallback: IssueReport;
+}
+
 export type Response =
   | { ok: true; sources: SourceView[] }
   | { ok: true; summaries: VendorRunSummary[] }
   | { ok: true; diagnostic: CollectorDiagnostic }
+  | { ok: true; feedbackReview: FeedbackReview }
+  | { ok: true; feedbackStatus: FeedbackStatus }
+  | { ok: true; feedbackSend: FeedbackSendResult }
   | { ok: true; acceptanceSnapshot: LiveAcceptanceSnapshot }
   | { ok: true; destinations: DestinationMap }
   | { ok: true; unboundVendorIds: string[] }

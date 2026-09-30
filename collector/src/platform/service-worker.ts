@@ -55,9 +55,16 @@ import {
   createIgdrasilConnectIntent,
   validateIgdrasilConnectIntent,
 } from "./igdrasil-connect-intent";
-import type { LiveAcceptanceSnapshot, Message, Response, SourceView } from "./messaging";
+import type { FeedbackReview, LiveAcceptanceSnapshot, Message, Response, SourceView } from "./messaging";
 import pkg from "../../../package.json";
-import { buildCollectorDiagnostic } from "./diagnostics";
+import { buildCollectorDiagnostic, type CollectorDiagnostic } from "./diagnostics";
+import {
+  createFeedbackReport, deliverPendingFeedback, discardPendingFeedback, feedbackStatus,
+  normalizeFeedbackNote, pendingFeedback, pendingFeedbackDecision, queueFeedback, sanitizeFeedbackReport,
+  type FeedbackKind, type FeedbackReport,
+} from "./feedback";
+import { buildCollectionIssueReport, buildDiscoveryIssueReport } from "./issue-report";
+import type { DiscoveryDiagnosticV1 } from "./discovery-diagnostic";
 import { discoverSupplierInTab, removeStaleDiscoveryObserverRegistration, SupplierDiscoveryError } from "./discovery";
 import type { ExplorationCheckpoint, ExplorationMode } from "./discovery-explorer";
 import {
@@ -321,6 +328,66 @@ async function connectedCompanies(): Promise<IgdrasilConnectedCompany[]> {
   return companies.sort((left, right) => left.companyName.localeCompare(right.companyName));
 }
 
+const FEEDBACK_REVIEW_KEY = "feedback.review.v1";
+let feedbackInFlight: Promise<Response> | null = null;
+
+async function currentVendorDiagnostic(vendorId: string): Promise<CollectorDiagnostic | null> {
+  const source = await resolveCollectorSource(vendorId);
+  const connection = (await getConnections())[vendorId];
+  if (!source && !connection) return null;
+  return buildCollectorDiagnostic({
+    vendorId,
+    collectorVersion: pkg.version,
+    lifecycleRevision: source?.lifecycle?.recipeRevision ?? (source ? "local-discovery-v1" : "source-unavailable"),
+    runtime: {
+      discoveryEngine: COLLECTOR_RUNTIME_IDENTITY.discoveryEngine,
+      documentAcquisition: COLLECTOR_RUNTIME_IDENTITY.documentAcquisition,
+    },
+    connection,
+  });
+}
+
+function feedbackReview(draftId: string, kind: FeedbackKind, diagnostic: FeedbackReport["diagnostic"]): FeedbackReview {
+  if (diagnostic.schema === "ratatosk.discovery-diagnostic.v11") {
+    return {
+      draftId, kind, siteOrVendor: diagnostic.site,
+      build: diagnostic.runtime.collectorVersion,
+      summary: `${diagnostic.result}; ${diagnostic.pages.attempted} pages checked; ${diagnostic.candidates.retained} candidates retained`,
+      fallback: buildDiscoveryIssueReport(diagnostic),
+    };
+  }
+  return {
+    draftId, kind, siteOrVendor: diagnostic.vendorId,
+    build: diagnostic.collectorVersion,
+    summary: `${diagnostic.outcomeCode}; ${diagnostic.lastRunEvidence?.failure?.stage ?? "unknown stage"}; ${diagnostic.counts.collected} collected`,
+    fallback: buildCollectionIssueReport(diagnostic,
+      kind === "missing_invoices" ? "missing_invoices" : kind === "wrong_document" ? "wrong_document" : "failure"),
+  };
+}
+
+async function sendReviewedFeedback(draftId: string, note: string): Promise<Response> {
+  try {
+    const raw = (await chrome.storage.session.get(FEEDBACK_REVIEW_KEY))[FEEDBACK_REVIEW_KEY] as Record<string, unknown> | undefined;
+    if (!raw || raw.draftId !== draftId || typeof raw.createdAt !== "number" ||
+      Date.now() - raw.createdAt > 10 * 60_000 || Date.now() < raw.createdAt ||
+      (raw.kind !== "discovery" && raw.kind !== "collection_failure" && raw.kind !== "missing_invoices" && raw.kind !== "wrong_document")) {
+      return { ok: false, error: "Review this report again before sending." };
+    }
+    const cleanNote = normalizeFeedbackNote(note);
+    const next = createFeedbackReport(raw.kind, raw.diagnostic as DiscoveryDiagnosticV1 | CollectorDiagnostic, cleanNote ?? "");
+    const previous = await pendingFeedback();
+    const decision = pendingFeedbackDecision(previous, next);
+    if (decision === "blocked") {
+      return { ok: false, error: "Another report is waiting. Retry or discard it in Settings before sending this one." };
+    }
+    if (decision === "replace") await queueFeedback(next);
+    const feedbackSend = await deliverPendingFeedback();
+    return feedbackSend ? { ok: true, feedbackSend } : { ok: false, error: "The report could not be sent." };
+  } catch {
+    return { ok: false, error: "Remove links, account numbers, or credentials from the note and try again." };
+  }
+}
+
 async function handle(message: Message): Promise<Response> {
   switch (message.type) {
     case "listSources": {
@@ -457,23 +524,50 @@ async function handle(message: Message): Promise<Response> {
     }
 
     case "getVendorDiagnostic": {
-      const source = await resolveCollectorSource(message.vendorId);
-      const connection = (await getConnections())[message.vendorId];
-      if (!source && !connection) return { ok: false, error: "Unknown vendor." };
-      return {
-        ok: true,
-        diagnostic: buildCollectorDiagnostic({
-          vendorId: message.vendorId,
-          collectorVersion: pkg.version,
-          lifecycleRevision: source?.lifecycle?.recipeRevision ?? (source ? "local-discovery-v1" : "source-unavailable"),
-          runtime: {
-            discoveryEngine: COLLECTOR_RUNTIME_IDENTITY.discoveryEngine,
-            documentAcquisition: COLLECTOR_RUNTIME_IDENTITY.documentAcquisition,
-          },
-          connection,
-        }),
-      };
+      const diagnostic = await currentVendorDiagnostic(message.vendorId);
+      return diagnostic ? { ok: true, diagnostic } : { ok: false, error: "Unknown vendor." };
     }
+
+    case "beginFeedbackReview": {
+      try {
+        const kind = message.kind;
+        const diagnostic = kind === "discovery"
+          ? await getSupplierDiscoveryDiagnostic()
+          : typeof message.vendorId === "string" ? await currentVendorDiagnostic(message.vendorId) : null;
+        if (!diagnostic) return { ok: false, error: "No diagnostic is available for review." };
+        const safe = sanitizeFeedbackReport({
+          schema: "ratatosk.feedback.v1", reportId: crypto.randomUUID(), kind, diagnostic,
+        }).diagnostic;
+        const draftId = crypto.randomUUID();
+        await chrome.storage.session.set({ [FEEDBACK_REVIEW_KEY]: { draftId, kind, diagnostic: safe, createdAt: Date.now() } });
+        return { ok: true, feedbackReview: feedbackReview(draftId, kind, safe) };
+      } catch { return { ok: false, error: "The diagnostic could not be prepared for review." }; }
+    }
+
+    case "sendReviewedFeedback": {
+      if (feedbackInFlight) return feedbackInFlight;
+      feedbackInFlight = sendReviewedFeedback(message.draftId, message.note)
+        .finally(() => { feedbackInFlight = null; });
+      return feedbackInFlight;
+    }
+
+    case "retryFeedback": {
+      if (feedbackInFlight) return feedbackInFlight;
+      feedbackInFlight = deliverPendingFeedback()
+        .then((feedbackSend) => feedbackSend
+          ? { ok: true, feedbackSend } satisfies Response
+          : { ok: false, error: "No report is waiting to send." } satisfies Response)
+        .catch(() => ({ ok: false, error: "The report could not be retried." } satisfies Response))
+        .finally(() => { feedbackInFlight = null; });
+      return feedbackInFlight;
+    }
+
+    case "getFeedbackStatus":
+      return { ok: true, feedbackStatus: await feedbackStatus() };
+
+    case "discardFeedback":
+      await discardPendingFeedback();
+      return { ok: true, feedbackStatus: await feedbackStatus() };
 
     case "getLiveAcceptanceSnapshot": {
       const hostname = message.hostname.trim().toLowerCase();

@@ -119,9 +119,12 @@ enters the extension.
   stable invoice identity reservation in a disposable tab; payment, purchase,
   cancellation, deletion, and form actions are excluded. Chrome-native supplier
   downloads are contained and rejected, never counted as collection.
-- **Diagnostics carry no data.** When discovery fails, the copyable diagnostic
-  holds the failed stage, a finite cause code, an optional HTTP status family,
-  bounded counts, and `:id`-templated route shapes. Never URLs, selectors,
+- **Reviewed support reports.** Report Issue shows the supplier hostname or
+  vendor ID, build, typed failure summary, and exact diagnostic fields before
+  you send anything. Send stores one bounded report in Svala and returns a
+  receipt; support triage in Chatwoot follows on the server. Interrupted sends
+  can be retried with the same report ID. GitHub remains a manual fallback.
+  Diagnostics contain operational metadata, never raw URLs, selectors,
   response content, tokens, or invoice identifiers.
 - **No analytics, no ad SDK.** See [PRIVACY.md](PRIVACY.md) and
   [SECURITY.md](SECURITY.md).

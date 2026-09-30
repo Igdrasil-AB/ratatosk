@@ -714,7 +714,24 @@
         color: var(--fg);
         font: inherit;
       }
+      .dialog-field textarea {
+        min-height: 84px;
+        width: 100%;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: var(--surface);
+        color: var(--fg);
+        font: inherit;
+        resize: vertical;
+      }
       .dialog-field small { color: var(--muted); font-size: 10.5px; line-height: 1.4; }
+      .feedback-preview { margin-top: 12px; display: grid; gap: 4px; font-size: 12px; }
+      .feedback-preview strong { color: var(--fg); }
+      .feedback-preview span { color: var(--muted); overflow-wrap: anywhere; }
+      .feedback-fields { margin-top: 12px; font-size: 11px; }
+      .feedback-fields pre { max-height: 170px; overflow: auto; padding: 8px; border-radius: 8px; background: var(--surface); font: 10px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+      .feedback-result { min-height: 18px; margin-top: 10px; font-size: 12px; overflow-wrap: anywhere; }
       .dialog-actions { padding: 0 18px 18px; display: flex; justify-content: flex-end; gap: 8px; }
 
       .skeleton { min-height: 260px; }
@@ -762,6 +779,17 @@
     <dialog id="company-dialog" role="alertdialog" aria-labelledby="company-title" aria-describedby="company-description">
       <div class="dialog-body"><h2 id="company-title">Disconnect <span id="company-name"></span>?</h2><p id="company-description">Ratatosk revokes this company's upload credential. <span id="company-suppliers"></span> Nothing is sent anywhere else in the meantime.</p></div>
       <div class="dialog-actions"><button type="button" class="btn outline" id="cancel-company">Cancel</button><button type="button" class="btn danger" id="confirm-company">Disconnect Company</button></div>
+    </dialog>
+    <dialog id="feedback-dialog" aria-labelledby="feedback-title" aria-describedby="feedback-description">
+      <div class="dialog-body">
+        <h2 id="feedback-title">Review report</h2>
+        <p id="feedback-description">Send this diagnostic to Igdrasil support. It names the supplier site or vendor. Do not include invoice, account, or credential details in your note.</p>
+        <div class="feedback-preview"><strong id="feedback-kind"></strong><span id="feedback-site"></span><span id="feedback-build"></span><span id="feedback-summary"></span><span>Destination: Igdrasil support</span></div>
+        <details class="feedback-fields"><summary>Diagnostic fields to send</summary><pre id="feedback-fields"></pre></details>
+        <div class="dialog-field"><label for="feedback-note">Optional note</label><textarea id="feedback-note" maxlength="500" autocomplete="off" spellcheck="false"></textarea><small>Plain text, up to 500 characters. Leave out links and identifiers.</small></div>
+        <p class="feedback-result" id="feedback-result" role="status" aria-live="polite"></p>
+      </div>
+      <div class="dialog-actions"><button type="button" class="btn outline" id="feedback-cancel">Close</button><button type="button" class="btn outline" id="feedback-github">GitHub fallback</button><button type="button" class="btn" id="feedback-send">Send</button></div>
     </dialog>
     <script type="module" src="./popup.ts"></script>
   </body>

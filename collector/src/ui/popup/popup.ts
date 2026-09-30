@@ -2,7 +2,8 @@
  * Ratatosk Collector side panel. Framework-free and intentionally small: state
  * comes from the service worker and each screen renders semantic native controls.
  */
-import { send, type DiscoveryStatusView, type ScheduleInfo, type SourceView } from "../../platform/messaging";
+import { send, type DiscoveryStatusView, type FeedbackReview, type ScheduleInfo, type SourceView } from "../../platform/messaging";
+import { FEEDBACK_ORIGIN, type FeedbackSendResult, type FeedbackStatus } from "../../platform/feedback";
 import type { VendorRunSummary } from "../../platform/collector";
 import type { Destination, DestinationId, LedgerEntry } from "../../platform/storage";
 import { LOCAL_DESTINATION_ID } from "../../platform/storage";
@@ -31,8 +32,6 @@ import {
 import { parseDestinationsResponse, parseInitialBackgroundState, PopupLoadError } from "./load-state";
 import { folderPath, getDownloadRoot } from "../../platform/download-path";
 import {
-  buildCollectionIssueReport,
-  buildDiscoveryIssueReport,
   type CollectionReportReason,
   generalIssueUrl,
   type IssueReport,
@@ -66,6 +65,17 @@ const companyName = document.getElementById("company-name") as HTMLElement;
 const companySuppliers = document.getElementById("company-suppliers") as HTMLElement;
 const confirmCompany = document.getElementById("confirm-company") as HTMLButtonElement;
 const cancelCompany = document.getElementById("cancel-company") as HTMLButtonElement;
+const feedbackDialog = document.getElementById("feedback-dialog") as HTMLDialogElement;
+const feedbackKind = document.getElementById("feedback-kind") as HTMLElement;
+const feedbackSite = document.getElementById("feedback-site") as HTMLElement;
+const feedbackBuild = document.getElementById("feedback-build") as HTMLElement;
+const feedbackSummary = document.getElementById("feedback-summary") as HTMLElement;
+const feedbackFields = document.getElementById("feedback-fields") as HTMLElement;
+const feedbackNote = document.getElementById("feedback-note") as HTMLTextAreaElement;
+const feedbackResult = document.getElementById("feedback-result") as HTMLElement;
+const feedbackSend = document.getElementById("feedback-send") as HTMLButtonElement;
+const feedbackCancel = document.getElementById("feedback-cancel") as HTMLButtonElement;
+const feedbackGithub = document.getElementById("feedback-github") as HTMLButtonElement;
 const VENDOR_GUIDANCE_SEEN = "ui.vendorGuidanceSeen.v1";
 
 let screen: PanelScreen = "home";
@@ -75,6 +85,7 @@ let historyVendorId: string | null = null;
 let pendingRebind: { vendorId: string; destinationId: DestinationId } | null = null;
 let pendingCompanyDisconnect: string | null = null;
 let hasLoadedBackgroundState = false;
+let currentFeedbackReview: FeedbackReview | null = null;
 /** How long the discovery success card stays before retiring itself. Matches
  * the `discovery-retire` fade in popup.html so it leaves rather than blinks. */
 const SUCCESS_CARD_MS = 4_000;
@@ -99,6 +110,7 @@ const state = {
   /** Absolute directory Chrome saves into, known only after the first save. */
   downloadRoot: null as string | null,
   rememberedRouteCount: 0,
+  feedback: {} as FeedbackStatus,
 };
 
 // ---- helpers --------------------------------------------------------------
@@ -258,7 +270,7 @@ async function restorePanelUiState(): Promise<void> {
 
 async function load(): Promise<void> {
   try {
-    const [sourceResponse, ledgerResponse, destinations, scheduleResponse, discoveryResponse, activeSupplierTab, tabAwarenessEnabled, ui, , routeResponse] = await Promise.all([
+    const [sourceResponse, ledgerResponse, destinations, scheduleResponse, discoveryResponse, activeSupplierTab, tabAwarenessEnabled, ui, , routeResponse, feedbackResponse] = await Promise.all([
       send({ type: "listSources" }),
       send({ type: "getLedger" }),
       getDestinations(),
@@ -269,6 +281,7 @@ async function load(): Promise<void> {
       chrome.storage.local.get(VENDOR_GUIDANCE_SEEN),
       getDownloadRoot().then((root) => { state.downloadRoot = root ?? null; }),
       send({ type: "getRouteMemory" }),
+      send({ type: "getFeedbackStatus" }),
     ]);
     const background = parseInitialBackgroundState({
       sourceResponse,
@@ -291,6 +304,8 @@ async function load(): Promise<void> {
     state.rememberedRouteCount = routeResponse.ok && "rememberedRoutes" in routeResponse
       ? routeResponse.rememberedRoutes
       : 0;
+    state.feedback = feedbackResponse.ok && "feedbackStatus" in feedbackResponse
+      ? feedbackResponse.feedbackStatus : {};
     if (state.discovery.stage !== "idle" && screen !== "vendors") {
       screen = "vendors";
       persistPanelUiState();
@@ -711,6 +726,11 @@ function renderSettings(): void {
   const tabAwareness = state.tabAwarenessEnabled
     ? `<div class="context-access"><span><strong>Recognizing supplier tabs</strong><small>Only the current tab URL is read. Nothing is stored.</small></span><button type="button" class="btn outline sm" data-action="disable-tab-awareness">Turn Off</button></div>`
     : `<div class="context-access"><span><strong>Recognize supplier tabs</strong><small>Chrome calls this permission “Read your browsing history.” Only the current tab URL is read.</small></span><button type="button" class="btn tonal sm" data-action="enable-tab-awareness" ${state.tabAwarenessRequestPending ? "disabled" : ""}>${state.tabAwarenessRequestPending ? "Preparing…" : "Enable"}</button></div>`;
+  const pendingFeedback = state.feedback.pending
+    ? `<div class="context-access"><span><strong>Report waiting to send</strong><small>${esc(state.feedback.pending.siteOrVendor)} · ${esc(state.feedback.pending.reportId)}</small></span><button type="button" class="btn tonal sm" data-action="retry-feedback">Retry</button><button type="button" class="btn outline sm" data-action="discard-feedback">Discard</button></div>`
+    : "";
+  const receivedFeedback = state.feedback.receipt
+    ? `<p class="connect-company-note">Report received: ${esc(state.feedback.receipt.reportId)}</p>` : "";
 
   replaceApp(`${sheetHeader("Settings")}
     <form class="settings-form">
@@ -722,7 +742,7 @@ function renderSettings(): void {
       </fieldset>
       <fieldset class="grp divider"><legend>Check for New Invoices</legend>${scheduleControls()}</fieldset>
       <fieldset class="grp divider"><legend>Find Invoices</legend>${tabAwareness}${rememberedRoutes()}</fieldset>
-      <fieldset class="grp divider"><legend>Help</legend><div class="context-access"><span><strong>Report a problem</strong><small>Open an issue on GitHub. A failed search offers a prefilled report with its own details attached.</small></span><button type="button" class="btn outline sm" data-action="open-issues">Open GitHub</button></div></fieldset>
+      <fieldset class="grp divider"><legend>Help</legend>${pendingFeedback}${receivedFeedback}<div class="context-access"><span><strong>Report a problem</strong><small>Review a diagnostic from a supplier or failed search before sending it to Igdrasil support. GitHub is available if support is offline.</small></span><button type="button" class="btn outline sm" data-action="open-issues">Open GitHub</button></div></fieldset>
     </form>
     <p class="foot">Runs while Chrome is open. If it is closed, Ratatosk catches up next time.</p>`);
 }
@@ -882,6 +902,10 @@ app.addEventListener("click", (event) => {
   }
   if (action === "connect-discovery" && vendorId) {
     void connectDiscoveryFromUserGesture(vendorId);
+    return;
+  }
+  if (action === "retry-feedback") {
+    void retryFeedbackFromGesture();
     return;
   }
   if (action === "set-schedule-weekday" || action === "set-schedule-monthday") {
@@ -1114,6 +1138,12 @@ async function handle(action: string, vendorId?: string): Promise<void> {
     case "report-wrong": await reportVendorIssue(vendorId!, "wrong_document"); return;
     case "report-discovery": await reportDiscoveryIssue(); return;
     case "open-issues": await chrome.tabs.create({ url: generalIssueUrl() }); return;
+    case "discard-feedback": {
+      const response = await send({ type: "discardFeedback" });
+      if (response.ok && "feedbackStatus" in response) state.feedback = response.feedbackStatus;
+      renderSettings();
+      return;
+    }
     case "connect-igdrasil": await openIgdrasilConnect(); return;
     case "enable-local-destination": await enableLocalDestination(); return;
     case "manage-igdrasil": await chrome.tabs.create({ url: "https://accounting.igdrasil.se/integrations/invoice-collector" }); return;
@@ -1213,33 +1243,121 @@ async function continueDiscovery(): Promise<void> {
  * cannot complete. If the clipboard is unavailable the report is abandoned
  * rather than opened half-ready.
  */
-async function openIssueReport(report: IssueReport, onError: (message: string) => void): Promise<void> {
+async function openIssueReport(report: IssueReport, onError: (message: string) => void): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(report.clipboard);
   } catch {
     onError("Ratatosk couldn’t copy the details. Reopen the extension and try again.");
-    return;
+    return false;
   }
   await chrome.tabs.create({ url: report.url });
   toast("Details Copied · Paste Into the Issue");
+  return true;
 }
 
 async function reportVendorIssue(vendorId: string, reason: CollectionReportReason = "failure"): Promise<void> {
-  const response = await send({ type: "getVendorDiagnostic", vendorId });
-  if (!response.ok || !("diagnostic" in response)) {
+  const kind = reason === "failure" ? "collection_failure" : reason;
+  const response = await send({ type: "beginFeedbackReview", kind, vendorId });
+  if (!response.ok || !("feedbackReview" in response)) {
     sourceError(vendorId, response.ok ? "Diagnostic unavailable." : response.error);
     return;
   }
-  await openIssueReport(buildCollectionIssueReport(response.diagnostic, reason), (message) => sourceError(vendorId, message));
+  openFeedbackReview(response.feedbackReview);
 }
 
 async function reportDiscoveryIssue(): Promise<void> {
-  const response = await send({ type: "getDiscoveryDiagnostic" });
-  if (!response.ok || !("discoveryDiagnostic" in response)) {
+  const response = await send({ type: "beginFeedbackReview", kind: "discovery" });
+  if (!response.ok || !("feedbackReview" in response)) {
     toast(response.ok ? "Diagnostic unavailable." : response.error);
     return;
   }
-  await openIssueReport(buildDiscoveryIssueReport(response.discoveryDiagnostic), toast);
+  openFeedbackReview(response.feedbackReview);
+}
+
+function openFeedbackReview(review: FeedbackReview): void {
+  currentFeedbackReview = review;
+  feedbackKind.textContent = review.kind.replaceAll("_", " ");
+  feedbackSite.textContent = `Site or vendor: ${review.siteOrVendor}`;
+  feedbackBuild.textContent = `Collector build: ${review.build}`;
+  feedbackSummary.textContent = review.summary;
+  feedbackFields.textContent = review.fallback.clipboard;
+  feedbackNote.value = "";
+  feedbackNote.disabled = false;
+  feedbackResult.textContent = "";
+  feedbackSend.textContent = "Send";
+  feedbackSend.disabled = false;
+  feedbackDialog.showModal();
+  feedbackNote.focus();
+}
+
+feedbackCancel.addEventListener("click", () => feedbackDialog.close());
+feedbackDialog.addEventListener("close", () => { currentFeedbackReview = null; });
+feedbackGithub.addEventListener("click", () => {
+  if (!currentFeedbackReview) return;
+  void openIssueReport(currentFeedbackReview.fallback, (message) => { feedbackResult.textContent = message; })
+    .then((opened) => { if (opened) feedbackDialog.close(); });
+});
+feedbackSend.addEventListener("click", () => { void sendFeedbackFromGesture(); });
+
+async function sendFeedbackFromGesture(): Promise<void> {
+  const review = currentFeedbackReview;
+  if (!review || feedbackSend.disabled) return;
+  // Chrome must see this request during the Send click, before any await.
+  const permission = requestHostPermissions([FEEDBACK_ORIGIN]);
+  feedbackSend.disabled = true;
+  feedbackNote.disabled = true;
+  feedbackResult.textContent = "Sending…";
+  try {
+    if (!await permission) {
+      feedbackResult.textContent = "Svala access was denied. Approve it to send this report.";
+      return;
+    }
+    const response = await send({ type: "sendReviewedFeedback", draftId: review.draftId, note: feedbackNote.value });
+    if (!response.ok || !("feedbackSend" in response)) {
+      feedbackResult.textContent = response.ok ? "The report could not be sent." : response.error;
+      return;
+    }
+    showFeedbackResult(response.feedbackSend, feedbackResult);
+    const status = await send({ type: "getFeedbackStatus" });
+    if (status.ok && "feedbackStatus" in status) state.feedback = status.feedbackStatus;
+    if (screen === "settings") renderSettings();
+  } catch {
+    feedbackResult.textContent = "Could not reach Igdrasil support. Try again.";
+  } finally {
+    if (feedbackSend.textContent !== "Received") {
+      feedbackSend.disabled = false;
+      feedbackNote.disabled = false;
+    }
+  }
+}
+
+function showFeedbackResult(result: FeedbackSendResult, target: HTMLElement): void {
+  if (result.state === "received") {
+    target.textContent = `Received ${result.receipt.reportId}`;
+    feedbackSend.textContent = "Received";
+    feedbackSend.disabled = true;
+  } else if (result.state === "retryable") {
+    target.textContent = `Delivery was interrupted. Report ${result.reportId} is saved here for retry.`;
+    feedbackSend.textContent = "Retry";
+  } else if (result.state === "permission_required") {
+    target.textContent = "Approve Svala access to send the report.";
+  } else {
+    target.textContent = `The report was rejected. Report ${result.reportId} is saved here; use GitHub fallback or edit the note.`;
+  }
+}
+
+async function retryFeedbackFromGesture(): Promise<void> {
+  const permission = requestHostPermissions([FEEDBACK_ORIGIN]);
+  try {
+    if (!await permission) { toast("Approve Svala access to retry the report."); return; }
+    const response = await send({ type: "retryFeedback" });
+    if (!response.ok || !("feedbackSend" in response)) { toast(response.ok ? "No report is waiting." : response.error); return; }
+    const result = response.feedbackSend;
+    toast(result.state === "received" ? `Received ${result.receipt.reportId}` : "Report still waiting. Try again later.");
+    const status = await send({ type: "getFeedbackStatus" });
+    if (status.ok && "feedbackStatus" in status) state.feedback = status.feedbackStatus;
+    renderSettings();
+  } catch { toast("Could not reach Igdrasil support. Try again."); }
 }
 
 /** Add "This Computer" as one destination among the others, never as a fallback. */

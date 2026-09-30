@@ -228,12 +228,13 @@ describe("prefilled issue reports", () => {
     expect(popup).toContain("generalIssueUrl()");
   });
 
-  it("discloses that a report is public and names the supplier", () => {
+  it("discloses reviewed support delivery and the public GitHub fallback", () => {
     const privacy = readFileSync("PRIVACY.md", "utf8");
 
     expect(privacy).toContain("Report Issue");
-    expect(privacy).toMatch(/nothing becomes public until the user reviews it and presses\s+submit/);
-    expect(privacy).toMatch(/names the supplier's hostname/);
+    expect(privacy).toMatch(/review shows the supplier site or vendor ID/);
+    expect(privacy).toMatch(/fixed Svala endpoint after approval/);
+    expect(privacy).toMatch(/A public GitHub issue reveals the supplier hostname/);
     // The standing "no automatic reporting" promise must survive this feature.
     expect(privacy).toMatch(/no automatic or background report of any kind/);
   });
@@ -243,6 +244,6 @@ describe("prefilled issue reports", () => {
     const open = popup.slice(popup.indexOf("async function openIssueReport"), popup.indexOf("async function reportVendorIssue"));
 
     expect(open.indexOf("clipboard.writeText")).toBeLessThan(open.indexOf("chrome.tabs.create"));
-    expect(open).toContain("return;");
+    expect(open).toContain("return false;");
   });
 });
