@@ -9,7 +9,7 @@
  *   - notifications.onClicked → open the vendor login on a "reconnect" nudge
  */
 import { isLifecycleRunnable } from "../../../src/vendors/lifecycle";
-import { runDiscoveredCandidate } from "./collector";
+import { recordBlockedRun, runDiscoveredCandidate } from "./collector";
 import { getScheduleInfo, isSyncAlarm, setSyncSchedule } from "./scheduler";
 import { requestSync } from "./sync-coordinator";
 import { hasHostPermissions, missingHostPermissions, revokeHostPermissions, vendorPermissionOrigins } from "./permissions";
@@ -447,6 +447,7 @@ async function handle(message: Message): Promise<Response> {
         const recipe = (await resolveCollectorSource(message.vendorId))?.recipe;
         const connection = (await getConnections())[message.vendorId];
         if (recipe && !(await hasHostPermissions(vendorPermissionOrigins(recipe, connection)))) {
+          await recordBlockedRun(message.vendorId, "manual", "host_permission_required");
           return { ok: false, error: "vendor access changed; reconnect this vendor" };
         }
         const summary = await collectionRuns.runInteractive(() => runConnectedVendor(message.vendorId!));
@@ -457,14 +458,18 @@ async function handle(message: Message): Promise<Response> {
 
     case "getVendorDiagnostic": {
       const source = await resolveCollectorSource(message.vendorId);
-      if (!source) return { ok: false, error: "Unknown vendor." };
       const connection = (await getConnections())[message.vendorId];
+      if (!source && !connection) return { ok: false, error: "Unknown vendor." };
       return {
         ok: true,
         diagnostic: buildCollectorDiagnostic({
           vendorId: message.vendorId,
           collectorVersion: pkg.version,
-          lifecycleRevision: source.lifecycle?.recipeRevision ?? "local-discovery-v1",
+          lifecycleRevision: source?.lifecycle?.recipeRevision ?? (source ? "local-discovery-v1" : "source-unavailable"),
+          runtime: {
+            discoveryEngine: COLLECTOR_RUNTIME_IDENTITY.discoveryEngine,
+            documentAcquisition: COLLECTOR_RUNTIME_IDENTITY.documentAcquisition,
+          },
           connection,
         }),
       };

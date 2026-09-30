@@ -106,20 +106,54 @@ export function buildDiscoveryIssueReport(diagnostic: DiscoveryDiagnosticV1): Is
   };
 }
 
-/** A report for a supplier whose scheduled collection is failing. */
-export function buildCollectionIssueReport(diagnostic: CollectorDiagnostic): IssueReport {
+export type CollectionReportReason = "failure" | "missing_invoices" | "wrong_document";
+
+/** A reviewed report for a failed or apparently successful collection. */
+export function buildCollectionIssueReport(
+  diagnostic: CollectorDiagnostic,
+  reason: CollectionReportReason = "failure",
+): IssueReport {
   const body = [
     "### What happened",
     "",
-    "<!-- What you expected this supplier to collect. -->",
+    `- **Report type** \`${reason}\``,
+    reason === "missing_invoices"
+      ? "<!-- Approximately how many invoices did you expect, and for which period? Do not include invoice details. -->"
+      : reason === "wrong_document"
+        ? "<!-- Describe the kind of wrong document. Do not attach or paste its contents. -->"
+        : "<!-- What you expected this supplier to collect. Do not include invoice details. -->",
     "",
     "### Run summary",
     "",
     [
-      `- **Collector** ${diagnostic.collectorVersion} · lifecycle ${diagnostic.lifecycleRevision}`,
+      `- **Current Collector** ${diagnostic.collectorVersion} · lifecycle ${diagnostic.lifecycleRevision}` +
+        (diagnostic.runtime ? ` · discovery ${diagnostic.runtime.discoveryEngine} · acquisition ${diagnostic.runtime.documentAcquisition}` : ""),
+      ...(diagnostic.lastRunEvidence?.runtime
+        ? [`- **Run build** ${diagnostic.lastRunEvidence.runtime.collectorVersion} · discovery ${diagnostic.lastRunEvidence.runtime.discoveryEngine} · acquisition ${diagnostic.lastRunEvidence.runtime.documentAcquisition}`]
+        : []),
       `- **Supplier** \`${diagnostic.vendorId}\` · outcome \`${diagnostic.outcomeCode}\``,
       `- **Collected** ${diagnostic.counts.collected} · ${diagnostic.counts.failedScopes} failed scopes · ${diagnostic.counts.emptyScopes} empty`,
       `- **Last run** ${diagnostic.recordedAt ?? "never"}`,
+      ...(diagnostic.lastRunEvidence ? [
+        `- **Attempt** ${diagnostic.lastRunEvidence.trigger} · ${diagnostic.lastRunEvidence.status} · ${diagnostic.lastRunEvidence.elapsedMs}ms`,
+        `- **Verified** ${diagnostic.lastRunEvidence.counts.verified} · ${diagnostic.lastRunEvidence.counts.pageOwnedDownloads} page-owned downloads rejected`,
+        ...(diagnostic.lastRunEvidence.retrievalSummary
+          ? [`- **Traversal** ${diagnostic.lastRunEvidence.retrievalSummary.complete}/${diagnostic.lastRunEvidence.retrievalSummary.proofs} complete scopes · ${diagnostic.lastRunEvidence.retrievalSummary.unresolvedItems} unresolved items · ${diagnostic.lastRunEvidence.retrievalSummary.terminations.join(", ")}`]
+          : []),
+        ...(diagnostic.lastRunEvidence.scopeFailureCodes?.length
+          ? [`- **Scope outcomes** ${diagnostic.lastRunEvidence.scopeFailureCodes.join(", ")}`]
+          : []),
+        ...(diagnostic.lastRunEvidence.replay?.firstFailure
+          ? [`- **Replay phase** ${diagnostic.lastRunEvidence.replay.planKind}/${diagnostic.lastRunEvidence.replay.firstFailure.phase}/${diagnostic.lastRunEvidence.replay.firstFailure.result}`]
+          : []),
+        ...(diagnostic.lastRunEvidence.failure
+          ? [`- **First observed failure** ${diagnostic.lastRunEvidence.failure.stage}/${diagnostic.lastRunEvidence.failure.cause}`]
+          : []),
+        ...(diagnostic.lastRunEvidence.terminalFailure &&
+          JSON.stringify(diagnostic.lastRunEvidence.terminalFailure) !== JSON.stringify(diagnostic.lastRunEvidence.failure)
+          ? [`- **Terminal blocker** ${diagnostic.lastRunEvidence.terminalFailure.stage}/${diagnostic.lastRunEvidence.terminalFailure.cause}`]
+          : []),
+      ] : []),
     ].join("\n"),
     "",
     "### Full details",
@@ -137,7 +171,9 @@ export function buildCollectionIssueReport(diagnostic: CollectorDiagnostic): Iss
 
   return {
     url: issueUrl({
-      title: `Collection failing for ${diagnostic.vendorId} (${diagnostic.outcomeCode})`,
+      title: reason === "failure"
+        ? `Collection failing for ${diagnostic.vendorId} (${diagnostic.outcomeCode})`
+        : `${reason === "missing_invoices" ? "Missing invoices" : "Wrong document"} for ${diagnostic.vendorId}`,
       body,
       labels: ["from-extension", "collection"],
     }),

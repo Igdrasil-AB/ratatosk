@@ -569,6 +569,22 @@ async function runAcquisition(
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
   }
   if (cadenceActionCount === undefined) throw new Error("scheduled acquisition did not complete");
+  const lastRun = (await sendExtensionMessage(extensionPage, {
+    type: "getVendorDiagnostic", vendorId: preview.vendorId,
+  })).diagnostic as { schema: string; lastRunEvidence?: {
+    trigger: string; status: string; counts: { accepted: number; documentActions: number };
+    runtime?: { documentAcquisition: number };
+    failure?: unknown; terminalFailure?: unknown;
+  }; runtime?: { documentAcquisition: number } };
+  assert.equal(lastRun.schema, "ratatosk.collector-diagnostic.v2");
+  assert.equal(lastRun.lastRunEvidence?.trigger, "scheduled");
+  assert.equal(lastRun.lastRunEvidence?.status, "ok");
+  assert.equal(lastRun.lastRunEvidence?.counts.accepted, 0);
+  assert.equal(lastRun.lastRunEvidence?.counts.documentActions, 0);
+  assert.equal(lastRun.lastRunEvidence?.failure, undefined);
+  assert.equal(lastRun.lastRunEvidence?.terminalFailure, undefined);
+  assert.equal(typeof lastRun.runtime?.documentAcquisition, "number");
+  assert.equal(lastRun.lastRunEvidence?.runtime?.documentAcquisition, lastRun.runtime?.documentAcquisition);
   const cadenceSnapshot = (await sendExtensionMessage(extensionPage, {
     type: "getLiveAcceptanceSnapshot", hostname, sessionNonce: acceptanceNonce,
   })).acceptanceSnapshot as LiveAcceptanceSnapshot;

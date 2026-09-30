@@ -146,6 +146,7 @@ export class UnexpectedResponse extends CollectorError {
 }
 
 export const COLLECTION_FAILURE_STAGES = [
+  "preflight",
   "authentication",
   "scope_discovery",
   "invoice_list",
@@ -158,6 +159,11 @@ export const COLLECTION_FAILURE_STAGES = [
 export type CollectionFailureStage = typeof COLLECTION_FAILURE_STAGES[number];
 
 export const COLLECTION_FAILURE_CAUSES = [
+  "host_permission_required",
+  "source_unavailable",
+  "destination_unbound",
+  "destination_unavailable",
+  "destination_connection_expired",
   "auth_expired",
   "auth_blocked",
   "insufficient_scope",
@@ -272,6 +278,8 @@ function classifyResponseType(value: string): CollectionResponseType {
 }
 
 export const OPERATIONAL_OUTCOME_CODES = [
+  "host_permission_required",
+  "source_unavailable",
   "auth_expired",
   "auth_blocked",
   "insufficient_scope",
@@ -317,6 +325,8 @@ export function operationalCodeForError(error: unknown): OperationalOutcomeCode 
 
 export function operationalOutcomeLabel(code: OperationalOutcomeCode): string {
   switch (code) {
+    case "host_permission_required": return "Supplier site access needs approval";
+    case "source_unavailable": return "Supplier integration is unavailable";
     case "auth_expired": return "Session expired";
     case "auth_blocked": return "Supplier blocked the session check";
     case "insufficient_scope": return "Billing access is not available for this account";

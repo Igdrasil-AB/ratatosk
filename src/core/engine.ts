@@ -19,6 +19,7 @@ import type {
   InvoiceRef,
   RetrievalCompleteness,
   RetrievalProof,
+  ReplayTrace,
   RunContext,
   RunResult,
   VendorRecipe,
@@ -78,6 +79,8 @@ export interface StreamRunResult {
   retrievalProofs: RetrievalProof[];
   /** Exact single-scope traversal evidence for local candidate diagnostics. */
   retrievalProof?: InvoiceListResult["retrieval"];
+  /** One bounded replay trace, preferring the first trace with a failed phase. */
+  replay?: ReplayTrace;
   scopes: RunResult["scopes"];
 }
 
@@ -87,7 +90,7 @@ export interface StreamVendorOptions {
   requireCompleteRetrieval?: boolean;
   /** Closed evidence emitted before a boundary failure is recovered or thrown.
    * Callers decide whether a recovered scope failure is relevant to their UI. */
-  onFailure?: (failure: CollectionFailureEvidence) => void;
+  onFailure?: (failure: CollectionFailureEvidence, error: unknown) => void;
 }
 
 /** Keeps memory bounded to at most three materialized PDFs per vendor run. */
@@ -162,7 +165,7 @@ async function executeVendor(
     // is commonly challenged even when the visible session is valid.
     if (recipe.invoices.strategy !== "dom") await assertAuthenticated(recipe, ctx);
   } catch (error) {
-    options.onFailure?.(collectionFailureEvidence(error, "authentication"));
+    options.onFailure?.(collectionFailureEvidence(error, "authentication"), error);
     throw error;
   }
 
@@ -172,7 +175,7 @@ async function executeVendor(
   try {
     scopes = await resolveScopes(recipe, ctx);
   } catch (error) {
-    options.onFailure?.(collectionFailureEvidence(error, "scope_discovery"));
+    options.onFailure?.(collectionFailureEvidence(error, "scope_discovery"), error);
     throw error;
   }
 
@@ -183,6 +186,7 @@ async function executeVendor(
   let emptyScopes = 0;
   let documentCount = 0;
   const retrievalProofs: RetrievalProof[] = [];
+  let replay: ReplayTrace | undefined;
   const listedPlans: Array<{
     vars: Record<string, unknown>;
     list: InvoiceListResult;
@@ -194,13 +198,16 @@ async function executeVendor(
     try {
       const list = await strategy.list(recipe, vars, ctx);
       retrievalProofs.push(list.retrieval);
+      if (list.replay && (!replay || (!replay.firstFailure && list.replay.firstFailure))) replay = list.replay;
       if (list.retrieval.completeness !== "complete") {
         retrievalErrorCount += 1;
-        scopeErrors.push(new RetrievalIncomplete(
+        const incomplete = new RetrievalIncomplete(
           `retrieval ended at ${list.retrieval.termination} with ${list.retrieval.unresolvedItems} unresolved item(s)`,
           recipe.id,
           list.retrieval,
-        ));
+        );
+        options.onFailure?.(collectionFailureEvidence(incomplete, "invoice_list", list.retrieval), incomplete);
+        scopeErrors.push(incomplete);
         continue;
       }
       succeededScopes++;
@@ -210,7 +217,7 @@ async function executeVendor(
         identityScope: configIdentityScope(recipe, scopeVars),
       });
     } catch (err) {
-      options.onFailure?.(collectionFailureEvidence(err, "invoice_list"));
+      options.onFailure?.(collectionFailureEvidence(err, "invoice_list"), err);
       // A dead session or missing document-provider permission is vendor-wide,
       // so abort. Any other per-scope failure
       // (e.g. one org with no billing 404s) must NOT sink the sibling scopes.
@@ -299,7 +306,7 @@ async function executeVendor(
       const fatalOutcome = outcomes.find((outcome) =>
         outcome.status === "rejected" && isFatalDocumentError(outcome.error));
       if (fatalOutcome?.status === "rejected") {
-        options.onFailure?.(collectionFailureEvidence(fatalOutcome.error, "document_fetch", list.retrieval));
+        options.onFailure?.(collectionFailureEvidence(fatalOutcome.error, "document_fetch", list.retrieval), fatalOutcome.error);
         throw fatalOutcome.error;
       }
 
@@ -311,7 +318,7 @@ async function executeVendor(
         }
         if (outcome.status === "rejected") {
           await releaseClaims(ctx, identityClaims);
-          options.onFailure?.(collectionFailureEvidence(outcome.error, "document_fetch", list.retrieval));
+          options.onFailure?.(collectionFailureEvidence(outcome.error, "document_fetch", list.retrieval), outcome.error);
           firstScopeError ??= outcome.error;
           continue;
         }
@@ -339,7 +346,7 @@ async function executeVendor(
           try {
             await emit(document);
           } catch (error) {
-            options.onFailure?.(collectionFailureEvidence(error, "delivery", list.retrieval));
+            options.onFailure?.(collectionFailureEvidence(error, "delivery", list.retrieval), error);
             throw error;
           }
           emittedThisRun.add(document.idempotencyKey);
@@ -383,6 +390,7 @@ async function executeVendor(
     retrieval: retrievalErrorCount === 0 ? "complete" : "partial",
     retrievalProofs,
     ...(retrievalProofs.length === 1 ? { retrievalProof: retrievalProofs[0] } : {}),
+    ...(replay ? { replay } : {}),
     scopes: {
       total: scopes.length,
       succeeded: succeededScopes,

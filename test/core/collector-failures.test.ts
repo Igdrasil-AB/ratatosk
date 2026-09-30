@@ -80,6 +80,19 @@ describe("Collector operational outcomes", () => {
     });
   });
 
+  it("emits the closed cause when one scope stops before traversal is complete", async () => {
+    const failures: unknown[] = [];
+    const result = await streamVendor(recipe, context(["good", "partial"]), strategies(), async () => undefined, {
+      onFailure: (failure) => failures.push(failure),
+    });
+
+    expect(result.scopes.failed).toBe(1);
+    expect(failures).toContainEqual({
+      stage: "invoice_list", cause: "retrieval_incomplete",
+      retrieval: expect.objectContaining({ completeness: "partial", termination: "page_cap", unresolvedItems: 1 }),
+    });
+  });
+
   it("does not fall back to an unscoped invoice request when config discovery is empty", async () => {
     await expect(runVendor(recipe, context([]), strategies())).rejects.toThrow(/configuration discovery.*account/i);
   });

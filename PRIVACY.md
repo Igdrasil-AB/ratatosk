@@ -90,8 +90,9 @@ tenant, account, workspace, and document segments with `:id` or `:segment`.
 They never contain origins, raw paths, queries, fragments, page content, headers,
 response bodies, tokens, account or invoice identifiers, or financial values.
 
-A failed search, and a supplier whose last run did not succeed, offer a **Report
-Issue** action. It copies that same redacted diagnostic to the clipboard and
+A failed search or collection offers a **Report Issue** action. A successful
+collection also lets the person report missing invoices or a wrong document.
+These actions copy the same redacted diagnostic to the clipboard and
 opens a prefilled GitHub issue in a new tab; Settings links to the issue tracker
 for anything else. Nothing is transmitted by the extension: the tab is a draft on
 github.com, and nothing becomes public until the user reviews it and presses

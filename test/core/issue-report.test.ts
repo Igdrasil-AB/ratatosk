@@ -187,7 +187,7 @@ describe("prefilled issue reports", () => {
     expect(report.url.length).toBeLessThanOrEqual(6_000);
   });
 
-  it("is offered where a run failed, and never on one that worked", () => {
+  it("offers contextual reports for failed and apparently successful runs", () => {
     const popup = readFileSync("collector/src/ui/popup/popup.ts", "utf8");
     const card = popup.slice(popup.indexOf('discovery.stage === "failed"'), popup.indexOf("tab-awareness-title"));
 
@@ -196,8 +196,29 @@ describe("prefilled issue reports", () => {
     const success = popup.slice(popup.indexOf('discovery.stage === "complete"'), popup.indexOf('discovery.stage === "failed"'));
     expect(success).not.toContain("report-discovery");
     expect(success).not.toContain("data-action");
-    // A supplier only offers one once its last run did not end ok.
+    // Failures keep their existing report action; successful runs expose
+    // missing-invoice and wrong-document choices with the same diagnostic.
     expect(popup).toContain('connection.lastStatus && connection.lastStatus !== "ok"');
+    expect(popup).toContain('data-action="report-missing"');
+    expect(popup).toContain('data-action="report-wrong"');
+  });
+
+  it("labels a reported false success without including document content", () => {
+    const diagnostic = buildCollectorDiagnostic({ vendorId: "railway", collectorVersion: "0.8.79",
+      lifecycleRevision: "local-discovery-v1", runtime: { discoveryEngine: 63, documentAcquisition: 16 },
+      connection: { vendorId: "railway", connectedAt: 1, lastStatus: "ok", lastCount: 0,
+        lastRunEvidence: { runtime: { collectorVersion: "0.8.78", discoveryEngine: 62, documentAcquisition: 15 },
+          trigger: "manual", status: "ok", elapsedMs: 200,
+          counts: { accepted: 0, verified: 0, documentActions: 0, pageOwnedDownloads: 0, failedScopes: 0, emptyScopes: 0 } },
+      },
+    });
+    const report = buildCollectionIssueReport(diagnostic, "missing_invoices");
+    expect(bodyOf(report.url)).toContain("missing_invoices");
+    expect(bodyOf(report.url)).toContain("Approximately how many invoices");
+    expect(bodyOf(report.url)).toContain("discovery 63 · acquisition 16");
+    expect(bodyOf(report.url)).toContain("Run build** 0.8.78 · discovery 62 · acquisition 15");
+    expect(new URL(report.url).searchParams.get("labels")).toContain("collection");
+    expect(report.clipboard).not.toMatch(/https?:\/\//);
   });
 
   it("keeps a general route for anything a diagnostic does not describe", () => {
@@ -210,7 +231,7 @@ describe("prefilled issue reports", () => {
   it("discloses that a report is public and names the supplier", () => {
     const privacy = readFileSync("PRIVACY.md", "utf8");
 
-    expect(privacy).toContain("Report\nIssue");
+    expect(privacy).toContain("Report Issue");
     expect(privacy).toMatch(/nothing becomes public until the user reviews it and presses\s+submit/);
     expect(privacy).toMatch(/names the supplier's hostname/);
     // The standing "no automatic reporting" promise must survive this feature.

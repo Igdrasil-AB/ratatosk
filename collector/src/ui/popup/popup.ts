@@ -33,6 +33,7 @@ import { folderPath, getDownloadRoot } from "../../platform/download-path";
 import {
   buildCollectionIssueReport,
   buildDiscoveryIssueReport,
+  type CollectionReportReason,
   generalIssueUrl,
   type IssueReport,
 } from "../../platform/issue-report";
@@ -537,7 +538,9 @@ function renderVendors(): void {
     if (connection) {
       const diagnostic = connection.lastStatus && connection.lastStatus !== "ok"
         ? `<button type="button" data-action="report-vendor" data-id="${esc(source.id)}">Report issue</button>`
-        : "";
+        : connection.lastStatus === "ok"
+          ? `<button type="button" data-action="report-missing" data-id="${esc(source.id)}">Report missing invoices</button><button type="button" data-action="report-wrong" data-id="${esc(source.id)}">Report wrong document</button>`
+          : "";
       const rebind = bindableDestinations()
         .filter((entry) => entry.id !== connection.destinationId)
         .map((entry) => `<button type="button" data-action="rebind" data-id="${esc(source.id)}" data-destination="${esc(entry.id)}">Send to ${esc(destinationName(entry))}</button>`)
@@ -1107,6 +1110,8 @@ async function handle(action: string, vendorId?: string): Promise<void> {
     case "disable-tab-awareness": await disableTabAwareness(); return;
     case "forget-routes": await forgetRememberedRoutes(); return;
     case "report-vendor": await reportVendorIssue(vendorId!); return;
+    case "report-missing": await reportVendorIssue(vendorId!, "missing_invoices"); return;
+    case "report-wrong": await reportVendorIssue(vendorId!, "wrong_document"); return;
     case "report-discovery": await reportDiscoveryIssue(); return;
     case "open-issues": await chrome.tabs.create({ url: generalIssueUrl() }); return;
     case "connect-igdrasil": await openIgdrasilConnect(); return;
@@ -1219,13 +1224,13 @@ async function openIssueReport(report: IssueReport, onError: (message: string) =
   toast("Details Copied · Paste Into the Issue");
 }
 
-async function reportVendorIssue(vendorId: string): Promise<void> {
+async function reportVendorIssue(vendorId: string, reason: CollectionReportReason = "failure"): Promise<void> {
   const response = await send({ type: "getVendorDiagnostic", vendorId });
   if (!response.ok || !("diagnostic" in response)) {
     sourceError(vendorId, response.ok ? "Diagnostic unavailable." : response.error);
     return;
   }
-  await openIssueReport(buildCollectionIssueReport(response.diagnostic), (message) => sourceError(vendorId, message));
+  await openIssueReport(buildCollectionIssueReport(response.diagnostic, reason), (message) => sourceError(vendorId, message));
 }
 
 async function reportDiscoveryIssue(): Promise<void> {
