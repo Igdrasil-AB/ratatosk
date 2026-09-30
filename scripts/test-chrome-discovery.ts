@@ -532,6 +532,11 @@ async function runFeedbackBrowserCase(
     assert.equal(requests[0].body, requests[1].body, "retry changed the reviewed report body");
     assert.equal(JSON.parse(requests[0].body).diagnostic.site, FEEDBACK_HOST);
     assert(!requests[0].body.includes("secret.invalid"), "unsafe note reached the submitted report");
+    if (process.env.RATATOSK_FEEDBACK_CAPTURE === "1") {
+      const capture = join(tmpdir(), "ratatosk-feedback-contract-capture.json");
+      await writeFile(capture, `${requests[0].body}\n`, { mode: 0o600 });
+      console.info(`[chrome-discovery] feedback contract_capture=${capture}`);
+    }
   } finally {
     await reopened.close();
   }
