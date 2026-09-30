@@ -5,10 +5,13 @@ import { parseDiscoveryDiagnostic } from "../../collector/src/platform/discovery
 
 const collection = JSON.parse(readFileSync(new URL("../fixtures/ratatosk/feedback-collection.json", import.meta.url), "utf8"));
 const discovery = JSON.parse(readFileSync(new URL("../fixtures/ratatosk/feedback-discovery.json", import.meta.url), "utf8"));
+const browserGenerated = JSON.parse(readFileSync(new URL("../fixtures/ratatosk/feedback-browser-generated.json", import.meta.url), "utf8"));
 
 describe("shared Ratatosk feedback fixtures", () => {
   it("uses an exact current discovery diagnostic", () => {
     expect(parseDiscoveryDiagnostic(discovery.diagnostic)).toEqual(discovery.diagnostic);
+    expect(parseDiscoveryDiagnostic(browserGenerated.diagnostic)).toEqual(browserGenerated.diagnostic);
+    expect(browserGenerated.diagnostic.attempts.length).toBeGreaterThan(0);
   });
 
   it("uses the Collector's allowlisted last-run diagnostic", () => {
