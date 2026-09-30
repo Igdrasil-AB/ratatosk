@@ -22,7 +22,7 @@ Official starting points:
 
 ## 2. Cut the reviewed Collector artifact
 
-From a clean release commit on Node 22:
+From a clean release commit on Node 24 (`.nvmrc`):
 
 ```bash
 npm ci
