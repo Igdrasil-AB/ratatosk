@@ -23,7 +23,32 @@
 - **Depends on**: none; finish this before Plan 020 uses Jenkins as a gate
 - **Category**: CI, security, release
 - **Planned at**: Ratatosk `c74927d`, `igdrasil-accounting` `2daf8b390`, 2026-09-30
-- **Status**: TODO
+- **Status**: IN PROGRESS — local jobs and checks built; live Jenkins and protection cutover pending
+
+## Local implementation evidence (2026-10-01)
+
+- Ratatosk CI commit `3248a1e`, trusted controller commit `1c940b9e5`, and
+  combined Ratatosk commit `3f2d31d` are local and clean. They have not been
+  pushed or deployed.
+- Jenkins's live Declarative linter accepted the three pipeline files. A local
+  controller image with dummy keys loaded JCasC, created the `ratatosk` folder,
+  and placed both App credentials on that folder. The test controller and its
+  temporary volume were removed afterward.
+- The exact pinned Node 20/22/24 containers each passed 968 tests and emitted
+  JUnit with zero failures. The final pinned Playwright container passed 13
+  discovery and 10 acquisition cases with zero JUnit failures, then verified
+  the Collector ZIP. An earlier run failed in blind acquisition and another
+  crashed before Chrome startup; disabling headless GPU passed three full
+  acquisition runs and the final full stage. The real Jenkins agent still needs
+  its own terminal evidence.
+- The pinned CodeQL ARM64 bundle passed its checksum, analyzed Ratatosk main
+  `c74927d` (248 JS/TS files and three workflows), and produced a validated
+  SARIF with zero findings. This was a local unprivileged analysis, not a
+  GitHub upload or Jenkins check.
+- Main protection still requires four GitHub Actions contexts with
+  `strict: true`. The scoped GitHub Apps, controller deployment, same-head
+  terminal Jenkins runs, private live receipt, release publication, and
+  protection cutover remain outstanding.
 
 ## Goal and current state
 

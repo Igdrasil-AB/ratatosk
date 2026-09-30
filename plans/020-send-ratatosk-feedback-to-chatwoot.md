@@ -25,7 +25,28 @@
   `feat/last-run-diagnostics` work before changing its report UI
 - **Category**: product feedback, security, integration
 - **Planned at**: Ratatosk `c74927d`, Svala `origin/main` `a7448e2`, 2026-09-30
-- **Status**: TODO
+- **Status**: IN PROGRESS — local intake, worker, and reviewed client built; live inbox rollout pending
+
+## Local implementation evidence (2026-10-01)
+
+- Diagnostics commit `17af0c2`, reviewed Collector feedback commit `798a05d`,
+  combined Ratatosk commit `3f2d31d`, and Svala commit `9d51bd8` are local and
+  clean. They have not been pushed, merged to main, or deployed.
+- The browser-generated synthetic report is 4.5 KiB and has identical SHA-256
+  `083b5ba2c5fcc642574a0950d5ad4f541bb4d326b60c7ac1b1212de22707b495`
+  in both repositories. Svala's strict parser accepted the actual report from
+  built Chrome. A disposable PostgreSQL test sent it through the public route,
+  stored one receipt, projected one contact/conversation/message through a fake
+  Chatwoot API, and returned the same receipt without another send on replay.
+- The final Svala branch passed 1,113 tests on a disposable PostgreSQL database,
+  typecheck, production build, and an audit with zero production advisories.
+  Migration status showed 89 applied, zero pending and zero checksum mismatch.
+  Built Chromium exercised review, unsafe-note rejection, duplicate click,
+  a simulated outage, worker stop, popup reopen, and same-body retry.
+- A local Caddy proxy overwrote a spoofed client-address header with its peer
+  address. The production Caddy and database still need deployment readback.
+  No dedicated Chatwoot API inbox/token, live test conversation, internal
+  rollout, or accepted release ZIP exists yet.
 
 ## Why and architecture
 
