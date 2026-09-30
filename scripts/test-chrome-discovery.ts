@@ -281,6 +281,9 @@ try {
       ignoreHTTPSErrors: true,
       args: [
         "--ignore-certificate-errors",
+        // The pinned ARM64 CI image does not need GPU; its headless GPU process
+        // intermittently crashed before any case started.
+        "--disable-gpu",
         `--disable-extensions-except=${extensionPath}`,
         `--load-extension=${extensionPath}`,
         `--host-resolver-rules=${FIXTURE_HOSTS.map((host) => `MAP ${host} 127.0.0.1:${address.port}`).join(", ")}`,
