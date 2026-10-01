@@ -27,7 +27,7 @@
 
 ## Local implementation evidence (2026-10-01)
 
-- Ratatosk CI commit `3248a1e`, trusted controller commit `1c940b9e5`, and
+- Ratatosk CI commit `3248a1e`, trusted controller commit `270bc4b42`, and
   combined Ratatosk commit `3f2d31d` are local and clean. They have not been
   pushed or deployed.
 - Jenkins's live Declarative linter accepted the three pipeline files. A local
