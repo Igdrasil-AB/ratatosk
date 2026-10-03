@@ -1,8 +1,13 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { junitForChrome } from "../../scripts/ci/chrome-junit";
 
 describe("Jenkins Ratatosk gate", () => {
+  it("has no GitHub Actions workflows", () => {
+    const dir = ".github/workflows";
+    expect(existsSync(dir) ? readdirSync(dir).filter((name) => /\.ya?ml$/.test(name)) : []).toEqual([]);
+  });
+
   it("runs the existing Node matrix and built browser suites without a bound secret", () => {
     const pipeline = readFileSync("Jenkinsfile", "utf8");
     for (const version of ["20.19.0", "22.12.0", "24.18.0"]) expect(pipeline).toContain(version);

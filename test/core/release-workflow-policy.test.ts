@@ -4,12 +4,11 @@ import { describe, expect, it } from "vitest";
 
 describe("release metadata workflow policy", () => {
   it("runs the release validator in pull-request CI without weakening real releases", () => {
-    const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+    const workflow = readFileSync("Jenkinsfile", "utf8");
     expect(workflow).toContain("npm run validate:release");
     expect(workflow).not.toContain("allow-unverified-pilot-baseline");
     expect(workflow.indexOf("npm run validate:release")).toBeLessThan(workflow.indexOf("npm run package:collector"));
-    expect(workflow).not.toContain("actions/upload-artifact");
-    expect(workflow).toContain("npm run test:chrome-acquisition:built");
+    expect(workflow).toContain("npm run test:chrome-acquisition:junit");
 
     const pkg = JSON.parse(readFileSync("package.json", "utf8"));
     expect(pkg.scripts["release:collector"]).toContain("npm run validate:collector-release");

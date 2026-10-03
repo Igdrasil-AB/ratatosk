@@ -211,11 +211,11 @@ fingerprint delivery marker. Release validation also requires a fresh,
 version-matched sanitized semantic-DOM acceptance receipt and reruns the
 native-download regression.
 
-Publishing stays an explicit operator action. Pushing a `v<package-version>` tag
-runs `.github/workflows/release-collector.yml`, which rebuilds from that exact
-commit, verifies the checksum, and publishes **one** asset pair — the Collector
-ZIP and its `.sha256`. That is the only downloadable artifact this project
-produces.
+Publishing stays an explicit operator action. The trusted Jenkins
+`ratatosk/release` job builds one candidate ZIP from protected main, requires
+private checksum-bound live acceptance and operator approval, then publishes
+that exact ZIP and its `.sha256`. It never rebuilds after acceptance. Chrome
+Web Store review remains a separate step using the same ZIP.
 
 Before calling a supplier supported in a release, complete the live acceptance
 loop in [docs/testing.md](docs/testing.md): two consecutive runs against the same
