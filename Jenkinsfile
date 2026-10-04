@@ -116,6 +116,18 @@ pipeline {
                 checkout scm
                 script {
                     def sourceSha = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+                    if (env.CHANGE_ID) {
+                        if (!(env.CHANGE_ID ==~ /[1-9][0-9]{0,6}/)) {
+                            error('Invalid PR number')
+                        }
+                        sh "git fetch --no-tags origin refs/pull/${env.CHANGE_ID}/merge"
+                        def testedTree = sh(returnStdout: true, script: 'git rev-parse HEAD^{tree}').trim()
+                        def mergeTree = sh(returnStdout: true, script: 'git rev-parse FETCH_HEAD^{tree}').trim()
+                        if (testedTree != mergeTree) {
+                            error('Tested checkout differs from the current PR merge tree')
+                        }
+                        sourceSha = sh(returnStdout: true, script: 'git rev-parse FETCH_HEAD').trim()
+                    }
                     if (!(sourceSha ==~ /[0-9a-f]{40}/)) {
                         error('Checkout did not resolve to a full commit SHA')
                     }

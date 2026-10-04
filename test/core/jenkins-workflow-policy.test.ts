@@ -19,6 +19,10 @@ describe("Jenkins Ratatosk gate", () => {
     expect(pipeline).toContain("allowEmptyResults: false");
     expect(pipeline).toContain("build job: 'ratatosk/codeql'");
     expect(pipeline).toContain("string(name: 'SOURCE_SHA', value: sourceSha)");
+    expect(pipeline).toContain("git fetch --no-tags origin refs/pull/");
+    expect(pipeline).toContain("git rev-parse HEAD^{tree}");
+    expect(pipeline).toContain("git rev-parse FETCH_HEAD^{tree}");
+    expect(pipeline).toContain("Tested checkout differs from the current PR merge tree");
     expect(pipeline).not.toContain("withCredentials(");
     expect(pipeline).not.toContain("github upload-results");
   });
