@@ -2,8 +2,9 @@
 
 > **Executor instructions**: Use a clean Ratatosk worktree and separate clean
 > `igdrasil-accounting` worktree for controller-owned jobs. Implement in phases.
-> Keep GitHub Actions and its required checks until equivalent Jenkins checks
-> are terminal green on the same PR head. Never bind publishing or code-scanning
+> Jenkins is the required automated authority; GitHub Actions is disabled.
+> Require terminal Jenkins evidence on the current PR revision before merging.
+> Never bind publishing or code-scanning
 > upload credentials in a branch-authored Jenkinsfile. Update `plans/README.md`
 > only after each phase has the evidence named below.
 >
@@ -23,9 +24,34 @@
 - **Depends on**: none; finish this before Plan 020 uses Jenkins as a gate
 - **Category**: CI, security, release
 - **Planned at**: Ratatosk `c74927d`, `igdrasil-accounting` `2daf8b390`, 2026-09-30
-- **Status**: IN PROGRESS — local jobs and checks built; live Jenkins and protection cutover pending
+- **Status**: IN PROGRESS — live PR CI, CodeQL upload, and protection cutover verified; release acceptance and publication remain
 
-## Local implementation evidence (2026-10-01)
+## Live implementation evidence (2026-10-05)
+
+- Controller PR #2306 merged as `fb1fec145`; Python 3.9 helper compatibility
+  PR #2315 merged as `1dc26a13b` after terminal Jenkins success.
+- The locally built ARM64 controller image was deployed by immutable digest
+  `sha256:74033d55101f6a3e2fd35a9ebac2a01c37cb78ed7ddba4e6510fa3991a5f0971`.
+  The trusted `ratatosk/codeql` and `ratatosk/release` jobs are visible live.
+- Existing Apps are reused: `dev-pipeline-igdrasil` for CI and `svala-dev` in
+  the trusted folder for CodeQL/release. Trusted tokens are restricted to
+  Ratatosk and the permissions required by each operation. The shared App key
+  itself retains its existing broader permissions.
+- Ratatosk PR #83 build #4 passed Node 20/22/24, built Chromium, and package
+  verification on `b22a7a7`. Trusted CodeQL build #2 uploaded the current PR
+  merge revision `0517187` with zero findings.
+- GitHub Actions is disabled. Main protection requires `igdrasil-ci` from App
+  `4409876` and GitHub's Jenkins-uploaded `CodeQL` check from App `57789`, with
+  `strict: true`. Both required checks are recognized and the PR is clean.
+- GitHub's CodeQL PR comparison is neutral because the retired Actions
+  configuration is still present in its analysis history. The Jenkins analysis
+  and upload succeeded; resolving that comparison baseline remains a rollout task.
+- The private live receipt, release promotion, Web Store publication, and a
+  post-merge main run remain separate acceptance gates.
+
+## Historical local implementation evidence (2026-10-01)
+
+The following snapshot predates the live evidence above.
 
 - Ratatosk CI commit `3248a1e`, trusted controller commit `270bc4b42`, and
   combined Ratatosk commit `3f2d31d` are local and clean. They have not been
@@ -52,7 +78,7 @@
   terminal Jenkins runs, private live receipt, release publication, and
   protection cutover remain outstanding.
 
-## Goal and current state
+## Goal and planning baseline (2026-09-30)
 
 Every automated Ratatosk PR/main check, CodeQL analysis, and GitHub release
 must have a Jenkins-owned terminal result tied to the exact commit. The human
@@ -144,9 +170,8 @@ the current `test/core/release-workflow-policy.test.ts`.
 **Verify**: local product baseline and browser commands above pass; Jenkins
 discovers a branch/PR job from the new root file; the PR merge SHA gets one
 terminal `igdrasil-ci` check with nonempty JUnit and no credential binding.
-If organization discovery requires a root file already on default branch,
-bootstrap only that non-privileged Jenkinsfile through the existing required
-GitHub Actions gate, then continue. Do not change protection yet.
+Organization discovery already builds PR #83. Verify the root Jenkinsfile is
+also discovered on main after merge; require a terminal main run there.
 
 ### 2. Move CodeQL without exposing an upload token to PR code
 
@@ -167,9 +192,8 @@ narrower. Use the official CodeQL CLI upload path with
 
 **Verify**: one synthetic safe PR yields a Jenkins CodeQL check and a visible
 GitHub code-scanning analysis for the exact PR SHA; one malformed/missing SARIF
-and one mismatched SHA fail the trusted job. Confirm the GitHub App's installed permissions before
-removing `.github/workflows/codeql.yml`. Keep the existing GitHub CodeQL job
-required until the Jenkins equivalent is terminal green.
+and one mismatched SHA fail the trusted job. Confirm the installed App permissions
+and the Jenkins-uploaded CodeQL check source remain bound in branch protection.
 
 ### 3. Separate candidate build from privileged release promotion
 
@@ -202,15 +226,15 @@ live receipt exists and the trusted job is reviewed.
 
 ### 4. Cut over protected checks atomically
 
-Dual-run GitHub Actions and Jenkins until the same PR head has terminal green
-Node matrix, Chromium, CodeQL, and package evidence in Jenkins. Read back the
+Require the same PR revision to have terminal green Node matrix, Chromium,
+CodeQL upload, and package evidence in Jenkins. Read back the
 Jenkins check's **app ID and exact context**; do not guess that `igdrasil-ci`
 alone is the name GitHub protects. Update Ratatosk branch protection in one
 controlled operation, preserving `strict: true`, to require the Jenkins PR
 check and trusted CodeQL check. Immediately read back the policy and rerun a
-new PR head to prove merge blocking. Only then remove the old CI and CodeQL
-workflows. Remove the tag workflow only after the trusted Jenkins release job
-has an exact-artifact dry run and authorized publication path. Keep Dependabot
+new PR head to prove merge blocking. GitHub Actions workflows are removed in
+the integration PR at the user's direction; release publication remains paused
+until the trusted job has an exact-artifact dry run and authorized publication path. Keep Dependabot
 for proposals; Jenkins validates its in-org PRs.
 
 Update README/testing/submission docs so Jenkins is the automated authority,

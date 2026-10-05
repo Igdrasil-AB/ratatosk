@@ -52,8 +52,8 @@ public repository.
 | [014](014-connect-multiple-igdrasil-companies.md) | Ratatosk holds several connected Igdrasil companies, each supplier feeds exactly one, and the Igdrasil token/ingest surface exists | P0 | L | — | IN PROGRESS — all 16 acceptance rows automated and passing on both sides; the plan's "server side unbuilt" premise was one PR stale, so the shipped surface was corrected rather than rebuilt; live two-company acceptance remains |
 | [015](015-build-evidence-first-adaptive-acquisition.md) | Unknown supplier routes come from observed evidence, search budgets remain honest and resumable, and only replayable proved routes persist | P0 | L | 011 and 013 automated foundations; their live gates before release | BLOCKED — evidence-first primitives shipped, but exact ClickUp replay still fails; Plan 016 owns further iterative runtime and live-acceptance work |
 | [016](016-build-iterative-end-to-end-acquisition-lab.md) | Every acquisition failure becomes a reusable supplier-shape regression and the exact built extension proves delivery plus immediate/cadence deduplication | P0 | XL | 013, 014, 015 primitives | IN PROGRESS — automated Phases 0–6 and blind acceptance pass; the release gate correctly awaits the authorized three-family/ClickUp receipt |
-| [019](019-run-ratatosk-through-jenkins.md) | Jenkins gates PR/main CI, built Chromium, CodeQL, and exact-artifact GitHub releases without weakening live acceptance | P0 | L | — | IN PROGRESS — local gates built; live Jenkins and cutover pending |
-| [020](020-send-ratatosk-feedback-to-chatwoot.md) | Reviewed Collector reports reach Svala PostgreSQL with a receipt and then a dedicated Chatwoot inbox | P0 | L | 019; merged last-run diagnostics | IN PROGRESS — local route and worker proved; live inbox rollout pending |
+| [019](019-run-ratatosk-through-jenkins.md) | Jenkins gates PR/main CI, built Chromium, CodeQL, and exact-artifact GitHub releases without weakening live acceptance | P0 | L | — | IN PROGRESS — live PR CI, CodeQL upload, and protection cutover verified; release acceptance remains |
+| [020](020-send-ratatosk-feedback-to-chatwoot.md) | Reviewed Collector reports reach Svala PostgreSQL with a receipt and then a dedicated Chatwoot inbox | P0 | L | 019; integrated last-run diagnostics | IN PROGRESS — Svala merged and Collector integration verified; live inbox rollout pending |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, or
 `REJECTED — <reason>`.
@@ -138,8 +138,8 @@ implemented. Plan 015 supplied the evidence-first primitives but is blocked on
 exact replay. Plan 016 owns the iterative debugging method, end-to-end browser
 lab, and remaining live/release gates while retaining Plans 013–015 safety
 invariants.
-Plan 019 first dual-runs Jenkins beside the current GitHub Actions checks;
-branch protection changes only after a terminal Jenkins replacement exists.
+Plan 019 uses Jenkins as the automated authority. GitHub Actions is disabled;
+branch protection now requires the verified Jenkins and CodeQL check sources.
 Plan 020 is a separate cross-repository Ratatosk/Svala change. It must not use
 the Studio fingerprint-intake token or send reports directly from the
 extension to Chatwoot with a packaged API credential.
@@ -176,8 +176,8 @@ parallel with Plans 011, 013, and 015.
   message; a dedicated Ratatosk API inbox keeps triage attributable.
 - Reusing Svala's Studio fingerprint bearer token for Collector reports:
   that token is developer-scoped and cannot be shipped to anonymous users.
-- Removing GitHub Actions before Jenkins is green: current branch protection
-  requires four GitHub Actions contexts and would strand PRs.
+- Leaving disabled Actions contexts required: the cutover replaced those four
+  contexts with verified Jenkins and CodeQL checks while retaining strict protection.
 - Unsupported-supplier discovery may observe only the user's exact approved
   origin, keeps response evidence bounded and ephemeral, and admits a local
   integration only after a real PDF is accepted by the selected destination.
@@ -216,9 +216,8 @@ npm run security:audit
 ```
 
 Never point `TEST_DATABASE_URL` at development or production; Svala tests reset
-their target database. GitHub Actions may still fail before executing steps due
-to the organization billing setting, so retain local Node 24 evidence when that
-external condition persists.
+their target database. Retain local Node 24 evidence alongside terminal Jenkins
+results; production deployment and live inbox delivery require separate readback.
 
 ## Findings considered and deferred
 

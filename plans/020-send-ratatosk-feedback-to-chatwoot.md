@@ -21,13 +21,28 @@
 - **Priority**: P0 after trustworthy Jenkins gating
 - **Effort**: L, cross-repository backend, extension, and deployment work
 - **Risk**: HIGH; public intake, privacy, abuse, and third-party delivery
-- **Depends on**: Plan 019 Jenkins gate; merge and verify Ratatosk's current
-  `feat/last-run-diagnostics` work before changing its report UI
+- **Depends on**: Plan 019 Jenkins gate; the last-run diagnostic schema is
+  included in the same Ratatosk integration PR as the reviewed client
 - **Category**: product feedback, security, integration
 - **Planned at**: Ratatosk `c74927d`, Svala `origin/main` `a7448e2`, 2026-09-30
-- **Status**: IN PROGRESS — local intake, worker, and reviewed client built; live inbox rollout pending
+- **Status**: IN PROGRESS — Svala intake merged and Collector integration verified; live inbox rollout pending
 
-## Local implementation evidence (2026-10-01)
+## Integration evidence (2026-10-05)
+
+- Svala PR #312 merged as `8ff15c7` with the intake, durable receipt, dispatcher,
+  and reconciliation path. Merge is not evidence that the production endpoint
+  or Chatwoot delivery is enabled.
+- Ratatosk PR #83 includes diagnostics and the reviewed feedback client in one
+  change. Its current implementation passed terminal Jenkins Node, Chromium,
+  and CodeQL gates on `b22a7a7`.
+- Production migration/proxy readback, the dedicated Chatwoot inbox and token,
+  synthetic live intake/replay, dispatcher delivery/reconciliation, and an
+  accepted extension release remain pending. Keep feedback disabled until
+  those deployment gates are verified.
+
+## Historical local implementation evidence (2026-10-01)
+
+The following snapshot predates the integration evidence above.
 
 - Diagnostics commit `17af0c2`, reviewed Collector feedback commit `798a05d`,
   combined Ratatosk commit `3f2d31d`, and Svala commit `9d51bd8` are local and
@@ -48,7 +63,7 @@
   No dedicated Chatwoot API inbox/token, live test conversation, internal
   rollout, or accepted release ZIP exists yet.
 
-## Why and architecture
+## Planning baseline and architecture (2026-09-30)
 
 Collector's Report Issue currently copies a redacted diagnostic and opens a
 GitHub draft. A user must paste and publish it manually; maintainers receive
@@ -230,7 +245,7 @@ No real supplier data is used in this check.
 
 ### 4. Replace GitHub draft as the primary Collector report action
 
-After the diagnostics branch is merged, add a compact review state in the
+Review and verify the integrated diagnostic schema, then add a compact review state in the
 existing popup for failure and false-success choices. Show site/vendor ID,
 typed summary, optional note, and the destination `Igdrasil support` before
 requesting exact Svala host access and sending. Retain a bounded pending
@@ -267,8 +282,8 @@ the deployed Svala runtime and Chatwoot inbox identity are verified separately.
 
 ## STOP conditions
 
-- `feat/last-run-diagnostics` is unmerged or its exported schema differs from
-  the frozen v1 fixture; do not build around a draft shape.
+- The integrated diagnostics and reviewed client disagree with the frozen v1
+  report fixture; verify both sides together before merging.
 - A static Chatwoot or Svala intake secret would be packaged in Collector, or
   the extension would need remote Chatwoot SDK code.
 - Public intake lacks a proven trusted client-address/rate-limit boundary.
