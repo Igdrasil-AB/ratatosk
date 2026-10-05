@@ -9,6 +9,8 @@ import {
   seenStore,
   upsertConnection,
 } from "../../collector/src/platform/storage";
+import { buildCollectorDiagnostic } from "../../collector/src/platform/diagnostics";
+import { buildCollectionIssueReport } from "../../collector/src/platform/issue-report";
 
 let values: Record<string, unknown>;
 
@@ -100,6 +102,44 @@ describe("Collector storage mutation serialization", () => {
     expect(failed.lastAttemptAt).toBeGreaterThanOrEqual(completed.lastAttemptAt!);
     expect(failed.lastCompleteSyncAt).toBe(completed.lastCompleteSyncAt);
     expect(failed.lastNewInvoiceAt).toBe(completed.lastNewInvoiceAt);
+  });
+
+  it("exports only bounded latest-run evidence and clears an old failure on success", async () => {
+    await upsertConnection({ vendorId: "vendor-a", connectedAt: 1 });
+    const counts = { accepted: 0, verified: 0, documentActions: 0,
+      pageOwnedDownloads: 0, failedScopes: 1, emptyScopes: 0 };
+    await recordRun("vendor-a", {
+      lastStatus: "partial", lastCode: "partial_scope_failure", lastCount: 0,
+      lastRunEvidence: {
+        runtime: { collectorVersion: "0.8.78", discoveryEngine: 62, documentAcquisition: 15 },
+        trigger: "manual", status: "partial", code: "partial_scope_failure", elapsedMs: 123,
+        counts, failure: { stage: "invoice_list", cause: "retrieval_incomplete" },
+        retrievalSummary: { proofs: 1, complete: 0, partial: 1, pagesVisited: 2,
+          observedItems: 3, resolvedItems: 1, unresolvedItems: 2, terminations: ["page_cap"] },
+        scopeFailureCodes: ["retrieval_incomplete"],
+        replay: { planKind: "semantic_dom", phases: [{ phase: "document_enumeration", result: "time_cap", durationMs: 123 }],
+          firstFailure: { phase: "document_enumeration", result: "time_cap" } },
+        rawUrl: "https://private.example/account/123?token=synthetic",
+      } as never,
+    });
+    const diagnostic = buildCollectorDiagnostic({ vendorId: "vendor-a", collectorVersion: "0.8.79",
+      lifecycleRevision: "local-discovery-v1", runtime: { discoveryEngine: 63, documentAcquisition: 16 },
+      connection: (await getConnections())["vendor-a"] });
+    const report = buildCollectionIssueReport(diagnostic);
+    expect(report.clipboard).toContain("retrieval_incomplete");
+    expect(report.clipboard).toContain('"collectorVersion": "0.8.78"');
+    expect(report.clipboard).toContain("document_enumeration");
+    expect(report.clipboard).not.toMatch(/private\.example|token=synthetic|rawUrl/);
+
+    await recordRun("vendor-a", { lastStatus: "ok", lastCount: 0,
+      lastRunEvidence: { trigger: "scheduled", status: "ok", elapsedMs: 50,
+        counts: { ...counts, failedScopes: 0 } },
+    });
+    const clean = buildCollectorDiagnostic({ vendorId: "vendor-a", collectorVersion: "0.8.79",
+      lifecycleRevision: "local-discovery-v1", connection: (await getConnections())["vendor-a"] });
+    expect(clean.lastRunEvidence).toMatchObject({ trigger: "scheduled", status: "ok", counts: { accepted: 0, failedScopes: 0 } });
+    expect(clean.lastRunEvidence?.failure).toBeUndefined();
+    expect(clean.outcomeCode).toBe("unknown");
   });
 
   it("does not recreate a disconnected vendor when a stale run finishes", async () => {

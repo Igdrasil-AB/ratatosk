@@ -290,12 +290,19 @@ issue.
   eligible again after its bounded lease rather than remaining stuck.
 - Trigger a manual check while an alarm sweep is active and confirm the vendor
   request and destination write occur once.
-- Use **Copy diagnostic** on a non-OK vendor and inspect the JSON. It may contain
+- Use **Report issue** on a non-OK vendor and expand **Diagnostic fields to send**
+  before sending. It may contain
   only vendor ID, Collector/lifecycle revisions, stable outcome code, timestamps,
   counts, closed verification stage/cause codes, HTTP status/content-type
   families, hostnames, and privacy-safe route templates with opaque segments shown
   as `:id` or `:segment`—never origins, raw paths, queries, fragments, headers,
   bodies, selectors, free-form error messages, invoice/company IDs, or tokens.
+- Enter a note with a synthetic URL or token and confirm Send rejects it before
+  any request. Send a safe synthetic report against the local fake Svala server,
+  interrupt its first response, reopen the side panel, and retry. The report ID
+  and JSON body must match byte-for-byte, and the receipt must say `received`
+  only after Svala accepts it. The built Chromium case is
+  `npm run build:collector && scripts/run-chrome-discovery.sh --case feedback`.
 
 ## 6. Record the verification
 

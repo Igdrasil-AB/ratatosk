@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthExpired, DocumentPermissionRequired, RateLimited, UnexpectedResponse } from "../../src/core/errors";
 import type { IngestResult } from "../../src/ingest/sink";
 import { IngestUnauthorized } from "../../src/ingest/http-sink";
+import { ReplayPhaseFailed } from "../../collector/src/platform/document-action-controller";
 
 const mocks = vi.hoisted(() => ({
   streamVendor: vi.fn(),
@@ -49,7 +50,7 @@ vi.mock("../../collector/src/platform/notifications", () => ({
   notifyDestinationReconnect: mocks.notifyDestinationReconnect,
 }));
 
-import { runAllConnected, runDiscoveredCandidate, runVendorById } from "../../collector/src/platform/collector";
+import { recordBlockedRun, runAllConnected, runDiscoveredCandidate, runVendorById } from "../../collector/src/platform/collector";
 
 describe("Collector per-vendor run coordinator", () => {
   const seenAdd = vi.fn(async () => undefined);
@@ -321,7 +322,10 @@ describe("Collector per-vendor run coordinator", () => {
 
     expect(order).toEqual(["sink", "ledger", "admit"]);
     expect(seenAdd).not.toHaveBeenCalled();
-    expect(mocks.recordRun).not.toHaveBeenCalled();
+    expect(mocks.recordRun).toHaveBeenCalledWith("discovered-durable", expect.objectContaining({
+      lastCode: "connection_persistence_failed",
+      lastRunEvidence: expect.objectContaining({ failure: { stage: "admission", cause: "state_persistence" } }),
+    }));
   });
 
   it("preserves a privacy-safe engine failure trace in discovered-candidate summaries", async () => {
@@ -431,6 +435,102 @@ describe("Collector per-vendor run coordinator", () => {
         cause: "rate_limited",
       },
     });
+  });
+
+  it("keeps an earlier recoverable failure separate from the terminal blocker", async () => {
+    mocks.streamVendor.mockImplementationOnce(async (_recipe, _ctx, _strategies, _emit, options) => {
+      const scopeError = new UnexpectedResponse(403, "scope unavailable", "vendor-mixed");
+      options.onFailure({ stage: "invoice_list", cause: "unexpected_response", httpStatus: 403 }, scopeError);
+      const fatal = new RateLimited(120_000, "vendor-mixed");
+      options.onFailure({ stage: "authentication", cause: "rate_limited" }, fatal);
+      throw fatal;
+    });
+
+    await expect(runVendorById("vendor-mixed")).resolves.toMatchObject({
+      code: "rate_limited",
+      failure: { stage: "invoice_list", cause: "unexpected_response" },
+      terminalFailure: { stage: "authentication", cause: "rate_limited" },
+    });
+    expect(mocks.recordRun).toHaveBeenCalledWith("vendor-mixed", expect.objectContaining({
+      lastRunEvidence: expect.objectContaining({
+        failure: { stage: "invoice_list", cause: "unexpected_response", httpStatus: 403 },
+        terminalFailure: { stage: "authentication", cause: "rate_limited" },
+      }),
+    }));
+  });
+
+  it("retains distinct HTTP failures at the same stage", async () => {
+    mocks.streamVendor.mockImplementationOnce(async (_recipe, _ctx, _strategies, _emit, options) => {
+      const early = new UnexpectedResponse(404, "scope unavailable", "vendor-http");
+      options.onFailure({ stage: "invoice_list", cause: "unexpected_response", httpStatus: 404 }, early);
+      const terminal = new UnexpectedResponse(503, "temporarily unavailable", "vendor-http");
+      options.onFailure({ stage: "invoice_list", cause: "unexpected_response", httpStatus: 503 }, terminal);
+      throw terminal;
+    });
+    await runVendorById("vendor-http");
+    expect(mocks.recordRun).toHaveBeenCalledWith("vendor-http", expect.objectContaining({
+      lastRunEvidence: expect.objectContaining({
+        failure: expect.objectContaining({ httpStatus: 404 }),
+        terminalFailure: expect.objectContaining({ httpStatus: 503 }),
+      }),
+    }));
+  });
+
+  it("retains only a closed replay trace from a failed semantic action", async () => {
+    const trace = { planKind: "semantic_dom" as const,
+      phases: [{ phase: "document_enumeration" as const, result: "time_cap" as const, durationMs: 10 }],
+      firstFailure: { phase: "document_enumeration" as const, result: "time_cap" as const } };
+    mocks.streamVendor.mockImplementationOnce(async (_recipe, _ctx, _strategies, _emit, options) => {
+      const error = new ReplayPhaseFailed("document_action_timeout", trace);
+      options.onFailure({ stage: "invoice_list", cause: "document_action_timeout" }, error);
+      throw error;
+    });
+    await runVendorById("vendor-replay");
+    expect(mocks.recordRun).toHaveBeenCalledWith("vendor-replay", expect.objectContaining({
+      lastRunEvidence: expect.objectContaining({ replay: trace }),
+    }));
+  });
+
+  it("summarizes multi-scope proof without persisting scope identities", async () => {
+    mocks.streamVendor.mockResolvedValueOnce({
+      vendorId: "vendor-scopes", documentCount: 0, retrieval: "partial",
+      retrievalProofs: [
+        { completeness: "complete", termination: "explicit_end", pagesVisited: 1, observedItems: 2, resolvedItems: 2, unresolvedItems: 0 },
+        { completeness: "partial", termination: "page_cap", pagesVisited: 3, observedItems: 4, resolvedItems: 2, unresolvedItems: 2 },
+      ],
+      scopes: scopes({ total: 2, succeeded: 1, failed: 1, failureCodes: ["retrieval_incomplete"] }),
+    });
+    await expect(runVendorById("vendor-scopes")).resolves.toMatchObject({ status: "partial" });
+    expect(mocks.recordRun).toHaveBeenCalledWith("vendor-scopes", expect.objectContaining({
+      lastRunEvidence: expect.objectContaining({
+        retrievalSummary: {
+          proofs: 2, complete: 1, partial: 1, pagesVisited: 4,
+          observedItems: 6, resolvedItems: 4, unresolvedItems: 2,
+          terminations: ["explicit_end", "page_cap"],
+        },
+        scopeFailureCodes: ["retrieval_incomplete"],
+      }),
+    }));
+  });
+
+  it("records a missing source as a preflight refusal", async () => {
+    mocks.resolveCollectorSource.mockResolvedValueOnce(undefined);
+    await expect(runVendorById("missing-source")).resolves.toMatchObject({
+      code: "source_unavailable", failure: { stage: "preflight", cause: "source_unavailable" },
+    });
+    expect(mocks.recordRun).toHaveBeenCalledWith("missing-source", expect.objectContaining({
+      lastRunEvidence: expect.objectContaining({ failure: { stage: "preflight", cause: "source_unavailable" } }),
+    }));
+  });
+
+  it("records revoked host access before the supplier run starts", async () => {
+    await expect(recordBlockedRun("vendor-host", "manual", "host_permission_required")).resolves.toMatchObject({
+      code: "host_permission_required", failure: { stage: "preflight", cause: "host_permission_required" },
+    });
+    expect(mocks.streamVendor).not.toHaveBeenCalled();
+    expect(mocks.recordRun).toHaveBeenCalledWith("vendor-host", expect.objectContaining({
+      lastRunEvidence: expect.objectContaining({ failure: { stage: "preflight", cause: "host_permission_required" } }),
+    }));
   });
 
   it("reports a committed document when a later fetch fails fatally", async () => {

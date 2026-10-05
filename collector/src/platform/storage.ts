@@ -1,9 +1,10 @@
-import type { OperationalOutcomeCode } from "../../../src/core/errors";
-import type { SeenStore } from "../../../src/core/types";
+import type { CollectionFailureEvidence, OperationalOutcomeCode } from "../../../src/core/errors";
+import type { ReplayTrace, RetrievalCompleteness, RetrievalProof, RetrievalTermination, SeenStore } from "../../../src/core/types";
 import { isExactDocumentProviderOriginPattern } from "../../../src/core/document-provider";
 import { normalizeIgdrasilApiBase } from "../../../src/ingest/igdrasil-sink";
 import { folderPath } from "./download-path";
 import type { InvoiceMetadataEvidence, ResolvedInvoiceMetadata } from "../../../src/core/types";
+import { readLastRunEvidence } from "./diagnostics";
 
 /**
  * Typed wrapper over `chrome.storage.local`.
@@ -64,6 +65,40 @@ export function sinkCompanyId(destination: Destination | undefined): string {
 
 export type ConnectionStatus = "ok" | "partial" | "auth_expired" | "rate_limited" | "error";
 
+export interface LastRunEvidence {
+  runtime?: { collectorVersion: string; discoveryEngine: number; documentAcquisition: number };
+  trigger: "connect" | "manual" | "scheduled";
+  status: ConnectionStatus;
+  code?: OperationalOutcomeCode;
+  elapsedMs: number;
+  counts: {
+    accepted: number;
+    verified: number;
+    documentActions: number;
+    pageOwnedDownloads: number;
+    failedScopes: number;
+    emptyScopes: number;
+  };
+  retrieval?: RetrievalCompleteness;
+  retrievalProof?: RetrievalProof;
+  retrievalSummary?: {
+    proofs: number;
+    complete: number;
+    partial: number;
+    pagesVisited: number;
+    observedItems: number;
+    resolvedItems: number;
+    unresolvedItems: number;
+    terminations: RetrievalTermination[];
+  };
+  scopeFailureCodes?: OperationalOutcomeCode[];
+  replay?: ReplayTrace;
+  /** First recoverable or fatal boundary encountered during the run. */
+  failure?: CollectionFailureEvidence;
+  /** The boundary that ended the run, when it differs from the first. */
+  terminalFailure?: CollectionFailureEvidence;
+}
+
 export interface Connection {
   vendorId: string;
   connectedAt: number;
@@ -94,6 +129,8 @@ export interface Connection {
   lastFailedScopes?: number;
   lastEmptyScopes?: number;
   nextEligibleRunAt?: number;
+  /** One bounded, current-run snapshot; no supplier response or document data. */
+  lastRunEvidence?: LastRunEvidence;
   /** Exact provider redirect origins approved for this connection. Capability
    * paths and signed query values are never persisted. */
   documentOrigins?: string[];
@@ -308,10 +345,13 @@ export async function getConnections(): Promise<Record<string, Connection>> {
 
 export async function upsertConnection(conn: Connection): Promise<void> {
   await mutate<Record<string, Connection>>(KEY.connections, {}, (all) => {
+    const lastRunEvidence = readLastRunEvidence(conn.lastRunEvidence);
     all[conn.vendorId] = {
       ...conn,
       ...(conn.documentOrigins ? { documentOrigins: safeDocumentOrigins(conn.documentOrigins) } : {}),
+      ...(lastRunEvidence ? { lastRunEvidence } : {}),
     };
+    if (!lastRunEvidence) delete all[conn.vendorId].lastRunEvidence;
     return all;
   });
 }
@@ -352,6 +392,7 @@ export async function recordRun(
         ? attemptedAt
         : existing.lastNewInvoiceAt,
       ...patch,
+      lastRunEvidence: readLastRunEvidence(patch.lastRunEvidence),
     };
     for (const [key, value] of Object.entries(next)) {
       if (value === undefined) delete (next as unknown as Record<string, unknown>)[key];

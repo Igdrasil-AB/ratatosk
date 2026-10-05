@@ -119,9 +119,12 @@ enters the extension.
   stable invoice identity reservation in a disposable tab; payment, purchase,
   cancellation, deletion, and form actions are excluded. Chrome-native supplier
   downloads are contained and rejected, never counted as collection.
-- **Diagnostics carry no data.** When discovery fails, the copyable diagnostic
-  holds the failed stage, a finite cause code, an optional HTTP status family,
-  bounded counts, and `:id`-templated route shapes. Never URLs, selectors,
+- **Reviewed support reports.** Report Issue shows the supplier hostname or
+  vendor ID, build, typed failure summary, and exact diagnostic fields before
+  you send anything. Send stores one bounded report in Svala and returns a
+  receipt; support triage in Chatwoot follows on the server. Interrupted sends
+  can be retried with the same report ID. GitHub remains a manual fallback.
+  Diagnostics contain operational metadata, never raw URLs, selectors,
   response content, tokens, or invoice identifiers.
 - **No analytics, no ad SDK.** See [PRIVACY.md](PRIVACY.md) and
   [SECURITY.md](SECURITY.md).
@@ -208,11 +211,11 @@ fingerprint delivery marker. Release validation also requires a fresh,
 version-matched sanitized semantic-DOM acceptance receipt and reruns the
 native-download regression.
 
-Publishing stays an explicit operator action. Pushing a `v<package-version>` tag
-runs `.github/workflows/release-collector.yml`, which rebuilds from that exact
-commit, verifies the checksum, and publishes **one** asset pair — the Collector
-ZIP and its `.sha256`. That is the only downloadable artifact this project
-produces.
+Publishing stays an explicit operator action. The trusted Jenkins
+`ratatosk/release` job builds one candidate ZIP from protected main, requires
+private checksum-bound live acceptance and operator approval, then publishes
+that exact ZIP and its `.sha256`. It never rebuilds after acceptance. Chrome
+Web Store review remains a separate step using the same ZIP.
 
 Before calling a supplier supported in a release, complete the live acceptance
 loop in [docs/testing.md](docs/testing.md): two consecutive runs against the same

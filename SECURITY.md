@@ -44,7 +44,7 @@ manifest inside the release ZIP, not infer permissions from the repository.
 | Connect bridge | A hostile page installing a token or destination | Content script is limited to `https://accounting.igdrasil.se/*`; worker verifies extension id and exact sender origin; backend URL must be exactly `https://accounting.igdrasil.se`; connect requires a short-lived, one-use state created by an explicit Ratatosk or in-app action |
 | Extension message bus | Web content issuing privileged commands | Consumer/control messages are accepted only when Chrome reports this extension's id and exact `chrome-extension://<this-id>/` sender URL; content-script senders retain their web URL and are rejected |
 | Download paths | Path traversal or unintended overwrite | Folder and filename segments are normalized and tested; local root configuration is validated and bounded |
-| Collector diagnostics | Error export leaking supplier or accounting data | Diagnostics are an explicit user action and contain only a stable vendor ID/code, package and lifecycle revisions, bounded counts, and normalized timestamps; stored error strings, URLs, headers, bodies, invoice IDs, company IDs, and tokens are excluded by construction; the Report Issue action opens a prefilled GitHub draft and copies the same redacted record to the clipboard, transmits nothing itself, and publishes nothing until the user submits it on github.com — the report names the supplier hostname and says so in its own body |
+| Collector diagnostics | Error export leaking supplier or accounting data | Diagnostic export is an explicit user action and contains only a stable vendor ID/code, package and lifecycle revisions, bounded current-run counts and elapsed time, closed first/terminal failure, retrieval and replay proof, and normalized timestamps; stored error strings, URLs, headers, bodies, invoice IDs, company IDs, and tokens are excluded by construction; the user reviews the diagnostic and optional note before sending to the fixed Svala endpoint, which stores an opaque receipt before a server-side Chatwoot delivery; GitHub remains an explicit draft fallback |
 | Discovery diagnostics | Search evidence leaking account paths or invoice data | Failure diagnostics are explicit-copy, session-only structural summaries containing bounded page/evidence/candidate counts, candidate numbers, packaged adapter outcome codes, hostnames, and route templates whose opaque segments are replaced by `:id` or `:segment`; origins, raw paths, queries, fragments, headers, bodies, tokens, account/invoice identifiers, and financial values are never included |
 
 Semantic document controls add a stricter transaction boundary to the local
@@ -89,6 +89,10 @@ employee-, and internal-specific origins.
 - No `eval`, `new Function`, remote scripts, remotely hosted WebAssembly, or
   remote recipe catalog.
 - Optional vendor origins requested at connect time and revoked on disconnect.
+- Feedback requests one exact Svala HTTPS origin during the Send click, uses no
+  Igdrasil upload token or browser credentials, rejects redirects, and keeps a
+  bounded pending report locally for user-initiated retries. No Chatwoot token,
+  widget, remote script, or automatic error upload is packaged.
 - Optional `tabs` access is requested separately, reads only active-tab metadata
   for side-panel context, stores no browsing history, and grants no page access.
 - Unsupported-supplier discovery uses `activeTab` plus an exact optional HTTPS

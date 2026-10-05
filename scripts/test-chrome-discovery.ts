@@ -11,6 +11,7 @@ import { EXPLORATION_BUDGETS } from "../collector/src/platform/discovery-explore
 
 const FIXTURE_HOST = "discovery-fixture.ratatosk.test";
 const FIXTURE_ORIGIN = `https://${FIXTURE_HOST}`;
+const FEEDBACK_HOST = "feedback-fixture.ratatosk.test";
 const blindSeed = process.env.RATATOSK_BLIND_SEED ?? "a10393d04be2";
 if (!/^[a-f0-9]{12}$/.test(blindSeed)) throw new Error("blind seed must be 12 lowercase hex characters");
 const acceptanceNonce = randomBytes(16).toString("hex");
@@ -49,6 +50,8 @@ ACQUISITION_PAGE_ROUTES.set("stripe-common-acquisition.ratatosk.test", new Set([
 ACQUISITION_PAGE_ROUTES.set("native-attachment-acquisition.ratatosk.test", new Set(["/", NATIVE_TENANT_ROUTE]));
 const FIXTURE_HOSTS = [
   FIXTURE_HOST,
+  FEEDBACK_HOST,
+  "svala.igdrasil.se",
   ...ACQUISITION_CASES.map((item) => item.host),
   ...NEGATIVE_ACQUISITION_CASES.map((item) => item.host),
   DESTINATION_RETRY_CASE.host,
@@ -132,6 +135,7 @@ try {
 
   let replayFailureVisits = 0;
   const documentRequests = new Map<string, number>();
+  const feedbackRequests: Array<{ id: string; body: string }> = [];
   server = createServer({
     key: await readFile(keyPath),
     cert: await readFile(certPath),
@@ -139,6 +143,29 @@ try {
     const requestHost = String(request.headers.host ?? FIXTURE_HOST).split(":", 1)[0];
     const requestOrigin = `https://${requestHost}`;
     const path = new URL(request.url ?? "/", requestOrigin).pathname;
+    if (requestHost === "svala.igdrasil.se" && path === "/api/public/ratatosk/feedback") {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        const body = Buffer.concat(chunks).toString("utf8");
+        const id = String(request.headers["idempotency-key"] ?? "");
+        feedbackRequests.push({ id, body });
+        const first = feedbackRequests.length === 1;
+        const respond = () => {
+          response.writeHead(first ? 503 : 201, { "content-type": "application/json", "cache-control": "no-store" });
+          response.end(first ? '{"code":"temporarily_unavailable"}' : JSON.stringify({
+            receipt: { reportId: id, acceptedAt: "2026-09-30T12:00:00.000Z", status: "received" }, replayed: false,
+          }));
+        };
+        if (first) setTimeout(respond, 200); else respond();
+      });
+      return;
+    }
+    if (requestHost === FEEDBACK_HOST) {
+      response.writeHead(path === "/feedback-empty" ? 200 : 404, { "content-type": "text/html; charset=utf-8" });
+      response.end("<!doctype html><html><head><title>Workspace</title></head><body><main><h1>Workspace home</h1></main></body></html>");
+      return;
+    }
     if (requestHost === "native-attachment-acquisition.ratatosk.test" && /^\/opaque\/attachment-[1-4]$/.test(path)) {
       const key = `${requestHost}${path}`;
       documentRequests.set(key, (documentRequests.get(key) ?? 0) + 1);
@@ -254,6 +281,9 @@ try {
       ignoreHTTPSErrors: true,
       args: [
         "--ignore-certificate-errors",
+        // The pinned ARM64 CI image does not need GPU; its headless GPU process
+        // intermittently crashed before any case started.
+        "--disable-gpu",
         `--disable-extensions-except=${extensionPath}`,
         `--load-extension=${extensionPath}`,
         `--host-resolver-rules=${FIXTURE_HOSTS.map((host) => `MAP ${host} 127.0.0.1:${address.port}`).join(", ")}`,
@@ -337,7 +367,7 @@ try {
       { name: "blocked", route: "/blocked", expected: "preview" },
     ];
     const selectedCases = requestedCase ? cases.filter((item) => item.name === requestedCase) : cases;
-    assert(selectedCases.length > 0, `unknown discovery case ${requestedCase}`);
+    assert(selectedCases.length > 0 || requestedCase === "feedback", `unknown discovery case ${requestedCase}`);
     for (const testCase of selectedCases) {
       const signatures = new Set<string>();
       for (let repeat = 1; repeat <= iterationOptions.repeat; repeat += 1) {
@@ -382,6 +412,10 @@ try {
         console.info(`[chrome-discovery] ${name} repeat=${repeat} candidate_found count=${status.candidateCount} elapsed=${elapsedMs}ms`);
       }
       assert.equal(signatures.size, 1, `${testCase.name}: nondeterministic terminal signatures ${[...signatures].join(", ")}`);
+    }
+    if (!requestedCase || requestedCase === "feedback") {
+      await runFeedbackBrowserCase(context, extensionId, extensionPage, page, feedbackRequests);
+      console.info("[chrome-discovery] feedback reviewed=1 rejected_note=1 duplicate_click=1 replay_same_id=1 received=1");
     }
       await writeFile(join(temporary, "iteration-result.json"), `${JSON.stringify({ results: iterationResults }, null, 2)}\n`);
     }
@@ -457,6 +491,66 @@ async function runDiscovery(extensionPage: Page, origin: string): Promise<Discov
     }
     return discovery;
   }, origin) as Promise<DiscoveryStatus>;
+}
+
+async function runFeedbackBrowserCase(
+  browser: BrowserContext,
+  extensionId: string,
+  extensionPage: Page,
+  supplierPage: Page,
+  requests: Array<{ id: string; body: string }>,
+): Promise<void> {
+  const origin = `https://${FEEDBACK_HOST}`;
+  await supplierPage.goto(`${origin}/feedback-empty`, { waitUntil: "domcontentloaded" });
+  await supplierPage.bringToFront();
+  const discovery = await runDiscovery(extensionPage, origin);
+  assert.equal(discovery.stage, "failed", "feedback fixture did not yield a reportable diagnostic");
+  await extensionPage.reload();
+  await extensionPage.bringToFront();
+  await extensionPage.locator('[data-action="report-discovery"]').click();
+  const dialog = extensionPage.locator("#feedback-dialog");
+  await dialog.waitFor({ state: "visible" });
+  assert((await dialog.innerText()).includes(FEEDBACK_HOST), "feedback review omits the disclosed site");
+  assert((await dialog.innerText()).includes("Igdrasil support"), "feedback review omits its destination");
+  await extensionPage.locator("#feedback-note").fill("https://secret.invalid/invoice/12345678");
+  await extensionPage.locator("#feedback-send").click();
+  await extensionPage.locator("#feedback-result").getByText(/Remove links/).waitFor();
+  assert.equal(requests.length, 0, "unsafe note reached the Svala fixture");
+  await extensionPage.locator("#feedback-note").fill("The September invoices are missing.");
+  await extensionPage.locator("#feedback-send").click();
+  await extensionPage.evaluate(() => {
+    const page = globalThis as typeof globalThis & { document: { getElementById(id: string): { click(): void } | null } };
+    page.document.getElementById("feedback-send")?.click();
+  });
+  await extensionPage.locator("#feedback-result").getByText(/saved here for retry/).waitFor();
+  assert.equal(requests.length, 1, "first Send did not reach Svala exactly once");
+  const cdp = await browser.newCDPSession(extensionPage);
+  await cdp.send("ServiceWorker.enable");
+  await cdp.send("ServiceWorker.stopAllWorkers");
+  await cdp.detach();
+  await extensionPage.close().catch(() => undefined);
+  const reopened = await browser.newPage();
+  try {
+    await reopened.goto(`chrome-extension://${extensionId}/collector/src/ui/popup/popup.html`);
+    await reopened.evaluate(() => (globalThis as typeof globalThis & { chrome: { runtime: { sendMessage(input: unknown): Promise<unknown> } } }).chrome.runtime.sendMessage({ type: "getFeedbackStatus" }));
+    await reopened.locator('[data-action="dismiss-discovery"]').click();
+    await reopened.getByRole("button", { name: "Back to invoices" }).click();
+    await reopened.getByRole("button", { name: "Settings" }).click();
+    await reopened.locator('[data-action="retry-feedback"]').click();
+    await reopened.getByText(/Report received:/).waitFor();
+    assert.equal(requests.length, 2, "manual retry did not reach Svala exactly once");
+    assert.equal(requests[0].id, requests[1].id, "retry changed the idempotency key");
+    assert.equal(requests[0].body, requests[1].body, "retry changed the reviewed report body");
+    assert.equal(JSON.parse(requests[0].body).diagnostic.site, FEEDBACK_HOST);
+    assert(!requests[0].body.includes("secret.invalid"), "unsafe note reached the submitted report");
+    if (process.env.RATATOSK_FEEDBACK_CAPTURE === "1") {
+      const capture = join(tmpdir(), "ratatosk-feedback-contract-capture.json");
+      await writeFile(capture, `${requests[0].body}\n`, { mode: 0o600 });
+      console.info(`[chrome-discovery] feedback contract_capture=${capture}`);
+    }
+  } finally {
+    await reopened.close();
+  }
 }
 
 type RunSummary = {
@@ -569,6 +663,22 @@ async function runAcquisition(
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
   }
   if (cadenceActionCount === undefined) throw new Error("scheduled acquisition did not complete");
+  const lastRun = (await sendExtensionMessage(extensionPage, {
+    type: "getVendorDiagnostic", vendorId: preview.vendorId,
+  })).diagnostic as { schema: string; lastRunEvidence?: {
+    trigger: string; status: string; counts: { accepted: number; documentActions: number };
+    runtime?: { documentAcquisition: number };
+    failure?: unknown; terminalFailure?: unknown;
+  }; runtime?: { documentAcquisition: number } };
+  assert.equal(lastRun.schema, "ratatosk.collector-diagnostic.v2");
+  assert.equal(lastRun.lastRunEvidence?.trigger, "scheduled");
+  assert.equal(lastRun.lastRunEvidence?.status, "ok");
+  assert.equal(lastRun.lastRunEvidence?.counts.accepted, 0);
+  assert.equal(lastRun.lastRunEvidence?.counts.documentActions, 0);
+  assert.equal(lastRun.lastRunEvidence?.failure, undefined);
+  assert.equal(lastRun.lastRunEvidence?.terminalFailure, undefined);
+  assert.equal(typeof lastRun.runtime?.documentAcquisition, "number");
+  assert.equal(lastRun.lastRunEvidence?.runtime?.documentAcquisition, lastRun.runtime?.documentAcquisition);
   const cadenceSnapshot = (await sendExtensionMessage(extensionPage, {
     type: "getLiveAcceptanceSnapshot", hostname, sessionNonce: acceptanceNonce,
   })).acceptanceSnapshot as LiveAcceptanceSnapshot;

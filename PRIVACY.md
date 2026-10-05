@@ -1,6 +1,6 @@
 # Privacy Policy — Ratatosk Invoice Collector
 
-**Effective date:** 2026-08-23
+**Effective date:** 2026-09-30
 
 **Provided by:** Igdrasil AB
 
@@ -49,6 +49,16 @@ Collector handles only the data required for that purpose:
    extraction profile. An entry-page path may include one bounded non-secret
    supplier account identifier when it is required to return to an explicit
    billing route. It stores no page body, API response, cookie, or header.
+5. **Reports you choose to send.** After a final review and Send click, Collector
+   sends one bounded diagnostic and an optional note to Svala. The diagnostic
+   names a supplier hostname for discovery or a stable vendor ID for collection,
+   plus build, outcome, count, route-template, and failure-stage information.
+   Svala stores the accepted report and an opaque receipt in PostgreSQL, then
+   forwards a plain-text summary to a dedicated Ratatosk Chatwoot inbox for
+   support triage. The note is your free text; do not include invoice, account,
+   or credential details. A report awaiting retry stays in extension-local
+   storage until it is received or you discard it. The latest receipt ID is
+   also stored locally. No installation-wide identifier is attached.
 
 During Find Invoices, Collector temporarily inspects the active page and up to
 thirty-nine additional same-origin pages, to depth four. The sixty-second search
@@ -90,14 +100,19 @@ tenant, account, workspace, and document segments with `:id` or `:segment`.
 They never contain origins, raw paths, queries, fragments, page content, headers,
 response bodies, tokens, account or invoice identifiers, or financial values.
 
-A failed search, and a supplier whose last run did not succeed, offer a **Report
-Issue** action. It copies that same redacted diagnostic to the clipboard and
-opens a prefilled GitHub issue in a new tab; Settings links to the issue tracker
-for anything else. Nothing is transmitted by the extension: the tab is a draft on
-github.com, and nothing becomes public until the user reviews it and presses
-submit there. The report names the supplier's hostname, which the issue itself
-states, so filing one publicly records which supplier was being collected from.
-Collector still makes no automatic or background report of any kind.
+A failed search or collection offers a **Report Issue** action. A successful
+collection also lets the person report missing invoices or a wrong document.
+The review shows the supplier site or vendor ID, report type, build, summary,
+diagnostic fields, optional note, and Igdrasil support as the destination.
+Collector requests access only to `https://svala.igdrasil.se/*` during Send and
+posts to one fixed Svala endpoint after approval. It sends no screenshot,
+invoice PDF, page capture, raw URL, query, header, body, token, amount, company
+ID, or invoice ID. A successful Svala receipt means the report was stored; it
+does not claim that Chatwoot delivery has finished. The Chatwoot credential
+and code stay on Svala, not in the extension. A GitHub draft remains an explicit
+fallback: it copies the diagnostic and opens a prefilled issue for the person
+to review and submit. A public GitHub issue reveals the supplier hostname.
+Collector makes no automatic or background report of any kind.
 
 After the user confirms **Connect & Collect**, Collector verifies the ranked
 candidates by fetching and validating an actual PDF, falling through only when a

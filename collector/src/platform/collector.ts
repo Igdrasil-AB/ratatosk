@@ -1,5 +1,5 @@
 import { streamVendor } from "../../../src/core/engine";
-import type { FetchedDocument, RetrievalCompleteness, RetrievalProof, VendorRecipe } from "../../../src/core/types";
+import type { FetchedDocument, ReplayTrace, RetrievalCompleteness, RetrievalProof, VendorRecipe } from "../../../src/core/types";
 import {
   AuthExpired,
   AuthFailure,
@@ -24,12 +24,15 @@ import {
   recordCollected,
   recordRun,
   sinkCompanyId,
+  type ConnectionStatus,
   type DestinationId,
-  type DestinationUnavailableReason,
+  type LastRunEvidence,
 } from "./storage";
 import { isTransientRetryCode, nextTransientRetryAt } from "./retry-policy";
 import { IngestUnauthorized } from "../../../src/ingest/http-sink";
 import { notifyReconnect, notifyDestinationReconnect } from "./notifications";
+import { ReplayPhaseFailed } from "./document-action-controller";
+import { COLLECTOR_RUNTIME_IDENTITY } from "./collector-runtime-identity";
 
 export interface VendorRunSummary {
   vendorId: string;
@@ -45,6 +48,9 @@ export interface VendorRunSummary {
   pageOwnedDownloadCount?: number;
   retrieval?: RetrievalCompleteness;
   retrievalProof?: RetrievalProof;
+  retrievalSummary?: LastRunEvidence["retrievalSummary"];
+  scopeFailureCodes?: OperationalOutcomeCode[];
+  replay?: ReplayTrace;
   code?: OperationalOutcomeCode;
   failedScopes?: number;
   emptyScopes?: number;
@@ -53,6 +59,7 @@ export interface VendorRunSummary {
   requiredOrigins?: readonly string[];
   /** Closed stage/cause evidence for diagnostics; never contains supplier data. */
   failure?: CollectionFailureEvidence;
+  terminalFailure?: CollectionFailureEvidence;
 }
 
 /**
@@ -87,7 +94,7 @@ export function runVendorById(vendorId: string, trigger: SyncTrigger = "manual")
 
   const task = resolveCollectorSource(vendorId)
     .then(async (source) => {
-      if (!source?.recipe) return { vendorId, status: "error", count: 0, error: "unknown vendor" } as VendorRunSummary;
+      if (!source?.recipe) return recordBlockedRun(vendorId, trigger, "source_unavailable");
       // The destination is the SUPPLIER's, resolved at the moment the run
       // starts. There is no global current destination to read, which is what
       // makes "one supplier, one company" true of every path rather than of
@@ -120,6 +127,7 @@ async function executeRecipeRun(
   trigger: SyncTrigger = "connect",
 ): Promise<VendorRunSummary> {
   const vendorId = recipe.id;
+  const startedAt = Date.now();
 
   const previous = (await getConnections())[vendorId];
   if (trigger === "scheduled" && previous?.lastCode === "auth_expired") {
@@ -132,13 +140,25 @@ async function executeRecipeRun(
 
   // A supplier left unbound by a company disconnect is paused, not redirected.
   // Local Downloads is never an automatic fallback.
-  if (!destinationId) return unboundSummary(vendorId);
+  if (!destinationId) return recordBlockedRun(vendorId, trigger, "destination_unbound", startedAt);
   const destination = await getDestination(destinationId);
-  if (!destination) return unboundSummary(vendorId);
+  if (!destination) return recordBlockedRun(vendorId, trigger, "destination_unbound", startedAt);
   if (destination.kind === "unavailable") {
-    return destinationNeedsReconnectSummary(vendorId, destination.reason);
+    return recordBlockedRun(vendorId, trigger,
+      destination.reason === "connection_expired" ? "destination_connection_expired" : "destination_unavailable", startedAt);
   }
 
+  let acceptedCount = 0;
+  let verifiedCount = 0;
+  let retrieval: RetrievalCompleteness | undefined;
+  let retrievalProof: RetrievalProof | undefined;
+  let retrievalSummary: LastRunEvidence["retrievalSummary"];
+  let scopeFailureCodes: OperationalOutcomeCode[] | undefined;
+  let replay: ReplayTrace | undefined;
+  let failure: CollectionFailureEvidence | undefined;
+  let latestFailure: CollectionFailureEvidence | undefined;
+  let latestError: unknown;
+  let terminalFailure: CollectionFailureEvidence | undefined;
   const { ctx, dispose } = buildRunContext(sinkCompanyId(destination), recipe);
   const acquisitionMetrics = { documentActions: 0, pageOwnedDownloads: 0 };
   const strategies = buildStrategies(recipe, {
@@ -154,19 +174,39 @@ async function executeRecipeRun(
     pageOwnedDownloadCount: acquisitionMetrics.pageOwnedDownloads,
   });
   const recordRunOutcome = (
-    patch: Parameters<typeof recordRun>[1],
-  ): Promise<void> => recordRun(vendorId, {
-    ...patch,
-    lastDocumentActionCount: acquisitionMetrics.documentActions,
-    lastPageOwnedDownloadCount: acquisitionMetrics.pageOwnedDownloads,
-  });
+    patch: Parameters<typeof recordRun>[1] & { lastStatus: ConnectionStatus },
+  ): Promise<void> => {
+    const counts: LastRunEvidence["counts"] = {
+      accepted: boundedCount(acceptedCount),
+      verified: boundedCount(verifiedCount),
+      documentActions: boundedCount(acquisitionMetrics.documentActions),
+      pageOwnedDownloads: boundedCount(acquisitionMetrics.pageOwnedDownloads),
+      failedScopes: boundedCount(patch.lastFailedScopes ?? 0),
+      emptyScopes: boundedCount(patch.lastEmptyScopes ?? 0),
+    };
+    return recordRun(vendorId, {
+      ...patch,
+      lastCount: counts.accepted,
+      lastDocumentActionCount: counts.documentActions,
+      lastPageOwnedDownloadCount: counts.pageOwnedDownloads,
+      lastFailedScopes: counts.failedScopes,
+      lastEmptyScopes: counts.emptyScopes,
+      lastRunEvidence: {
+        runtime: runRuntimeIdentity(),
+        trigger, status: patch.lastStatus, ...(patch.lastCode ? { code: patch.lastCode } : {}),
+        elapsedMs: boundedElapsed(startedAt), counts,
+        ...(retrieval ? { retrieval } : {}),
+        ...(retrievalProof ? { retrievalProof } : {}),
+        ...(retrievalSummary ? { retrievalSummary } : {}),
+        ...(scopeFailureCodes ? { scopeFailureCodes } : {}),
+        ...(replay ? { replay } : {}),
+        ...(failure ? { failure } : {}),
+        ...(terminalFailure ? { terminalFailure } : {}),
+      },
+    });
+  };
 
   console.info(`[collector] running "${vendorId}"…`);
-  let acceptedCount = 0;
-  let verifiedCount = 0;
-  let retrieval: RetrievalCompleteness | undefined;
-  let retrievalProof: RetrievalProof | undefined;
-  let failure: CollectionFailureEvidence | undefined;
 
   try {
     let firstDeliveryCommitted = false;
@@ -234,13 +274,19 @@ async function executeRecipeRun(
       }
     }, {
       requireCompleteRetrieval,
-      onFailure: (evidence) => {
+      onFailure: (evidence, error) => {
         failure ??= evidence;
+        latestFailure = evidence;
+        latestError = error;
+        if (error instanceof ReplayPhaseFailed && (!replay || !replay.firstFailure)) replay = error.replay;
       },
     });
     const { scopes } = result;
     retrieval = result.retrieval;
     retrievalProof = result.retrievalProof;
+    retrievalSummary = summarizeRetrievalProofs(result.retrievalProofs ?? (result.retrievalProof ? [result.retrievalProof] : []));
+    scopeFailureCodes = result.scopes.failureCodes ?? [];
+    replay ??= result.replay;
     if (retrievalProof && retrievalProof.resolvedItems < minimumResolvedDocuments) {
       const error = new RetrievalIncomplete(
         `replay resolved ${retrievalProof.resolvedItems} of ${minimumResolvedDocuments} previously proven document controls`,
@@ -271,6 +317,10 @@ async function executeRecipeRun(
       ...runMetrics(),
       retrieval,
       ...(retrievalProof ? { retrievalProof } : {}),
+      ...(retrievalSummary ? { retrievalSummary } : {}),
+      ...(scopeFailureCodes ? { scopeFailureCodes } : {}),
+      ...(replay ? { replay } : {}),
+      ...(failure ? { failure } : {}),
       ...(code ? { code } : {}),
       failedScopes: scopes.failed,
       emptyScopes: scopes.empty,
@@ -281,6 +331,9 @@ async function executeRecipeRun(
     // generic delivery error nobody can act on.
     if (err instanceof DestinationDeliveryError && err.cause instanceof IngestUnauthorized
       && destination.kind === "igdrasil") {
+      terminalFailure = { stage: "delivery", cause: "destination_rejected" };
+      failure ??= terminalFailure;
+      terminalFailure = distinctTerminalFailure(failure, terminalFailure);
       await markDestinationUnavailable(destinationId, "connection_expired").catch(() => undefined);
       notifyDestinationReconnect(destination.companyName);
       const code = "destination_connection_expired" as const;
@@ -298,31 +351,37 @@ async function executeRecipeRun(
         count: acceptedCount,
         verifiedCount,
         ...runMetrics(),
+        failure,
+        terminalFailure,
         code,
         error: message,
       };
     }
     if (err instanceof DestinationDeliveryError) {
-      failure = {
+      terminalFailure = {
         ...collectionFailureEvidence(err.cause, "delivery", failure?.retrieval),
         stage: "delivery",
         cause: "destination_rejected",
       };
     } else if (err instanceof DiscoveryAdmissionError) {
-      failure = {
+      terminalFailure = {
         ...collectionFailureEvidence(err.cause, "admission", failure?.retrieval),
         stage: "admission",
         cause: "state_persistence",
       };
     } else {
-      failure ??= collectionFailureEvidence(err, fallbackFailureStage(err));
+      terminalFailure = latestError === err && latestFailure
+        ? latestFailure : collectionFailureEvidence(err, fallbackFailureStage(err));
     }
-    retrievalProof ??= failure.retrieval;
+    failure ??= terminalFailure;
+    terminalFailure = distinctTerminalFailure(failure, terminalFailure);
+    retrievalProof ??= failure?.retrieval;
     if (err instanceof RetrievalIncomplete) retrievalProof = err.proof;
     if (err instanceof DiscoveryAdmissionError) {
       const code = "connection_persistence_failed" as const;
       const message = operationalOutcomeLabel(code);
       console.error(`[collector] "${vendorId}": ${message}`);
+      await recordRunOutcome({ lastStatus: "error", lastCode: code, lastError: message, nextEligibleRunAt: undefined });
       return {
         vendorId,
         status: "error",
@@ -332,6 +391,7 @@ async function executeRecipeRun(
         retrieval,
         ...(retrievalProof ? { retrievalProof } : {}),
         ...(failure ? { failure } : {}),
+        ...(terminalFailure ? { terminalFailure } : {}),
         code,
         error: message,
       };
@@ -357,6 +417,7 @@ async function executeRecipeRun(
           code: "auth_expired",
           error: message,
           ...(failure ? { failure } : {}),
+          ...(terminalFailure ? { terminalFailure } : {}),
         };
       }
       await recordRunOutcome({ lastStatus: "auth_expired", lastCode: "auth_expired", nextEligibleRunAt: undefined });
@@ -367,6 +428,7 @@ async function executeRecipeRun(
         code: "auth_expired",
         ...runMetrics(),
         ...(failure ? { failure } : {}),
+        ...(terminalFailure ? { terminalFailure } : {}),
       };
     }
     if (err instanceof AuthFailure) {
@@ -384,6 +446,7 @@ async function executeRecipeRun(
           error: message,
           ...runMetrics(),
           ...(failure ? { failure } : {}),
+          ...(terminalFailure ? { terminalFailure } : {}),
         };
       }
       await recordRunOutcome({ lastStatus: "error", lastCode: code, lastError: message, nextEligibleRunAt: undefined });
@@ -395,6 +458,7 @@ async function executeRecipeRun(
         error: message,
         ...runMetrics(),
         ...(failure ? { failure } : {}),
+        ...(terminalFailure ? { terminalFailure } : {}),
       };
     }
     if (err instanceof RateLimited) {
@@ -417,6 +481,7 @@ async function executeRecipeRun(
             nextEligibleRunAt: eligibleAt,
             ...runMetrics(),
             ...(failure ? { failure } : {}),
+            ...(terminalFailure ? { terminalFailure } : {}),
           }
         : {
             vendorId,
@@ -426,6 +491,7 @@ async function executeRecipeRun(
             nextEligibleRunAt: eligibleAt,
             ...runMetrics(),
             ...(failure ? { failure } : {}),
+            ...(terminalFailure ? { terminalFailure } : {}),
           };
     }
     if (err instanceof DocumentPermissionRequired) {
@@ -452,6 +518,7 @@ async function executeRecipeRun(
         requiredOrigins: err.requiredOrigins,
         ...runMetrics(),
         ...(failure ? { failure } : {}),
+        ...(terminalFailure ? { terminalFailure } : {}),
       };
     }
     const code: OperationalOutcomeCode = err instanceof DestinationDeliveryError
@@ -469,6 +536,7 @@ async function executeRecipeRun(
         retrieval: retrieval ?? (code === "retrieval_incomplete" ? "partial" : undefined),
         ...(retrievalProof ? { retrievalProof } : {}),
         ...(failure ? { failure } : {}),
+        ...(terminalFailure ? { terminalFailure } : {}),
         code,
         error: message,
         nextEligibleRunAt,
@@ -483,6 +551,7 @@ async function executeRecipeRun(
       retrieval: code === "retrieval_incomplete" ? "partial" : retrieval,
       ...(retrievalProof ? { retrievalProof } : {}),
       ...(failure ? { failure } : {}),
+      ...(terminalFailure ? { terminalFailure } : {}),
       code,
       error: message,
       nextEligibleRunAt,
@@ -500,17 +569,71 @@ function fallbackFailureStage(error: unknown): CollectionFailureStage {
   return "invoice_list";
 }
 
-function unboundSummary(vendorId: string): VendorRunSummary {
-  const code = "destination_unbound" as const;
-  return { vendorId, status: "error", count: 0, code, error: operationalOutcomeLabel(code) };
+function boundedCount(value: number): number {
+  return Number.isInteger(value) && value > 0 ? Math.min(value, 100_000) : 0;
 }
 
-function destinationNeedsReconnectSummary(
+function boundedElapsed(startedAt: number): number {
+  return Math.min(3_600_000, Math.max(0, Date.now() - startedAt));
+}
+
+function runRuntimeIdentity(): NonNullable<LastRunEvidence["runtime"]> {
+  const runtime = COLLECTOR_RUNTIME_IDENTITY;
+  return { collectorVersion: runtime.collectorVersion,
+    discoveryEngine: runtime.discoveryEngine, documentAcquisition: runtime.documentAcquisition };
+}
+
+function distinctTerminalFailure(
+  first: CollectionFailureEvidence | undefined,
+  terminal: CollectionFailureEvidence | undefined,
+): CollectionFailureEvidence | undefined {
+  return first && terminal && JSON.stringify(first) === JSON.stringify(terminal) ? undefined : terminal;
+}
+
+function summarizeRetrievalProofs(proofs: readonly RetrievalProof[]): LastRunEvidence["retrievalSummary"] | undefined {
+  if (!proofs.length) return undefined;
+  const bounded = proofs.slice(0, 100);
+  return {
+    proofs: bounded.length,
+    complete: bounded.filter((proof) => proof.completeness === "complete").length,
+    partial: bounded.filter((proof) => proof.completeness === "partial").length,
+    pagesVisited: boundedCount(bounded.reduce((sum, proof) => sum + proof.pagesVisited, 0)),
+    observedItems: boundedCount(bounded.reduce((sum, proof) => sum + proof.observedItems, 0)),
+    resolvedItems: boundedCount(bounded.reduce((sum, proof) => sum + proof.resolvedItems, 0)),
+    unresolvedItems: boundedCount(bounded.reduce((sum, proof) => sum + proof.unresolvedItems, 0)),
+    terminations: [...new Set(bounded.map((proof) => proof.termination))],
+  };
+}
+
+type PreflightCode =
+  | "host_permission_required"
+  | "source_unavailable"
+  | "destination_unbound"
+  | "destination_unavailable"
+  | "destination_connection_expired";
+
+/** Record a refused attempt without inventing an invoice-list failure. */
+export async function recordBlockedRun(
   vendorId: string,
-  reason: DestinationUnavailableReason,
-): VendorRunSummary {
-  const code = reason === "connection_expired" ? "destination_connection_expired" as const : "destination_unavailable" as const;
-  return { vendorId, status: "error", count: 0, code, error: operationalOutcomeLabel(code) };
+  trigger: SyncTrigger,
+  code: PreflightCode,
+  startedAt = Date.now(),
+): Promise<VendorRunSummary> {
+  const failure: CollectionFailureEvidence = { stage: "preflight", cause: code };
+  const error = operationalOutcomeLabel(code);
+  await recordRun(vendorId, {
+    lastStatus: "error", lastCode: code, lastError: error,
+    lastCount: 0, lastDocumentActionCount: 0, lastPageOwnedDownloadCount: 0,
+    lastFailedScopes: 0, lastEmptyScopes: 0, nextEligibleRunAt: undefined,
+    lastRunEvidence: {
+      runtime: runRuntimeIdentity(),
+      trigger, status: "error", code, elapsedMs: boundedElapsed(startedAt),
+      counts: { accepted: 0, verified: 0, documentActions: 0,
+        pageOwnedDownloads: 0, failedScopes: 0, emptyScopes: 0 },
+      failure,
+    },
+  });
+  return { vendorId, status: "error", count: 0, code, error, failure };
 }
 
 /** Run every connected vendor in sequence (keeps concurrency gentle on the host). */
@@ -518,6 +641,7 @@ export async function runAllConnected(trigger: SyncTrigger = "manual", vendorIds
   const ids = vendorIds ?? Object.keys(await getConnections());
   const summaries: VendorRunSummary[] = [];
   for (const id of ids) {
+    const startedAt = Date.now();
     try {
       // Connections from retired bundled recipes can remain in older local
       // storage after an extension update. They are intentionally inert:
@@ -533,7 +657,18 @@ export async function runAllConnected(trigger: SyncTrigger = "manual", vendorIds
         lastStatus: "error",
         lastCode: code,
         lastError: message,
+        lastCount: 0,
+        lastDocumentActionCount: 0,
+        lastPageOwnedDownloadCount: 0,
+        lastFailedScopes: 0,
+        lastEmptyScopes: 0,
         nextEligibleRunAt: undefined,
+        lastRunEvidence: {
+          runtime: runRuntimeIdentity(),
+          trigger, status: "error", code, elapsedMs: boundedElapsed(startedAt),
+          counts: { accepted: 0, verified: 0, documentActions: 0,
+            pageOwnedDownloads: 0, failedScopes: 0, emptyScopes: 0 },
+        },
       }).catch(() => undefined);
       summaries.push({ vendorId: id, status: "error", count: 0, code, error: message });
     }

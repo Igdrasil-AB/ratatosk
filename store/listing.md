@@ -45,6 +45,9 @@ You stay in control:
 - The schedule can be set to every 6, 12, or 24 hours, or turned off.
 - Igdrasil uploads use HTTPS. Local-download mode does not upload documents to
   Igdrasil.
+- A support report is sent only after you review its diagnostic and select
+  Send. It goes to Igdrasil support through Svala and may include the supplier
+  hostname or vendor ID and your optional note. GitHub is a manual fallback.
 - There is no analytics, advertising, browsing-history tracking, or sale of data.
 
 Suppliers are added only through Ratatosk's user-initiated discovery flow.
@@ -81,7 +84,9 @@ company or local Downloads folder the user selects.
 state, recent collection status, a bounded invoice ledger, and bounded
 de-duplication keys. A company-scoped, upload-only Igdrasil token is stored in
 extension-local storage so user-enabled background sync survives a Chrome
-restart. It expires after 90 days and is revoked and removed on disconnect.
+restart. It expires after 90 days and is revoked and removed on disconnect. A
+reviewed support report waiting for retry and its latest receipt ID are also
+kept locally until the report is received or discarded.
 
 **alarms** — Wakes the Manifest V3 service worker at the interval the user selects
 to check connected vendors for new invoices. The user can disable the schedule.
@@ -127,10 +132,12 @@ tab, does not inspect response bodies or cookies, and is removed when the action
 ends. Ratatosk never cancels or deletes global downloads.
 
 **Optional host permissions** — Requested separately when the user connects a
-vendor or selects Find Invoices. The manifest declares an optional HTTPS
+vendor, selects Find Invoices, or sends a reviewed support report. The manifest declares an optional HTTPS
 envelope so previously unknown suppliers are eligible, but it grants no access at
 installation. Runtime prompts request the exact billing and document origins,
-which are shown before collection and revoked on disconnect. Ratatosk does not
+which are shown before collection and revoked on disconnect. A report's Send
+click requests only `https://svala.igdrasil.se/*` for its fixed intake endpoint.
+Ratatosk does not
 request `<all_urls>`.
 
 **Content script on `https://accounting.igdrasil.se/*`** — Enables the user to

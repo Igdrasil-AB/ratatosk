@@ -1,0 +1,27 @@
+{
+  "schema": "ratatosk.feedback.v1",
+  "reportId": "079d6a1e-b55a-4f91-9e76-28b929b987d2",
+  "kind": "collection_failure",
+  "diagnostic": {
+    "schema": "ratatosk.collector-diagnostic.v2",
+    "vendorId": "synthetic-vendor",
+    "collectorVersion": "0.8.79",
+    "lifecycleRevision": "test-v1",
+    "runtime": { "discoveryEngine": 36, "documentAcquisition": 12 },
+    "outcomeCode": "transport_failed",
+    "recordedAt": "2026-09-30T12:00:00.000Z",
+    "counts": { "collected": 0, "documentActions": 1, "failedScopes": 1, "emptyScopes": 0 },
+    "nextEligibleAt": null,
+    "lastRunEvidence": {
+      "runtime": { "collectorVersion": "0.8.79", "discoveryEngine": 36, "documentAcquisition": 12 },
+      "trigger": "manual",
+      "status": "error",
+      "code": "transport_failed",
+      "elapsedMs": 3200,
+      "counts": { "accepted": 0, "verified": 0, "documentActions": 1, "pageOwnedDownloads": 0, "failedScopes": 1, "emptyScopes": 0 },
+      "failure": { "stage": "invoice_list", "cause": "transport_failed" },
+      "terminalFailure": { "stage": "invoice_list", "cause": "transport_failed" }
+    }
+  },
+  "note": "Invoices were missing in September."
+}

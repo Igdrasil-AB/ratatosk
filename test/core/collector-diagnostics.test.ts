@@ -21,7 +21,7 @@ describe("redacted Collector diagnostics", () => {
       },
     });
     expect(diagnostic).toEqual({
-      schema: "ratatosk.collector-diagnostic.v1",
+      schema: "ratatosk.collector-diagnostic.v2",
       vendorId: "anthropic",
       collectorVersion: "0.7.0",
       lifecycleRevision: "r1",
@@ -31,5 +31,20 @@ describe("redacted Collector diagnostics", () => {
       nextEligibleAt: null,
     });
     expect(JSON.stringify(diagnostic)).not.toMatch(/secret|token|invoice-123|company-456|bearer|https?:/i);
+  });
+
+  it("rejects malformed nested evidence rather than copying stored text", () => {
+    const diagnostic = buildCollectorDiagnostic({
+      vendorId: "supplier", collectorVersion: "0.8.79", lifecycleRevision: "local-discovery-v1",
+      connection: {
+        vendorId: "supplier", connectedAt: 1, lastCode: "unknown",
+        lastRunEvidence: { trigger: "manual", status: "error", elapsedMs: 100,
+          counts: { accepted: 0, verified: 0, documentActions: 0, pageOwnedDownloads: 0, failedScopes: 0, emptyScopes: 0 },
+          replay: { planKind: "semantic_dom", phases: [{ phase: "document_enumeration", result: "private invoice", durationMs: 1 }] },
+        } as never,
+      },
+    });
+    expect(diagnostic.lastRunEvidence).toBeUndefined();
+    expect(JSON.stringify(diagnostic)).not.toContain("private invoice");
   });
 });
