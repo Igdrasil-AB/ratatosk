@@ -43,15 +43,15 @@
     "zod": "^4.5.4"
   },
   "devDependencies": {
-    "@crxjs/vite-plugin": "^2.0.0-beta.28",
-    "@types/chrome": "^0.2.6",
-    "@types/node": "^26.2.0",
+    "@crxjs/vite-plugin": "^3.0.0",
+    "@types/chrome": "^0.3.4",
+    "@types/node": "^26.6.4",
     "fflate": "^0.8.2",
-    "playwright-core": "^1.62.1",
-    "simple-icons": "^16.28.0",
-    "tsx": "^4.23.12",
-    "typescript": "^5.9.3",
-    "vite": "^8.2.2",
-    "vitest": "^4.1.11"
+    "playwright-core": "^1.63.0",
+    "simple-icons": "^16.33.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.2",
+    "vitest": "^5.0.3"
   }
 }
