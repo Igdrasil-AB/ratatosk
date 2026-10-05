@@ -1139,7 +1139,8 @@ describe("browser DOM boundary", () => {
 
   it("requires generic download controls to sit in invoice-shaped context", () => {
     expect(actionControllerSource).toContain("invoiceContext");
-    expect(actionControllerSource).toContain("strongDocumentLabel");
+    expect(actionControllerSource).toContain("invoiceDocumentContext");
+    expect(actionControllerSource).toContain("unrelatedDocument");
     expect(policySource).toContain("(?:delete|remove|cancel|pay|purchase|checkout|upgrade|downgrade|authorize|logout)");
   });
 
@@ -1326,6 +1327,53 @@ describe("browser DOM boundary", () => {
       });
     } finally {
       page.restore();
+    }
+  });
+
+  it("keeps a malformed document link in the unresolved retrieval count", async () => {
+    const page = stubDivDocumentPage("invoice", "Invoice Number", "https://[");
+    try {
+      await expect(runDomStepsInPage([{
+        action: "extractAll", selector: "[data-document-link]", attr: "data-url", as: "documents",
+      }], ["https://vendor.example"], DISCOVERY_DOM_POLICY, null)).resolves.toMatchObject({
+        collected: { documents: [] },
+        retrieval: { observedItems: 1, resolvedItems: 0, unresolvedItems: 1 },
+      });
+    } finally {
+      page.restore();
+    }
+  });
+
+  it.each([
+    ["canonical hosted invoice", "https://invoice.stripe.com/i/acct_fixture/live_fixture", "View", false,
+      "https://pay.stripe.com/invoice/acct_fixture/live_fixture/pdf"],
+    ["invoice context mounted by waitFor", "/documents/resource.pdf", "Download PDF", true,
+      "https://vendor.example/documents/resource.pdf"],
+  ])("retains a %s during discovered-link extraction", async (_name, href, label, mountOnWait, expected) => {
+    let mounted = !mountOnWait;
+    const link = {
+      textContent: label,
+      getAttribute: (name: string) => name === "href" ? href : null,
+      closest: () => null,
+    };
+    vi.stubGlobal("document", {
+      title: "Billing",
+      getElementById: () => null,
+      querySelector: () => { mounted = true; return link; },
+      querySelectorAll: (selector: string) => selector === "a[href]" ? [link]
+        : selector === "h1,h2,h3,caption" && mountOnWait && mounted ? [{ textContent: "Invoices" }] : [],
+    });
+    vi.stubGlobal("location", { href: "https://vendor.example/billing" });
+    try {
+      await expect(runDomStepsInPage([
+        { action: "waitFor", selector: "a[href]", timeoutMs: 100 },
+        { action: "extractAll", selector: "a[href]", attr: "href", as: "documents" },
+      ], ["https://vendor.example"], DISCOVERY_DOM_POLICY, null, true)).resolves.toMatchObject({
+        collected: { documents: [expected] },
+        retrieval: { observedItems: 1, resolvedItems: 1, unresolvedItems: 0 },
+      });
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 

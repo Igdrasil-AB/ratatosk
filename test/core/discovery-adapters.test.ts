@@ -205,6 +205,24 @@ describe("packaged supplier discovery adapters", () => {
     expect(candidates).toEqual([]);
   });
 
+  it("rejects billing guides while retaining an invoice PDF on the same page", () => {
+    const guide = '<html><body><h1>Billing help</h1><a href="/documents/billing-guide.pdf">Download guide PDF</a></body></html>';
+    expect(compileCandidates({ ...base, html: guide, resources: [] }, base.url, "Example Vendor")).toEqual([]);
+
+    const mixed = '<html><body><h1>Billing history</h1><a href="/documents/billing-guide.pdf">Guide</a><a href="/documents/invoice-july.pdf">Download invoice</a></body></html>';
+    const candidates = compileCandidates({ ...base, html: mixed, resources: [] }, base.url, "Example Vendor");
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].adapterId).toBe("dom-links");
+    expect(candidates[0].previewCount).toBe(1);
+  });
+
+  it.each(["Download guide PDF", "Download guide&nbsp;PDF"])("excludes an ARIA-labelled guide (%s) from the proven document count", (label) => {
+    const html = `<html><body><h1>Invoices</h1><span id="label42">${label}</span><a href="/documents/resource.pdf" aria-labelledby="label42">Download PDF</a><a href="/documents/invoice-july.pdf">Download invoice</a></body></html>`;
+    const candidates = compileCandidates({ ...base, html, resources: [] }, base.url, "Example Vendor");
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].previewCount).toBe(1);
+  });
+
   it("compiles a closed semantic-action fallback for download controls without hrefs", () => {
     const candidates = compileCandidates({
       ...base,

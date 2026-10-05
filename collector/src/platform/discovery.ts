@@ -1345,7 +1345,8 @@ export async function collectPageEvidenceInPage(
   const directDocumentPath = new RegExp(routePolicy.directDocument, "i");
   const ignored = /\.(?:css|js|mjs|png|jpe?g|gif|svg|webp|woff2?|ttf|ico)(?:\?|$)/i;
   const explicitDownloadAction = new RegExp(semanticPolicy.explicitActionPattern, "i");
-  const strongDocumentLabel = new RegExp(semanticPolicy.strongDocumentPattern, "i");
+  const invoiceDocumentContext = new RegExp(semanticPolicy.invoiceDocumentContextPattern, "i");
+  const unrelatedDocument = new RegExp(semanticPolicy.unrelatedDocumentPattern, "i");
   const documentIcon = new RegExp(semanticPolicy.documentIconPattern, "i");
   const invoiceContext = new RegExp(semanticPolicy.invoiceContextPattern, "i");
   const invoiceRow = new RegExp(semanticPolicy.invoiceRowPattern, "i");
@@ -1457,12 +1458,13 @@ export async function collectPageEvidenceInPage(
       element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true"
     ) return false;
     const label = semanticMaterial(element);
-    if (!label || unsafeLabel.test(label)) return false;
+    const visibleLabel = `${accessibleLabelSources(element, 320).join(" ")} ${element.getAttribute("href") ?? ""}`;
+    if (!label || unsafeLabel.test(label) || unrelatedDocument.test(visibleLabel)) return false;
     const row = rowContextOf(element);
     const table = tableContextOf(element);
     const page = pageContext();
     const explicit = explicitDownloadAction.test(label) &&
-      (strongDocumentLabel.test(label) || invoiceContext.test(`${row} ${table} ${page}`));
+      invoiceDocumentContext.test(`${label} ${row} ${table} ${page}`);
     const contextualIcon = documentIcon.test(label) &&
       actionColumn.test(columnContextOf(element)) &&
       (invoiceRow.test(row) || invoiceContext.test(table)) &&
@@ -2734,8 +2736,21 @@ function recipeFromDraft(
 
 function findLikelyDocumentLinks(html: string, baseUrl: string, pageTitle?: string): string[] {
   const links = new Set<string>();
-  const renderedHtml = withoutRawTextElements(html);
-  const invoiceContext = /invoice|receipt|billing|statement|transaction|faktura|kvitto|rechnung|beleg|facture|reçu|factura|recibo|fattura|ricevuta/i;
+  // outerHTML serializes non-breaking spaces; match the runtime's text spacing.
+  const renderedHtml = withoutRawTextElements(html).replace(/&nbsp;/gi, " ");
+  const invoiceContext = new RegExp(DISCOVERY_DOM_POLICY.invoiceDocumentContextPattern, "i");
+  const unrelatedDocument = new RegExp(DISCOVERY_DOM_POLICY.unrelatedDocumentPattern, "i");
+  const labelTextById = new Map<string, string>();
+  for (const element of renderedHtml.matchAll(/<([a-z][a-z0-9:-]*)\b([^>]*)>/gi)) {
+    const id = /(?:^|\s)id="([^"]{1,120})"/i.exec(element[2])?.[1];
+    if (!id || labelTextById.has(id)) continue;
+    const start = (element.index ?? 0) + element[0].length;
+    const content = renderedHtml.slice(start, start + 2_000);
+    const end = content.toLowerCase().indexOf(`</${element[1].toLowerCase()}`);
+    if (end < 0) continue;
+    labelTextById.set(id, content.slice(0, end).replace(/<[^>]*>/g, " ").slice(0, 500));
+    if (labelTextById.size >= 500) break;
+  }
   // The route is a search hypothesis. A guessed /invoices path must never make
   // a site-wide "Download" link look like invoice evidence, so page context
   // comes only from independently rendered title and heading text.
@@ -2753,6 +2768,13 @@ function findLikelyDocumentLinks(html: string, baseUrl: string, pageTitle?: stri
       const url = new URL(href, baseUrl);
       if (url.protocol !== "https:" || url.username || url.password) continue;
       const path = url.pathname.toLowerCase();
+      const textStart = (match.index ?? 0) + match[0].length;
+      const textEnd = renderedHtml.toLowerCase().indexOf("</a>", textStart);
+      const linkText = textEnd >= textStart && textEnd - textStart <= 500
+        ? renderedHtml.slice(textStart, textEnd).replace(/<[^>]*>/g, " ") : "";
+      const labelledBy = (/(?:^|\s)aria-labelledby="([^"]*)"/i.exec(attributes)?.[1] ?? "")
+        .split(/\s+/).filter(Boolean).slice(0, 4).map((id) => labelTextById.get(id) ?? "").join(" ");
+      if (unrelatedDocument.test(`${path.split("/").at(-1) ?? ""} ${linkText} ${labelledBy} ${attributes}`)) continue;
       // Only the standalone download attribute counts, matching a[download].
       // A data-download hook is not re-findable by the compiled recipe.
       const explicitDownload =
@@ -2764,7 +2786,7 @@ function findLikelyDocumentLinks(html: string, baseUrl: string, pageTitle?: stri
         /(?:^|\/)pdf(?:\/|$)/i.test(path) ||
         providerDocument;
       const knownInvoiceDocument = url.hostname === "invoice.stripe.com" && /^\/i\/[^/]+\/[^/]+$/.test(path);
-      const linkHasInvoiceContext = invoiceContext.test(`${path} ${attributes}`);
+      const linkHasInvoiceContext = invoiceContext.test(`${path} ${attributes} ${linkText} ${labelledBy}`);
       if (knownInvoiceDocument || ((explicitDownload || directDocument) && (pageHasInvoiceContext || linkHasInvoiceContext))) {
         links.add(url.toString());
       }

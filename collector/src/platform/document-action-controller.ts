@@ -855,7 +855,8 @@ export async function runSemanticDocumentOperationInPage(
   runDeadline: number | null,
 ): Promise<SemanticPageResult> {
   const explicitAction = new RegExp(semanticPolicy.explicitActionPattern, "i");
-  const strongDocumentLabel = new RegExp(semanticPolicy.strongDocumentPattern, "i");
+  const invoiceDocumentContext = new RegExp(semanticPolicy.invoiceDocumentContextPattern, "i");
+  const unrelatedDocument = new RegExp(semanticPolicy.unrelatedDocumentPattern, "i");
   const documentIcon = new RegExp(semanticPolicy.documentIconPattern, "i");
   const invoiceContext = new RegExp(semanticPolicy.invoiceContextPattern, "i");
   const invoiceRow = new RegExp(semanticPolicy.invoiceRowPattern, "i");
@@ -981,12 +982,13 @@ export async function runSemanticDocumentOperationInPage(
     semanticPolicy.controlSelector,
   )).filter((element) => {
     const label = labelOf(element);
-    if (!label || unsafe.test(label) || element.closest("form") || !visible(element)) return false;
+    const visibleLabel = `${accessibleLabelSources(element, 320).join(" ")} ${element.getAttribute("href") ?? ""}`;
+    if (!label || unsafe.test(label) || unrelatedDocument.test(visibleLabel) || element.closest("form") || !visible(element)) return false;
     const row = rowContextOf(element);
     const table = tableContextOf(element);
     const page = pageContext();
     const explicit = explicitAction.test(label) &&
-      (strongDocumentLabel.test(label) || invoiceContext.test(`${row} ${table} ${page}`));
+      invoiceDocumentContext.test(`${label} ${row} ${table} ${page}`);
     const contextualIcon = documentIcon.test(label) &&
       actionColumn.test(columnContextOf(element)) &&
       (invoiceRow.test(row) || invoiceContext.test(table)) &&

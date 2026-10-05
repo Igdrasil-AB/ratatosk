@@ -45,6 +45,22 @@ describe("semantic invoice evidence policy", () => {
     })).toBe("explicit_document_label");
   });
 
+  it.each(["guide", "user guides", "manuals", "policies", "instructions"])("does not treat %s PDFs as invoice actions", (kind) => {
+    const evidence = {
+      material: `Download ${kind} PDF`,
+      rowContext: "",
+      columnContext: "",
+      tableContext: "",
+      pageContext: "Invoices",
+      visible: true,
+      enabled: true,
+      formBacked: false,
+    };
+    expect(semanticControlEvidenceBasis(evidence)).toBeUndefined();
+    expect(semanticControlEvidenceBasis({ ...evidence, material: "Download PDF", pageContext: "Invoices July" }))
+      .toBe("invoice_context_action");
+  });
+
   it("allows only inert navigation labels used to reveal billing surfaces", () => {
     for (const label of [
       "Open profile menu", "Example User Pro, open profile menu", "Account menu",

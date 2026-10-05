@@ -24,6 +24,7 @@ const BLIND_MENU_ORDER = [1, 2, 3, 4].map((value, index, values) =>
 const ACQUISITION_CASES = [
   { name: "network", host: "network-acquisition.ratatosk.test", route: "/network-acquisition", adapterId: "network-json", expectedCount: 1, expectedActions: 0, fallback: false },
   { name: "direct-dom", host: "direct-acquisition.ratatosk.test", route: "/direct-acquisition", adapterId: "dom-links", expectedCount: 1, expectedActions: 0, fallback: false },
+  { name: "mixed-documents", host: "mixed-documents.ratatosk.test", route: "/mixed-documents", adapterId: "dom-links", expectedCount: 1, expectedActions: 0, fallback: false },
   { name: "stripe-common", host: "stripe-common-acquisition.ratatosk.test", route: "/stripe-home", adapterId: "dom-links", expectedCount: 1, expectedActions: 0, fallback: false },
   { name: "native-attachment", host: "native-attachment-acquisition.ratatosk.test", route: NATIVE_TENANT_ROUTE, adapterId: "dom-actions", expectedCount: 4, expectedActions: 4, fallback: false },
   { name: "semantic-dom", host: "semantic-acquisition.ratatosk.test", route: "/semantic-acquisition", adapterId: "dom-actions", expectedCount: 1, expectedActions: 1, fallback: false },
@@ -40,10 +41,14 @@ const DESTINATION_RETRY_CASE = {
   route: "/destination-acquisition",
   adapterId: "dom-links",
 } as const;
+const UNRELATED_DOCUMENT_CASE = {
+  name: "unrelated-document", host: "unrelated-document.ratatosk.test", route: "/unrelated-document",
+} as const;
 const ACQUISITION_PAGE_ROUTES = new Map<string, ReadonlySet<string>>([
   ...ACQUISITION_CASES.map((item) => [item.host, new Set([item.route])] as const),
   ...NEGATIVE_ACQUISITION_CASES.map((item) => [item.host, new Set([item.route])] as const),
   [DESTINATION_RETRY_CASE.host, new Set([DESTINATION_RETRY_CASE.route])],
+  [UNRELATED_DOCUMENT_CASE.host, new Set([UNRELATED_DOCUMENT_CASE.route])],
 ]);
 ACQUISITION_PAGE_ROUTES.set("blind-acquisition.ratatosk.test", new Set(["/blind-home", BLIND_ROUTE]));
 ACQUISITION_PAGE_ROUTES.set("stripe-common-acquisition.ratatosk.test", new Set(["/stripe-home", "/billing"]));
@@ -55,6 +60,7 @@ const FIXTURE_HOSTS = [
   ...ACQUISITION_CASES.map((item) => item.host),
   ...NEGATIVE_ACQUISITION_CASES.map((item) => item.host),
   DESTINATION_RETRY_CASE.host,
+  UNRELATED_DOCUMENT_CASE.host,
   "invoice.stripe.com",
   "pay.stripe.com",
   "files.stripe.com",
@@ -244,7 +250,7 @@ try {
     }
     if (requestHost === "stripe-common-acquisition.ratatosk.test" && path === "/billing") {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end('<!doctype html><html><head><title>Billing</title></head><body><h1>Invoices</h1><a href="https://invoice.stripe.com/i/acct_fixture/live_fixture">View invoice</a></body></html>');
+      response.end('<!doctype html><html><head><title>Billing</title></head><body><h1>Billing</h1><a href="https://invoice.stripe.com/i/acct_fixture/live_fixture">View</a></body></html>');
       return;
     }
     if (requestHost === "native-attachment-acquisition.ratatosk.test" && path === "/") {
@@ -313,6 +319,12 @@ try {
           assert((documentRequests.get(`${testCase.host}/documents/invalid.pdf`) ?? 0) >= 1, "fallback case did not exercise the failed candidate");
           assert((documentRequests.get(`${testCase.host}/documents/fallback.pdf`) ?? 0) >= 1, "fallback case did not reach the working candidate");
         }
+        if (testCase.name === "mixed-documents" || testCase.name === "semantic-dom") {
+          assert.equal(documentRequests.get(`${testCase.host}/documents/billing-guide.pdf`) ?? 0, 0,
+            `${testCase.name}: unrelated guide was fetched`);
+          assert.equal(documentRequests.get(`${testCase.host}/documents/resource.pdf`) ?? 0, 0,
+            `${testCase.name}: guide with an opaque URL was fetched`);
+        }
         console.info(`[chrome-acquisition] ${testCase.name} first=${testCase.expectedCount} immediate=0 cadence=0 actions=${testCase.expectedActions}/0/0 downloads=${testCase.expectedCount} page_owned=0`);
       }
       for (const testCase of NEGATIVE_ACQUISITION_CASES) {
@@ -323,6 +335,21 @@ try {
         const result = await runFailedAcquisition(extensionPage, origin, testCase.adapterId);
         assert.equal(result, testCase.result, `${testCase.name}: wrong closed verification result`);
         console.info(`[chrome-acquisition] ${testCase.name} rejected=${result} ledger=0 downloads=0 committed=0`);
+      }
+      if (!iterationOptions.caseName || iterationOptions.caseName === UNRELATED_DOCUMENT_CASE.name) {
+        const origin = `https://${UNRELATED_DOCUMENT_CASE.host}`;
+        await page.goto(`${origin}${UNRELATED_DOCUMENT_CASE.route}`, { waitUntil: "domcontentloaded" });
+        await page.bringToFront();
+        const ledgerBefore = ((await sendExtensionMessage(extensionPage, { type: "getLedger" })).ledger as unknown[]).length;
+        const downloadsBefore = await extensionDownloadCount(extensionPage);
+        const status = await runDiscovery(extensionPage, origin);
+        assert.equal(status.stage, "failed", "billing guide must not produce an invoice preview");
+        const ledgerAfter = ((await sendExtensionMessage(extensionPage, { type: "getLedger" })).ledger as unknown[]).length;
+        assert.equal(ledgerAfter, ledgerBefore, "billing guide created a ledger entry");
+        assert.equal(await extensionDownloadCount(extensionPage), downloadsBefore, "billing guide created a download");
+        assert.equal(documentRequests.get(`${UNRELATED_DOCUMENT_CASE.host}/documents/billing-guide.pdf`) ?? 0, 0,
+          "billing guide was fetched during discovery");
+        console.info("[chrome-acquisition] unrelated-document rejected=no_invoice_evidence ledger=0 downloads=0 committed=0");
       }
       if (!iterationOptions.caseName || iterationOptions.caseName === DESTINATION_RETRY_CASE.name) {
         const origin = `https://${DESTINATION_RETRY_CASE.host}`;
@@ -342,6 +369,7 @@ try {
         !iterationOptions.caseName ||
         ACQUISITION_CASES.some((item) => item.name === iterationOptions.caseName) ||
         NEGATIVE_ACQUISITION_CASES.some((item) => item.name === iterationOptions.caseName) ||
+        UNRELATED_DOCUMENT_CASE.name === iterationOptions.caseName ||
         DESTINATION_RETRY_CASE.name === iterationOptions.caseName,
         `unknown acquisition case ${iterationOptions.caseName}`,
       );
@@ -672,7 +700,7 @@ async function runAcquisition(
   }; runtime?: { documentAcquisition: number } };
   assert.equal(lastRun.schema, "ratatosk.collector-diagnostic.v2");
   assert.equal(lastRun.lastRunEvidence?.trigger, "scheduled");
-  assert.equal(lastRun.lastRunEvidence?.status, "ok");
+  assert.equal(lastRun.lastRunEvidence?.status, "ok", JSON.stringify(lastRun));
   assert.equal(lastRun.lastRunEvidence?.counts.accepted, 0);
   assert.equal(lastRun.lastRunEvidence?.counts.documentActions, 0);
   assert.equal(lastRun.lastRunEvidence?.failure, undefined);
@@ -860,6 +888,12 @@ function nativeTenantShell(): string {
 }
 
 function fixturePage(path: string): string {
+  if (path === "/unrelated-document") {
+    return '<!doctype html><html><head><title>Billing help</title></head><body><h1>Billing help</h1><a href="/documents/billing-guide.pdf">Download guide PDF</a></body></html>';
+  }
+  if (path === "/mixed-documents") {
+    return '<!doctype html><html><head><title>Billing history</title></head><body><h1>Invoices</h1><span id="label42">Download guide&nbsp;PDF</span><a href="/documents/resource.pdf" aria-labelledby="label42">Download PDF</a><a href="/documents/invoice-july.pdf">Download invoice</a></body></html>';
+  }
   if (path === "/network-acquisition") {
     return `<!doctype html><html><head><title>Invoices | Network Acquisition</title></head><body>
       <h1>Invoices</h1><script>fetch('/api/invoices').then(response => response.json())</script></body></html>`;
@@ -877,8 +911,10 @@ function fixturePage(path: string): string {
   if (path === "/semantic-acquisition") {
     return `<!doctype html><html><head><title>Invoices | Semantic Acquisition</title></head><body>
       <h1>Invoices</h1><table><thead><tr><th>Invoice Number</th><th>Actions</th></tr></thead>
-      <tbody><tr data-invoice-id="fixture-semantic-1"><td>FIXTURE-SEM-1</td><td><button id="download">Download invoice</button></td></tr></tbody></table>
-      <script>document.querySelector('#download').addEventListener('click', () => { fetch('/documents/semantic.pdf').catch(() => undefined); });</script>
+      <tbody><tr data-invoice-id="fixture-semantic-1"><td>FIXTURE-SEM-1</td><td><button id="download">Download invoice</button></td></tr>
+      <tr data-invoice-id="fixture-guide-1"><td>GUIDE-001</td><td><span id="guide-label">Download guide PDF</span><button id="guide-download" aria-labelledby="guide-label"><svg class="file-down"></svg></button></td></tr></tbody></table>
+      <script>document.querySelector('#download').addEventListener('click', () => { fetch('/documents/semantic.pdf').catch(() => undefined); });
+      document.querySelector('#guide-download').addEventListener('click', () => { fetch('/documents/billing-guide.pdf').catch(() => undefined); });</script>
       </body></html>`;
   }
   if (path === "/fallback-acquisition") {
