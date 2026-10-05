@@ -235,7 +235,7 @@ export class BrowserDomDriver implements DomDriver {
               target: { tabId },
               world: "ISOLATED",
               func: runDomStepsInPage,
-              args: [steps, [...this.allowedOrigins], DISCOVERY_DOM_POLICY, pageRunDeadline],
+              args: [steps, [...this.allowedOrigins], DISCOVERY_DOM_POLICY, pageRunDeadline, this.recipe.category === "discovered"],
             }), runDeadline);
             result = parseDomRunResult(injection?.result, this.allowedOrigins);
           }
@@ -704,6 +704,7 @@ export async function runDomStepsInPage(
   allowedOrigins: string[],
   semanticPolicy: typeof DISCOVERY_DOM_POLICY,
   runDeadline: number | null,
+  filterDiscoveredLinks = false,
 ): Promise<PageDomRunResult> {
   const collected: Record<string, string[]> = {};
   const documents: DomDocumentObservation[] = [];
@@ -711,6 +712,8 @@ export async function runDomStepsInPage(
   let resolvedItems = 0;
   let unresolvedItems = 0;
   const documentNumberHeader = new RegExp(semanticPolicy.documentNumberPattern, "i");
+  const invoiceDocumentContext = new RegExp(semanticPolicy.invoiceDocumentContextPattern, "i");
+  const unrelatedDocument = new RegExp(semanticPolicy.unrelatedDocumentPattern, "i");
   const result = (timedOut = false): PageDomRunResult => ({
     ok: true,
     collected,
@@ -742,13 +745,27 @@ export async function runDomStepsInPage(
       } else if (step.action === "extractAll") {
         const values = new Set<string>();
         const observed = new Set<string>();
+        const headings = filterDiscoveredLinks
+          ? Array.from(document.querySelectorAll("h1,h2,h3,caption")).slice(0, 12)
+            .map((element) => element.textContent ?? "").join(" ").slice(0, 2_000)
+          : "";
+        const pageHasInvoiceContext = filterDiscoveredLinks && invoiceDocumentContext.test(`${document.title} ${headings}`);
         for (const element of Array.from(document.querySelectorAll(step.selector)).slice(0, 500)) {
           const raw = element.getAttribute(step.attr);
           if (!raw) continue;
-          observed.add(raw);
           try {
             let absolute = new URL(raw, location.href);
             const hostedInvoice = absolute.pathname.match(/^\/i\/([^/]+)\/([^/]+)$/);
+            if (filterDiscoveredLinks && step.attr === "href") {
+              const labelledBy = (element.getAttribute("aria-labelledby") ?? "").split(/\s+/).filter(Boolean).slice(0, 4)
+                .map((id) => document.getElementById(id)?.textContent ?? "").join(" ");
+              const label = `${labelledBy} ${element.textContent ?? ""} ${element.getAttribute("aria-label") ?? ""} ${element.getAttribute("title") ?? ""}`.slice(0, 500);
+              const pathname = absolute.pathname;
+              if (unrelatedDocument.test(`${pathname.split("/").at(-1) ?? ""} ${label}`) ||
+                !(pageHasInvoiceContext || invoiceDocumentContext.test(`${pathname} ${label}`) ||
+                  (absolute.hostname === "invoice.stripe.com" && hostedInvoice))) continue;
+            }
+            observed.add(raw);
             if (absolute.hostname === "invoice.stripe.com" && hostedInvoice) {
               absolute = new URL(`https://pay.stripe.com/invoice/${hostedInvoice[1]}/${hostedInvoice[2]}/pdf${absolute.search}`);
             }
@@ -759,7 +776,8 @@ export async function runDomStepsInPage(
               if (evidence.length) documents.push({ url: documentUrl, evidence });
             }
           } catch {
-            // A malformed page value is simply not a document candidate.
+            // A matched but malformed link remains unresolved for completeness.
+            observed.add(raw);
           }
         }
         observedItems += observed.size;

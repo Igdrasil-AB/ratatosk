@@ -66,7 +66,9 @@ export const DISCOVERY_DOM_POLICY = {
   contextSelector: 'tr,[role="row"],li,[role="listitem"],article,section',
   tableSelector: 'table,[role="table"],[role="grid"]',
   explicitActionPattern: "(?:download|save|get|pdf|ladda\\s*ner|hämta|herunterladen|télécharger|descargar|baixar|scarica|downloaden)",
-  strongDocumentPattern: "(?:pdf|receipt|invoice|kvitto|faktura|beleg|rechnung|reçu|facture|recibo|factura|ricevuta|fattura)",
+  invoiceDocumentContextPattern: "(?:invoices?|receipts?|statements?|transactions?|\\binv[_-][a-z0-9]+|\\brcpt[_-][a-z0-9]+|billing\\s+history|payment\\s+history|past\\s+(?:payments|charges)|kvitto|faktura|beleg|rechnung|reçu|facture|recibo|factura|ricevuta|fattura)",
+  // ponytail: a valid invoice named "guide" will be skipped; add reviewed row-level evidence if that appears.
+  unrelatedDocumentPattern: "(?:^|[\\s._/-])(?:guides?|manuals?|help|polic(?:y|ies)|privacy|terms|instructions?)(?:$|[\\s._/-])",
   documentIconPattern: "(?:^|[\\s_-])(?:download|file-down|file-text|receipt|scroll-text|document|invoice|pdf)(?:$|[\\s_-])",
   invoiceContextPattern: "(?:billing|past\\s+invoices?|invoice\\s+history|receipt\\s+history|statement|receipt|invoice|kvitto|faktura|beleg|rechnung|reçu|facture|recibo|factura|ricevuta|fattura)",
   invoiceRowPattern: "(?:invoice|receipt|statement|kvitto|faktura|beleg|rechnung|reçu|facture|recibo|factura|ricevuta|fattura|\\b\\d{4}[-/.]\\d{1,2}[-/.]\\d{1,2}\\b|\\b(?:USD|EUR|SEK|NOK|DKK|GBP|CHF)\\b)",
@@ -117,12 +119,13 @@ export function semanticControlEvidenceBasis(
   const column = bounded(evidence.columnContext, 120);
   const table = bounded(evidence.tableContext, 500);
   const page = bounded(evidence.pageContext, 240);
-  if (!material || new RegExp(policy.unsafeLabelPattern, "i").test(material)) return undefined;
+  if (!material || new RegExp(policy.unsafeLabelPattern, "i").test(material) ||
+    new RegExp(policy.unrelatedDocumentPattern, "i").test(material)) return undefined;
 
   const explicit = new RegExp(policy.explicitActionPattern, "i").test(material);
-  const strongDocument = new RegExp(policy.strongDocumentPattern, "i").test(material);
-  if (explicit && strongDocument) return "explicit_document_label";
-  if (explicit && new RegExp(policy.invoiceContextPattern, "i").test(`${row} ${table} ${page}`)) {
+  const invoiceDocumentContext = new RegExp(policy.invoiceDocumentContextPattern, "i");
+  if (explicit && invoiceDocumentContext.test(material)) return "explicit_document_label";
+  if (explicit && invoiceDocumentContext.test(`${row} ${table} ${page}`)) {
     return "invoice_context_action";
   }
 
