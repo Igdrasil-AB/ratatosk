@@ -1,7 +1,7 @@
 {
   "name": "ratatosk",
   "version": "0.8.79",
-  "description": "Open-source browser extension that collects supplier invoices and receipts from vendor portals using the user's own session \u2014 no credential custody.",
+  "description": "Open-source browser extension that collects supplier invoices and receipts from vendor portals using the user's own session — no credential custody.",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -40,7 +40,7 @@
     "ci": "npm run gen:icons && npm run typecheck && npm run check:boundaries && npm run validate && npm run test"
   },
   "dependencies": {
-    "zod": "^4.5.4"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.0.0-beta.28",
@@ -51,7 +51,7 @@
     "simple-icons": "^16.28.0",
     "tsx": "^4.23.12",
     "typescript": "^5.9.3",
-    "vite": "^8.2.2",
-    "vitest": "^4.1.11"
+    "vite": "^8.3.6",
+    "vitest": "^4.1.12"
   }
 }
